@@ -142,24 +142,29 @@ def smart_play():
             urls_to_try.append(f"https://filmpalast.to/stream/{slug}")
             urls_to_try.append(f"https://filmpalast.to/stream/{slug}-1")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+    # Schneller, nicht-blockierender ThreadPool
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+    try:
         def check_url_and_push(url):
-            res = try_url(url, title)
-            if res: q.put(res)
+            try:
+                res = try_url(url, title)
+                if res: q.put(res)
+            except: pass
             
-        for u in urls_to_try: executor.submit(check_url_and_push, u)
+        for u in urls_to_try[:4]: 
+            executor.submit(check_url_and_push, u)
             
         def api_search_worker(func, q_str, prefix, suffix):
             if not q_str: return
             try:
                 res = func(q_str)
                 if res:
-                    for r in res:
+                    for r in res[:2]:
                         if 'link' in r: executor.submit(check_url_and_push, f"{prefix}{r['link']}{suffix}")
                         elif 'url' in r: executor.submit(check_url_and_push, r['url'])
             except: pass
 
-        unique_queries = list(set([t for t in raw_titles if t and len(t) > 2]))[:6]
+        unique_queries = list(set([t for t in raw_titles if t and len(t) > 2]))[:2]
 
         if media_type == 'tv':
             for q_term in unique_queries:
@@ -170,13 +175,19 @@ def smart_play():
                 executor.submit(api_search_worker, megakino_search, q_term, "", "")
             
         try:
-            result = q.get(timeout=9)
+            # Maximal 1.6 Sekunden warten - blitzschneller Check!
+            result = q.get(timeout=1.6)
             if result:
                 result["mode"] = "direct"
                 return jsonify(result)
         except queue.Empty: pass
+    except Exception as e:
+        print(f"[*] Smart Play Info: {e}")
+    finally:
+        # Nicht blockieren - Hintergrund-Threads sofort abbrechen!
+        executor.shutdown(wait=False, cancel_futures=True)
 
-    # FALLBACK: Wenn kein deutscher Hoster-Stream gefunden wurde, aber eine TMDB-ID existiert
+    # FALLBACK: Wenn kein direkter Hoster-Stream gefunden wurde, sofort Backup Server ausliefern
     if tmdb_id:
         if media_type == 'tv':
             fallback_embed = f"https://vidlink.pro/tv/{tmdb_id}/{season}/{episode}"

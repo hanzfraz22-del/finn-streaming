@@ -5406,7 +5406,12 @@
 
                 <div id="server-status-message" class="server-status-message">Verbinde mit Streaming-Netzwerk...</div>
 
-                <button class="server-cancel-btn" onclick="closePlayer()">Abbrechen</button>
+                <div style="display: flex; gap: 8px; width: 100%; margin-top: 14px;">
+                    <button class="btn btn-secondary" onclick="forceImmediateBackupStream()" style="flex: 1; padding: 10px; font-size: 0.84rem; font-weight: 700; border-radius: 8px; cursor: pointer;">
+                        Direkt Backup-Server starten
+                    </button>
+                    <button class="server-cancel-btn" onclick="closePlayer()" style="margin-top: 0; padding: 10px 14px;">Abbrechen</button>
+                </div>
             </div>
         </div>
         <div id="error-box" class="error-msg"></div>
@@ -9745,9 +9750,25 @@
             }, 1200);
 
             const stepTimer3 = setTimeout(() => {
-                if (pBar) pBar.style.width = '88%';
-                if (sMsg) sMsg.innerText = 'Stream-Signal empfangen, initialisiere Wiedergabe...';
-            }, 2000);
+                if (pBar) pBar.style.width = '85%';
+                if (sMsg) sMsg.innerText = 'Prüfe schnellste verfügbare Server...';
+            }, 1800);
+
+            const maxWaitTimer = setTimeout(() => {
+                console.warn("Server-Suche Timeout nach 3.5s - schalte auf schnellen Backup-Server um");
+                if (activeStreamAbortController) {
+                    try { activeStreamAbortController.abort(); } catch(e) {}
+                }
+                if (movie && movie.id) {
+                    if (dot4) { dot4.className = 'server-dot success'; }
+                    if (stat4) { stat4.className = 'server-item-status success'; stat4.innerText = 'Aktiv'; }
+                    if (pBar) pBar.style.width = '100%';
+                    if (sMsg) sMsg.innerText = 'Sofort-Start über Backup-Server...';
+                    setTimeout(() => {
+                        startBackupStream(movie.id, type, season, episode, 0);
+                    }, 250);
+                }
+            }, 3500);
 
             try {
                 const searchParams = new URLSearchParams({
@@ -9765,6 +9786,7 @@
                 clearTimeout(stepTimer1);
                 clearTimeout(stepTimer2);
                 clearTimeout(stepTimer3);
+                clearTimeout(maxWaitTimer);
                 const data = await response.json();
 
                 if (!response.ok) throw new Error(data.error || "Stream nicht gefunden.");
@@ -9998,10 +10020,11 @@
                     });
                 }
             } catch (err) {
-                if (err.name === 'AbortError') return;
                 clearTimeout(stepTimer1);
                 clearTimeout(stepTimer2);
                 clearTimeout(stepTimer3);
+                clearTimeout(maxWaitTimer);
+                if (err.name === 'AbortError') return;
                 
                 // Automatischer Fallback-Versuch bei Fehler
                 if (movie.id) {
@@ -10011,8 +10034,8 @@
                     if (stat4) { stat4.className = 'server-item-status success'; stat4.innerText = 'Aktiviert'; }
                     if (pBar) pBar.style.width = '100%';
                     if (sMsg) sMsg.innerText = 'Wechsle auf globalen Backup-Server HD...';
-                    await new Promise(r => setTimeout(r, 700));
-                    startBackupStream(movie.id, type, season, episode);
+                    await new Promise(r => setTimeout(r, 400));
+                    startBackupStream(movie.id, type, season, episode, 0);
                     return;
                 }
 
@@ -10024,7 +10047,7 @@
                         Für <strong>${title}</strong> ist auf den deutschen Streaming-Servern aktuell noch kein Stream hinterlegt (z. B. noch exklusiv im Kino).
                     </p>
                     <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
-                        ${movie.id ? `<button class="btn btn-primary" onclick="startBackupStream(${movie.id}, '${type}', ${season}, ${episode})">Backup-Server versuchen</button>` : ''}
+                        ${movie.id ? `<button class="btn btn-primary" onclick="startBackupStream(${movie.id}, '${type}', ${season}, ${episode}, 0)">Backup-Server versuchen</button>` : ''}
                         <button class="btn btn-secondary" onclick="playCurrentMovieTrailer()">Trailer ansehen</button>
                         <button class="btn btn-secondary" onclick="closePlayer()">Zurück</button>
                     </div>
@@ -10033,34 +10056,77 @@
         }
 
         let currentPlaybackServer = 'direct';
+        const BACKUP_SERVERS = [
+            {
+                id: 'vidlink',
+                name: 'VidLink (HD)',
+                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidlink.pro/tv/${id}/${s}/${e}` : `https://vidlink.pro/movie/${id}`)
+            },
+            {
+                id: 'vidsrc',
+                name: 'VidSrc (HD)',
+                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidsrc.cc/v2/embed/tv/${id}/${s}/${e}` : `https://vidsrc.cc/v2/embed/movie/${id}`)
+            },
+            {
+                id: 'multiembed',
+                name: 'MultiEmbed',
+                getUrl: (id, type, s, e) => (type === 'tv' ? `https://multiembed.mov/?video_id=${id}&tmdb=1&s=${s}&e=${e}` : `https://multiembed.mov/?video_id=${id}&tmdb=1`)
+            },
+            {
+                id: 'autoembed',
+                name: 'AutoEmbed',
+                getUrl: (id, type, s, e) => (type === 'tv' ? `https://player.autoembed.cc/embed/tv/${id}/${s}/${e}` : `https://player.autoembed.cc/embed/movie/${id}`)
+            }
+        ];
+        let currentBackupServerIndex = 0;
+
+        function forceImmediateBackupStream() {
+            if (!currentMovieData) return;
+            const type = currentMovieData.media_type || (currentMovieData.title ? 'movie' : 'tv');
+            if (activeStreamAbortController) {
+                try { activeStreamAbortController.abort(); } catch(e) {}
+            }
+            startBackupStream(currentMovieData.id, type, currentSeason, currentEpisode, 0);
+        }
 
         function toggleServerSource() {
             if (!currentMovieData || !currentMovieData.id) return;
             const type = currentMovieData.media_type || (currentMovieData.title ? 'movie' : 'tv');
             if (currentPlaybackServer === 'direct') {
                 currentPlaybackServer = 'embed';
-                const sBtn = document.getElementById('server-btn');
-                if (sBtn) sBtn.innerText = 'Server: Backup';
-                startBackupStream(currentMovieData.id, type, currentSeason, currentEpisode);
+                currentBackupServerIndex = 0;
+                startBackupStream(currentMovieData.id, type, currentSeason, currentEpisode, 0);
             } else {
-                currentPlaybackServer = 'direct';
-                const sBtn = document.getElementById('server-btn');
-                if (sBtn) sBtn.innerText = 'Server: HD';
-                startStream(currentSeason, currentEpisode);
+                currentBackupServerIndex++;
+                if (currentBackupServerIndex < BACKUP_SERVERS.length) {
+                    startBackupStream(currentMovieData.id, type, currentSeason, currentEpisode, currentBackupServerIndex);
+                } else {
+                    currentBackupServerIndex = 0;
+                    currentPlaybackServer = 'direct';
+                    const sBtn = document.getElementById('server-btn');
+                    if (sBtn) sBtn.innerText = 'Server: HD';
+                    startStream(currentSeason, currentEpisode);
+                }
             }
         }
 
-        function startBackupStream(tmdbId, type, season = 1, episode = 1) {
+        function startBackupStream(tmdbId, type, season = 1, episode = 1, serverIndex = 0) {
             currentPlaybackServer = 'embed';
+            currentBackupServerIndex = (serverIndex !== undefined && serverIndex !== null) ? (serverIndex % BACKUP_SERVERS.length) : 0;
+            const activeServer = BACKUP_SERVERS[currentBackupServerIndex] || BACKUP_SERVERS[0];
+
             if (activeStreamAbortController) {
                 try { activeStreamAbortController.abort(); } catch(e) {}
             }
-            document.getElementById('loading-box').style.display = 'none';
-            document.getElementById('error-box').style.display = 'none';
-            document.getElementById('video-container').style.display = 'block';
+            const loadingBox = document.getElementById('loading-box');
+            const errorBox = document.getElementById('error-box');
+            const videoContainer = document.getElementById('video-container');
+            if (loadingBox) loadingBox.style.display = 'none';
+            if (errorBox) errorBox.style.display = 'none';
+            if (videoContainer) videoContainer.style.display = 'block';
 
             const sBtn = document.getElementById('server-btn');
-            if (sBtn) sBtn.innerText = 'Server: Backup';
+            if (sBtn) sBtn.innerText = `Server: ${activeServer.name}`;
 
             if (vjsPlayer) {
                 try { vjsPlayer.dispose(); } catch(e) {}
@@ -10069,14 +10135,12 @@
 
             const mount = document.getElementById('player-video-mount');
             if (mount) {
-                const embedUrl = type === 'tv' 
-                    ? `https://vidlink.pro/tv/${tmdbId}/${season}/${episode}`
-                    : `https://vidlink.pro/movie/${tmdbId}`;
+                const embedUrl = activeServer.getUrl(tmdbId, type, season, episode);
                 mount.innerHTML = `
                     <iframe id="embed-player-frame" src="${embedUrl}" style="width:100%; height:100%; border:none; position:absolute; top:0; left:0; right:0; bottom:0;" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen referrerpolicy="no-referrer"></iframe>
                 `;
             }
-            showPlayerToast('Backup-Server (Global Stream) geladen');
+            showPlayerToast(`Backup-Server aktiv: ${activeServer.name}`);
         }
 
         function playCurrentMovieTrailer() {
