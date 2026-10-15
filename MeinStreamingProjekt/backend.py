@@ -175,8 +175,8 @@ def smart_play():
                 executor.submit(api_search_worker, megakino_search, q_term, "", "")
             
         try:
-            # Maximal 1.6 Sekunden warten - blitzschneller Check!
-            result = q.get(timeout=1.6)
+            # Bis zu 5.2 Sekunden auf echten VOE / Vidoza Stream warten
+            result = q.get(timeout=5.2)
             if result:
                 result["mode"] = "direct"
                 return jsonify(result)
@@ -191,10 +191,10 @@ def smart_play():
     if tmdb_id:
         if media_type == 'tv':
             fallback_embed = f"https://vidlink.pro/tv/{tmdb_id}/{season}/{episode}"
-            alt_embed = f"https://vidsrc.cc/v2/embed/tv/{tmdb_id}/{season}/{episode}"
+            alt_embed = f"https://vidsrc.to/embed/tv/{tmdb_id}/{season}/{episode}"
         else:
             fallback_embed = f"https://vidlink.pro/movie/{tmdb_id}"
-            alt_embed = f"https://vidsrc.cc/v2/embed/movie/{tmdb_id}"
+            alt_embed = f"https://vidsrc.to/embed/movie/{tmdb_id}"
         
         return jsonify({
             "mode": "embed",

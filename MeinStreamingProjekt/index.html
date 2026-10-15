@@ -9736,26 +9736,26 @@
                 if (stat1) { stat1.className = 'server-item-status success'; stat1.innerText = 'Durchsucht'; }
                 if (dot2) { dot2.className = 'server-dot active'; }
                 if (stat2) { stat2.className = 'server-item-status active'; stat2.innerText = 'Prüfe...'; }
-                if (pBar) pBar.style.width = '45%';
+                if (pBar) pBar.style.width = '35%';
                 if (sMsg) sMsg.innerText = 'Durchsuche deutsche Streaming-Server (Filmpalast & S.to)...';
-            }, 600);
+            }, 800);
 
             const stepTimer2 = setTimeout(() => {
                 if (dot2) { dot2.className = 'server-dot success'; }
                 if (stat2) { stat2.className = 'server-item-status success'; stat2.innerText = 'Geprüft'; }
                 if (dot3) { dot3.className = 'server-dot active'; }
                 if (stat3) { stat3.className = 'server-item-status active'; stat3.innerText = 'Prüfe Hoster...'; }
-                if (pBar) pBar.style.width = '70%';
+                if (pBar) pBar.style.width = '65%';
                 if (sMsg) sMsg.innerText = 'Verbinde mit Highspeed-Hoster (VOE, Vidoza)...';
-            }, 1200);
+            }, 2200);
 
             const stepTimer3 = setTimeout(() => {
                 if (pBar) pBar.style.width = '85%';
-                if (sMsg) sMsg.innerText = 'Prüfe schnellste verfügbare Server...';
-            }, 1800);
+                if (sMsg) sMsg.innerText = 'Empfange Stream-Signale (VOE, Megakino)...';
+            }, 3800);
 
             const maxWaitTimer = setTimeout(() => {
-                console.warn("Server-Suche Timeout nach 3.5s - schalte auf schnellen Backup-Server um");
+                console.warn("Server-Suche Timeout nach 6.5s - schalte auf schnellen Backup-Server um");
                 if (activeStreamAbortController) {
                     try { activeStreamAbortController.abort(); } catch(e) {}
                 }
@@ -9768,7 +9768,7 @@
                         startBackupStream(movie.id, type, season, episode, 0);
                     }, 250);
                 }
-            }, 3500);
+            }, 6500);
 
             try {
                 const searchParams = new URLSearchParams({
@@ -9818,9 +9818,11 @@
 
                 // Modus 1: Backup Embed Server
                 if (data.mode === 'embed') {
+                    const tapOverlay = document.getElementById('player-tap-overlay');
+                    if (tapOverlay) tapOverlay.style.display = 'none';
                     if (mount) {
                         mount.innerHTML = `
-                            <iframe id="embed-player-frame" src="${data.embed_url}" style="width:100%; height:100%; border:none; position:absolute; top:0; left:0; right:0; bottom:0;" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen referrerpolicy="no-referrer"></iframe>
+                            <iframe id="embed-player-frame" src="${data.embed_url}" style="width:100%; height:100%; border:none; position:absolute; top:0; left:0; right:0; bottom:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen="true"></iframe>
                         `;
                     }
                     showPlayerToast(data.message || 'Backup-Server aktiv');
@@ -9828,6 +9830,11 @@
                 }
 
                 // Modus 2: Direkter Video.js Stream
+                const tapOverlay = document.getElementById('player-tap-overlay');
+                if (tapOverlay && window.innerWidth <= 768) {
+                    tapOverlay.style.display = 'flex';
+                }
+
                 if (mount) {
                     mount.innerHTML = `
                         <video id="main-player" class="video-js vjs-default-skin vjs-big-play-centered vjs-fill" controls preload="auto" playsinline webkit-playsinline disablePictureInPicture controlsList="nodownload"></video>
@@ -10065,7 +10072,7 @@
             {
                 id: 'vidsrc',
                 name: 'VidSrc (HD)',
-                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidsrc.cc/v2/embed/tv/${id}/${s}/${e}` : `https://vidsrc.cc/v2/embed/movie/${id}`)
+                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidsrc.to/embed/tv/${id}/${s}/${e}` : `https://vidsrc.to/embed/movie/${id}`)
             },
             {
                 id: 'multiembed',
@@ -10073,9 +10080,9 @@
                 getUrl: (id, type, s, e) => (type === 'tv' ? `https://multiembed.mov/?video_id=${id}&tmdb=1&s=${s}&e=${e}` : `https://multiembed.mov/?video_id=${id}&tmdb=1`)
             },
             {
-                id: 'autoembed',
-                name: 'AutoEmbed',
-                getUrl: (id, type, s, e) => (type === 'tv' ? `https://player.autoembed.cc/embed/tv/${id}/${s}/${e}` : `https://player.autoembed.cc/embed/movie/${id}`)
+                id: 'vidsrcpm',
+                name: 'VidSrc 2',
+                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidsrc.pm/embed/tv/${id}/${s}/${e}` : `https://vidsrc.pm/embed/movie/${id}`)
             }
         ];
         let currentBackupServerIndex = 0;
@@ -10121,9 +10128,11 @@
             const loadingBox = document.getElementById('loading-box');
             const errorBox = document.getElementById('error-box');
             const videoContainer = document.getElementById('video-container');
+            const tapOverlay = document.getElementById('player-tap-overlay');
             if (loadingBox) loadingBox.style.display = 'none';
             if (errorBox) errorBox.style.display = 'none';
             if (videoContainer) videoContainer.style.display = 'block';
+            if (tapOverlay) tapOverlay.style.display = 'none';
 
             const sBtn = document.getElementById('server-btn');
             if (sBtn) sBtn.innerText = `Server: ${activeServer.name}`;
@@ -10137,7 +10146,7 @@
             if (mount) {
                 const embedUrl = activeServer.getUrl(tmdbId, type, season, episode);
                 mount.innerHTML = `
-                    <iframe id="embed-player-frame" src="${embedUrl}" style="width:100%; height:100%; border:none; position:absolute; top:0; left:0; right:0; bottom:0;" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen referrerpolicy="no-referrer"></iframe>
+                    <iframe id="embed-player-frame" src="${embedUrl}" style="width:100%; height:100%; border:none; position:absolute; top:0; left:0; right:0; bottom:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen="true"></iframe>
                 `;
             }
             showPlayerToast(`Backup-Server aktiv: ${activeServer.name}`);
