@@ -9663,6 +9663,11 @@
         window.showXRayPauseScreen = showXRayPauseScreen;
         window.toggleReleaseReminder = toggleReleaseReminder;
         window.filterRemindersView = filterRemindersView;
+        window.toggleShortcutsModal = toggleShortcutsModal;
+        window.openShortcutsModal = openShortcutsModal;
+        window.closeShortcutsModal = closeShortcutsModal;
+        window.toggleAudioBoost = toggleAudioBoost;
+        window.triggerHaptic = triggerHaptic;
 
         let toastTimeout = null;
         function showPlayerToast(text) {
@@ -10416,12 +10421,12 @@
                     return;
                 }
             }
-            if ((e.key === '?' || e.key === 'h' || e.key === 'H') && (!detailsModal || detailsModal.style.display === 'none')) {
+            if ((e.key === '?' || e.key === 'h' || e.key === 'H') && (!detailsModal || detailsModal.style.display !== 'flex')) {
                 e.preventDefault();
                 toggleShortcutsModal();
                 return;
             }
-            if ((e.key === 's' || e.key === 'S' || e.key === '/') && !vjsPlayer && (!detailsModal || detailsModal.style.display === 'none')) {
+            if ((e.key === 's' || e.key === 'S' || e.key === '/') && !vjsPlayer && (!detailsModal || detailsModal.style.display !== 'flex')) {
                 e.preventDefault();
                 const searchInput = document.getElementById('search-input');
                 if (searchInput) {
