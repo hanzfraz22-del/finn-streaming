@@ -3,6 +3,7 @@ import os
 import re
 import queue
 import concurrent.futures
+import json
 from flask import Flask, request, jsonify, render_template
 
 # Fallback für lokales Ausführen
@@ -338,6 +339,154 @@ def vote_cast():
         session['total_voters'] += 1
 
     return jsonify({'success': True, 'session': session})
+
+# ==============================================================================
+# KEY MANAGEMENT & ZUGANGSSCHLUESSEL SYSTEM
+# ==============================================================================
+KEYS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'keys.json')
+DEFAULT_ADMIN_KEY = os.environ.get('ADMIN_MASTER_KEY', 'FINN-ADMIN-2026')
+
+def load_keys():
+    if not os.path.exists(KEYS_FILE):
+        default_keys = [
+            {
+                "key": "FINN-STREAM-2026",
+                "label": "Hauptzugang",
+                "created_at": time.strftime("%Y-%m-%d %H:%M"),
+                "active": True,
+                "uses": 0
+            },
+            {
+                "key": "FINN-VIP-7788",
+                "label": "VIP Freunde",
+                "created_at": time.strftime("%Y-%m-%d %H:%M"),
+                "active": True,
+                "uses": 0
+            }
+        ]
+        save_keys(default_keys)
+        return default_keys
+    try:
+        with open(KEYS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_keys(keys_data):
+    try:
+        with open(KEYS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(keys_data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[!] Fehler beim Speichern von keys.json: {e}")
+
+@app.route('/api/keys/verify', methods=['POST'])
+def api_verify_key():
+    data = request.get_json(force=True, silent=True) or {}
+    user_key = (data.get('key') or '').strip().upper()
+    if not user_key:
+        return jsonify({'success': False, 'valid': False, 'message': 'Kein Schlüssel übergeben'}), 400
+
+    if user_key == DEFAULT_ADMIN_KEY:
+        return jsonify({
+            'success': True,
+            'valid': True,
+            'is_admin': True,
+            'label': 'Administrator Master Key'
+        })
+
+    keys = load_keys()
+    for item in keys:
+        if item.get('key', '').upper() == user_key:
+            if not item.get('active', True):
+                return jsonify({'success': False, 'valid': False, 'message': 'Dieser Schlüssel wurde deaktiviert'}), 403
+            item['uses'] = item.get('uses', 0) + 1
+            item['last_used'] = time.strftime("%Y-%m-%d %H:%M")
+            save_keys(keys)
+            return jsonify({
+                'success': True,
+                'valid': True,
+                'is_admin': False,
+                'label': item.get('label', 'Freigeschaltet')
+            })
+
+    return jsonify({'success': False, 'valid': False, 'message': 'Ungültiger Zugangsschlüssel'}), 401
+
+@app.route('/api/keys/admin/login', methods=['POST'])
+def api_admin_login():
+    data = request.get_json(force=True, silent=True) or {}
+    master_key = (data.get('master_key') or '').strip()
+    if master_key == DEFAULT_ADMIN_KEY:
+        return jsonify({'success': True})
+    return jsonify({'success': False, 'error': 'Falscher Admin-Master-Schlüssel'}), 401
+
+@app.route('/api/keys/admin/list', methods=['POST'])
+def api_admin_list_keys():
+    data = request.get_json(force=True, silent=True) or {}
+    if data.get('master_key') != DEFAULT_ADMIN_KEY:
+        return jsonify({'success': False, 'error': 'Nicht autorisiert'}), 401
+    return jsonify({'success': True, 'keys': load_keys(), 'admin_key': DEFAULT_ADMIN_KEY})
+
+@app.route('/api/keys/admin/create', methods=['POST'])
+def api_admin_create_key():
+    data = request.get_json(force=True, silent=True) or {}
+    if data.get('master_key') != DEFAULT_ADMIN_KEY:
+        return jsonify({'success': False, 'error': 'Nicht autorisiert'}), 401
+
+    custom_key = (data.get('custom_key') or '').strip().upper()
+    label = (data.get('label') or 'Freund').strip()
+
+    if not custom_key:
+        part1 = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+        part2 = "".join(random.choices(string.digits, k=4))
+        custom_key = f"FINN-{part1}-{part2}"
+
+    keys = load_keys()
+    if any(k.get('key', '').upper() == custom_key for k in keys):
+        return jsonify({'success': False, 'error': 'Dieser Schlüssel existiert bereits'}), 400
+
+    new_entry = {
+        'key': custom_key,
+        'label': label,
+        'created_at': time.strftime("%Y-%m-%d %H:%M"),
+        'active': True,
+        'uses': 0
+    }
+    keys.insert(0, new_entry)
+    save_keys(keys)
+    return jsonify({'success': True, 'key': new_entry})
+
+@app.route('/api/keys/admin/toggle', methods=['POST'])
+def api_admin_toggle_key():
+    data = request.get_json(force=True, silent=True) or {}
+    if data.get('master_key') != DEFAULT_ADMIN_KEY:
+        return jsonify({'success': False, 'error': 'Nicht autorisiert'}), 401
+
+    target_key = (data.get('key') or '').strip().upper()
+    keys = load_keys()
+    found = False
+    for k in keys:
+        if k.get('key', '').upper() == target_key:
+            k['active'] = not k.get('active', True)
+            found = True
+            break
+
+    if not found:
+        return jsonify({'success': False, 'error': 'Schlüssel nicht gefunden'}), 404
+
+    save_keys(keys)
+    return jsonify({'success': True, 'keys': keys})
+
+@app.route('/api/keys/admin/delete', methods=['POST'])
+def api_admin_delete_key():
+    data = request.get_json(force=True, silent=True) or {}
+    if data.get('master_key') != DEFAULT_ADMIN_KEY:
+        return jsonify({'success': False, 'error': 'Nicht autorisiert'}), 401
+
+    target_key = (data.get('key') or '').strip().upper()
+    keys = load_keys()
+    keys = [k for k in keys if k.get('key', '').upper() != target_key]
+    save_keys(keys)
+    return jsonify({'success': True, 'keys': keys})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

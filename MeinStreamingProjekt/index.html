@@ -2667,17 +2667,17 @@
             .bottom-nav-item.active { color: #fff; }
             .bottom-nav-item svg { width: 22px; height: 22px; fill: currentColor; }
             
-            /* Hero adjustments: Positioned cleanly at bottom of artwork */
+            /* Hero adjustments: Schlank, uebersichtlich, laesst erste Reihe direkt sehen */
             .hero { 
-                height: 72vh; 
-                min-height: 480px;
+                height: 56vh; 
+                min-height: 380px;
                 display: flex; 
                 align-items: flex-end; 
                 justify-content: center;
                 background-position: center top; 
                 margin-top: 45px;
                 margin-bottom: 5px;
-                padding-bottom: 25px;
+                padding-bottom: 20px;
             }
             .hero-vignette {
                 background: 
@@ -2688,7 +2688,7 @@
                 position: relative; 
                 z-index: 10; 
                 margin: 0; 
-                padding: 0 20px; 
+                padding: 0 16px; 
                 width: 100%; 
                 display: flex; 
                 flex-direction: column; 
@@ -2697,48 +2697,67 @@
                 bottom: auto;
             }
             .hero-title { 
-                font-size: 1.85rem; 
-                line-height: 1.18; 
+                font-size: 1.65rem; 
+                line-height: 1.15; 
                 text-align: center; 
-                margin-bottom: 14px; 
+                margin-bottom: 12px; 
                 font-weight: 900;
                 text-shadow: 0 3px 12px rgba(0,0,0,0.95);
+                max-width: 90%;
             }
             .hero-desc { display: none; } 
             #hero-buttons { 
                 display: flex; 
                 flex-direction: row; 
-                gap: 12px; 
+                gap: 10px; 
                 width: 100%; 
-                max-width: 340px; 
+                max-width: 320px; 
                 justify-content: center; 
                 padding: 0; 
             }
             #hero-buttons .btn { 
                 flex: 1; 
-                padding: 11px 18px; 
-                font-size: 0.95rem; 
+                padding: 10px 16px; 
+                font-size: 0.92rem; 
                 font-weight: 700;
                 justify-content: center; 
-                border-radius: 6px;
+                border-radius: 8px;
             }
 
-            /* Swiping Rows */
+            /* Swiping Rows: 132px fuer optimale Lesbarkeit & natuerliche 2.5 Karten Vorschau */
             .row-container { 
-                padding: 0 15px calc(80px + env(safe-area-inset-bottom, 0px)) 15px; 
+                padding: 0 14px calc(80px + env(safe-area-inset-bottom, 0px)) 14px; 
                 margin-top: 5px; 
             }
-            .row-title { font-size: 1.15rem; margin: 25px 0 12px 0; }
-            .row-posters { gap: 12px; scroll-snap-type: x mandatory; padding: 6px 0 12px 0; margin: 0 -15px; padding-left: 15px; padding-right: 15px; }
+            .row-title { 
+                font-size: 1.12rem; 
+                margin: 20px 0 10px 0; 
+                font-weight: 800; 
+                letter-spacing: -0.2px; 
+            }
+            .row-posters { 
+                gap: 10px; 
+                scroll-snap-type: x mandatory; 
+                padding: 6px 0 12px 0; 
+                margin: 0 -14px; 
+                padding-left: 14px; 
+                padding-right: 14px; 
+            }
             .row-posters::-webkit-scrollbar { display: none; }
-            .poster-card { flex: 0 0 115px; scroll-snap-align: start; border-radius: 6px; }
+            .poster-card { 
+                flex: 0 0 132px; 
+                scroll-snap-align: start; 
+                border-radius: 8px; 
+                box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+                transition: transform 0.2s ease;
+            }
             .poster-card:hover { transform: none; box-shadow: none; border: none; }
 
             /* Mobile Card Badges & Overlay */
             .poster-card .card-overlay {
                 opacity: 1 !important;
-                padding: 6px 6px;
-                background: linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.5) 60%, transparent 100%);
+                padding: 6px 8px;
+                background: linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.45) 55%, transparent 100%);
             }
             .card-badges {
                 gap: 4px;
@@ -2746,7 +2765,8 @@
             }
             .card-badge-hd {
                 font-size: 0.58rem;
-                padding: 0 3px;
+                padding: 1px 4px;
+                border-radius: 3px;
             }
             .card-badge-year {
                 font-size: 0.65rem;
@@ -2755,8 +2775,9 @@
                 font-size: 0.65rem;
             }
             .card-title-text {
-                font-size: 0.72rem;
-                line-height: 1.2;
+                font-size: 0.78rem;
+                line-height: 1.25;
+                font-weight: 700;
             }
             .card-delete-btn {
                 display: flex !important;
@@ -3869,9 +3890,464 @@
                 max-height: 94vh !important;
             }
         }
+
+        /* ========================================================
+           KEY LOCK SCREEN & ADMIN MANAGEMENT
+           ======================================================== */
+        .key-lock-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 999999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle at 50% 30%, #1c1d27 0%, #08080b 75%);
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .key-lock-card {
+            background: rgba(18, 18, 22, 0.94);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.85), 0 0 40px rgba(229, 9, 20, 0.15);
+            border-radius: 20px;
+            padding: 36px 26px;
+            max-width: 440px;
+            width: 100%;
+            text-align: center;
+            backdrop-filter: blur(25px);
+            -webkit-backdrop-filter: blur(25px);
+            animation: fadeInLock 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes fadeInLock {
+            from { opacity: 0; transform: scale(0.95) translateY(8px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .key-lock-icon {
+            width: 62px;
+            height: 62px;
+            margin: 0 auto 16px auto;
+            border-radius: 50%;
+            background: rgba(229, 9, 20, 0.15);
+            border: 1px solid rgba(229, 9, 20, 0.35);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--primary);
+        }
+        .key-lock-brand {
+            font-size: 0.82rem;
+            font-weight: 800;
+            letter-spacing: 3px;
+            color: var(--primary);
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+        .key-lock-title {
+            font-size: 1.45rem;
+            font-weight: 800;
+            color: #ffffff;
+            margin: 0 0 10px 0;
+            letter-spacing: -0.3px;
+        }
+        .key-lock-desc {
+            font-size: 0.88rem;
+            color: #aaa;
+            line-height: 1.45;
+            margin: 0 0 22px 0;
+        }
+        .key-lock-input-group {
+            margin-bottom: 14px;
+            position: relative;
+        }
+        .key-lock-input {
+            width: 100%;
+            box-sizing: border-box;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 12px;
+            padding: 13px 16px;
+            color: #ffffff;
+            font-size: 1.05rem;
+            font-family: monospace;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-align: center;
+            text-transform: uppercase;
+            outline: none;
+            transition: all 0.25s ease;
+        }
+        .key-lock-input:focus {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: var(--primary);
+            box-shadow: 0 0 16px rgba(229, 9, 20, 0.4);
+        }
+        .key-lock-error {
+            color: #ff5252;
+            font-size: 0.82rem;
+            font-weight: 600;
+            margin-bottom: 14px;
+            padding: 8px 12px;
+            background: rgba(255, 82, 82, 0.12);
+            border-radius: 8px;
+            border: 1px solid rgba(255, 82, 82, 0.25);
+            text-align: center;
+        }
+        .key-lock-btn {
+            width: 100%;
+            padding: 13px 20px;
+            font-size: 0.98rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            border-radius: 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(229, 9, 20, 0.4);
+            transition: all 0.2s;
+        }
+        .key-lock-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(229, 9, 20, 0.6);
+        }
+        .key-lock-footer {
+            margin-top: 18px;
+            padding-top: 14px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            align-items: center;
+        }
+        .key-lock-hint {
+            font-size: 0.78rem;
+            color: #777;
+        }
+        .key-lock-admin-link {
+            background: none;
+            border: none;
+            color: #999;
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: underline;
+            padding: 4px;
+            transition: color 0.2s;
+        }
+        .key-lock-admin-link:hover {
+            color: #fff;
+        }
+
+        /* Key Admin Modal */
+        .key-admin-content {
+            max-width: 600px;
+            width: 100%;
+            max-height: 86vh;
+            display: flex;
+            flex-direction: column;
+            padding: 22px;
+            background: #13141a;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 25px 70px rgba(0, 0, 0, 0.9);
+            border-radius: 18px;
+            overflow: hidden;
+            box-sizing: border-box;
+        }
+        .key-admin-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .key-admin-header-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.22rem;
+            font-weight: 800;
+            color: #fff;
+        }
+        .key-admin-header-title svg {
+            color: var(--primary);
+        }
+        .key-admin-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .key-stat-box {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 10px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .key-stat-num {
+            font-size: 1.3rem;
+            font-weight: 800;
+            color: #fff;
+            font-family: monospace;
+        }
+        .key-stat-label {
+            font-size: 0.7rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+        .key-admin-section {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 12px;
+            padding: 12px 14px;
+            margin-bottom: 12px;
+        }
+        .key-section-title {
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #bbb;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .key-create-form {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .key-create-row {
+            display: flex;
+            gap: 8px;
+        }
+        .key-input {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 8px;
+            padding: 9px 12px;
+            color: #fff;
+            font-size: 0.86rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .key-input:focus {
+            border-color: var(--primary);
+        }
+        .key-refresh-btn {
+            background: none;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #bbb;
+            border-radius: 6px;
+            padding: 4px 8px;
+            font-size: 0.72rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.2s;
+        }
+        .key-refresh-btn:hover {
+            color: #fff;
+            border-color: #fff;
+        }
+        .admin-keys-list {
+            max-height: 220px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-right: 4px;
+        }
+        .admin-keys-list::-webkit-scrollbar {
+            width: 5px;
+        }
+        .admin-keys-list::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+        }
+        .admin-key-card {
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 10px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            transition: border-color 0.2s;
+        }
+        .admin-key-card:hover {
+            border-color: rgba(255, 255, 255, 0.18);
+        }
+        .admin-key-info {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            min-width: 0;
+            flex: 1;
+        }
+        .admin-key-string-wrap {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .admin-key-string {
+            font-family: monospace;
+            font-size: 0.92rem;
+            font-weight: 700;
+            color: #fff;
+            letter-spacing: 1px;
+            user-select: all;
+        }
+        .admin-key-status-badge {
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .badge-active {
+            background: rgba(70, 211, 105, 0.15);
+            color: #46d369;
+            border: 1px solid rgba(70, 211, 105, 0.3);
+        }
+        .badge-inactive {
+            background: rgba(255, 82, 82, 0.15);
+            color: #ff5252;
+            border: 1px solid rgba(255, 82, 82, 0.3);
+        }
+        .admin-key-meta {
+            font-size: 0.72rem;
+            color: #888;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .admin-key-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .admin-act-btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            color: #fff;
+            padding: 5px 9px;
+            border-radius: 6px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.2s;
+        }
+        .admin-act-btn:hover {
+            background: rgba(255, 255, 255, 0.16);
+        }
+        .admin-act-btn-del {
+            color: #ff6b6b;
+            border-color: rgba(255, 107, 107, 0.25);
+        }
+        .admin-act-btn-del:hover {
+            background: rgba(255, 107, 107, 0.15);
+        }
+        .key-admin-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .key-master-hint {
+            font-size: 0.75rem;
+            color: #888;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .key-master-hint code {
+            font-family: monospace;
+            background: rgba(255, 255, 255, 0.08);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #ff9800;
+            font-weight: 700;
+        }
+
+        /* Mobile Responsive Overrides for Key System */
+        @media (max-width: 768px) {
+            .key-lock-card {
+                padding: 28px 18px;
+                border-radius: 16px;
+            }
+            .key-lock-title {
+                font-size: 1.3rem;
+            }
+            .key-admin-content {
+                max-height: 88vh;
+                border-radius: 20px 20px 0 0;
+                padding: 18px 14px;
+            }
+            .key-create-row {
+                flex-direction: column;
+            }
+            .admin-key-card {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .admin-key-actions {
+                width: 100%;
+                justify-content: flex-end;
+                margin-top: 6px;
+                border-top: 1px solid rgba(255, 255, 255, 0.05);
+                padding-top: 6px;
+            }
+        }
     </style>
 </head>
 <body>
+
+    <!-- KEY LOCK SCREEN OVERLAY -->
+    <div id="key-lock-screen" class="key-lock-screen" style="display: flex;">
+        <div class="key-lock-card">
+            <div class="key-lock-icon">
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+            </div>
+            <div class="key-lock-brand">FINN STREAMING</div>
+            <h2 class="key-lock-title">Zugang erforderlich</h2>
+            <p class="key-lock-desc">Diese Streaming-Plattform ist privat geschützt. Bitte gib deinen persönlichen Schlüssel ein, um fortzufahren.</p>
+            
+            <div class="key-lock-input-group">
+                <input type="text" id="access-key-input" class="key-lock-input" placeholder="FINN-XXXX-XXXX" maxlength="32" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')submitAccessKey()">
+            </div>
+            
+            <div id="key-lock-error" class="key-lock-error" style="display: none;"></div>
+            
+            <button id="key-lock-submit-btn" class="btn btn-primary key-lock-btn" onclick="submitAccessKey()">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+                Zugang freischalten
+            </button>
+            
+            <div class="key-lock-footer">
+                <span class="key-lock-hint">Keinen Schlüssel? Wende dich an Finn.</span>
+                <button type="button" class="key-lock-admin-link" onclick="promptAdminLoginFromLock()">Admin-Zugang</button>
+            </div>
+        </div>
+    </div>
 
     <!-- KINO INTRO ANIMATION OVERLAY (TUDUM SOUND & EFFEKT) -->
     <div id="cinema-intro-overlay" class="cinema-intro-overlay">
@@ -4380,6 +4856,17 @@
                         </div>
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="#666"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg>
                     </div>
+
+                    <div class="menu-action-item" id="profile-menu-keys-item" onclick="openKeyAdminModal()">
+                        <div class="menu-item-left">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+                            <div>
+                                <div class="menu-item-text">Zugangsschlüssel & Admin</div>
+                                <div class="menu-item-sub">Freunde freischalten & verwalten</div>
+                            </div>
+                        </div>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="#666"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg>
+                    </div>
                 </div>
 
                 <!-- Sektion 3: Profil-Wechsel & Verwaltung -->
@@ -4393,6 +4880,73 @@
 
             <div class="profile-menu-footer">
                 <button class="btn btn-secondary" style="width: 100%; padding: 12px;" onclick="closeProfileMenu()">Schließen</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- KEY ADMIN MANAGEMENT MODAL -->
+    <div id="key-admin-modal" class="modal-overlay" style="display: none;" onclick="if(event.target===this)closeKeyAdminModal()">
+        <div class="modal-content key-admin-content" onclick="event.stopPropagation()">
+            <div class="modal-drag-handle" onclick="closeKeyAdminModal()" title="Schließen"></div>
+            <div class="key-admin-header">
+                <div class="key-admin-header-title">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+                    <span>Schlüssel-Verwaltung</span>
+                </div>
+                <button class="close-details" onclick="closeKeyAdminModal()" style="position: static; font-size: 1.8rem; line-height: 1;">&times;</button>
+            </div>
+
+            <!-- Stats Bar -->
+            <div class="key-admin-stats">
+                <div class="key-stat-box">
+                    <span class="key-stat-num" id="admin-stat-total">0</span>
+                    <span class="key-stat-label">Gesamt</span>
+                </div>
+                <div class="key-stat-box">
+                    <span class="key-stat-num" id="admin-stat-active" style="color: #46d369;">0</span>
+                    <span class="key-stat-label">Aktiv</span>
+                </div>
+                <div class="key-stat-box">
+                    <span class="key-stat-num" id="admin-stat-uses" style="color: #64b5f6;">0</span>
+                    <span class="key-stat-label">Aufrufe</span>
+                </div>
+            </div>
+
+            <!-- Create New Key Form -->
+            <div class="key-admin-section">
+                <div class="key-section-title">Neuen Schlüssel anlegen</div>
+                <div class="key-create-form">
+                    <input type="text" id="admin-new-label" class="key-input" placeholder="Name / Notiz (z.B. Alex Handy)" maxlength="40">
+                    <div class="key-create-row">
+                        <input type="text" id="admin-new-custom" class="key-input" placeholder="Wunsch-Code (optional, z.B. FINN-ALEX)" maxlength="24">
+                        <button class="btn btn-primary" onclick="createAdminKey()" style="white-space: nowrap; padding: 10px 16px; font-weight: 700; border-radius: 8px;">
+                            + Erstellen
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Keys List -->
+            <div class="key-admin-section" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                <div class="key-section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>Vorhandene Schlüssel</span>
+                    <button class="key-refresh-btn" onclick="fetchAdminKeys()" title="Aktualisieren">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+                        Neu laden
+                    </button>
+                </div>
+                <div id="admin-keys-list" class="admin-keys-list">
+                    <!-- Dynamic key list -->
+                </div>
+            </div>
+
+            <!-- Footer / Master Key Info -->
+            <div class="key-admin-footer">
+                <div class="key-master-hint">
+                    <span>Master:</span>
+                    <code>FINN-ADMIN-2026</code>
+                </div>
+                <button class="btn btn-secondary" onclick="closeKeyAdminModal()" style="padding: 9px 18px; border-radius: 8px;">Schließen</button>
             </div>
         </div>
     </div>
@@ -5705,10 +6259,367 @@
             return list.some(m => m.id === id);
         }
 
+        // ========================================================
+        // KEY SYSTEM & ADMIN VERWALTUNG
+        // ========================================================
+        let adminMasterKey = null;
+
         document.addEventListener("DOMContentLoaded", () => {
-            getProfiles();
-            showProfileScreen();
+            checkAccessKeyOnLoad();
         });
+
+        async function checkAccessKeyOnLoad() {
+            const storedKey = localStorage.getItem('finn_access_key');
+            const lockEl = document.getElementById('key-lock-screen');
+            const inputEl = document.getElementById('access-key-input');
+
+            if (!storedKey) {
+                if (lockEl) lockEl.style.display = 'flex';
+                if (inputEl) setTimeout(() => inputEl.focus(), 200);
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/keys/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key: storedKey })
+                });
+                const data = await res.json();
+                if (data.valid) {
+                    if (lockEl) lockEl.style.display = 'none';
+                    if (data.role === 'admin' || storedKey.toUpperCase() === 'FINN-ADMIN-2026') {
+                        sessionStorage.setItem('finn_master_key', storedKey);
+                    }
+                    getProfiles();
+                    showProfileScreen();
+                } else {
+                    localStorage.removeItem('finn_access_key');
+                    if (lockEl) {
+                        lockEl.style.display = 'flex';
+                        showKeyError(data.message || 'Zugangsschlüssel ungültig oder deaktiviert');
+                        if (inputEl) inputEl.focus();
+                    }
+                }
+            } catch (err) {
+                // Offline Fallback wenn Backend kurz nicht erreichbar ist
+                if (storedKey && storedKey.length >= 8) {
+                    if (lockEl) lockEl.style.display = 'none';
+                    getProfiles();
+                    showProfileScreen();
+                } else {
+                    if (lockEl) lockEl.style.display = 'flex';
+                }
+            }
+        }
+
+        async function submitAccessKey() {
+            const inputEl = document.getElementById('access-key-input');
+            const errEl = document.getElementById('key-lock-error');
+            const btnEl = document.getElementById('key-lock-submit-btn');
+            if (!inputEl) return;
+
+            const rawKey = inputEl.value.trim().toUpperCase();
+            if (!rawKey) {
+                showKeyError('Bitte gib einen Zugangsschlüssel ein');
+                inputEl.focus();
+                return;
+            }
+
+            if (errEl) errEl.style.display = 'none';
+            if (btnEl) {
+                btnEl.disabled = true;
+                btnEl.innerHTML = 'Prüfe Schlüssel...';
+            }
+
+            try {
+                const res = await fetch('/api/keys/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key: rawKey })
+                });
+                const data = await res.json();
+                if (data.valid) {
+                    localStorage.setItem('finn_access_key', rawKey);
+                    if (data.role === 'admin' || rawKey === 'FINN-ADMIN-2026') {
+                        sessionStorage.setItem('finn_master_key', rawKey);
+                    }
+                    const lockEl = document.getElementById('key-lock-screen');
+                    if (lockEl) {
+                        lockEl.style.transition = 'opacity 0.3s ease';
+                        lockEl.style.opacity = '0';
+                        setTimeout(() => {
+                            lockEl.style.display = 'none';
+                            lockEl.style.opacity = '1';
+                        }, 300);
+                    }
+                    getProfiles();
+                    showProfileScreen();
+                    showAppToast('Zugang erfolgreich freigeschaltet!');
+                } else {
+                    showKeyError(data.message || 'Ungültiger oder gesperrter Zugangsschlüssel');
+                    inputEl.focus();
+                }
+            } catch (err) {
+                showKeyError('Server momentan nicht erreichbar. Bitte erneut versuchen.');
+            } finally {
+                if (btnEl) {
+                    btnEl.disabled = false;
+                    btnEl.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg> Zugang freischalten';
+                }
+            }
+        }
+
+        async function promptAdminLoginFromLock() {
+            const master = prompt('Master-Admin-Schlüssel eingeben (z.B. FINN-ADMIN-2026):');
+            if (!master) return;
+            const trimmed = master.trim().toUpperCase();
+            try {
+                const res = await fetch('/api/keys/admin/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ master_key: trimmed })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    sessionStorage.setItem('finn_master_key', trimmed);
+                    localStorage.setItem('finn_access_key', trimmed);
+                    const lockEl = document.getElementById('key-lock-screen');
+                    if (lockEl) lockEl.style.display = 'none';
+                    getProfiles();
+                    showProfileScreen();
+                    openKeyAdminModal();
+                } else {
+                    alert('Falscher Admin-Master-Schlüssel');
+                }
+            } catch (e) {
+                alert('Serverfehler beim Login');
+            }
+        }
+
+        async function openKeyAdminModal() {
+            closeProfileMenu();
+            let key = sessionStorage.getItem('finn_master_key');
+            if (!key) {
+                const entered = prompt('Bitte Admin-Master-Schlüssel eingeben:');
+                if (!entered) return;
+                key = entered.trim().toUpperCase();
+            }
+
+            try {
+                const res = await fetch('/api/keys/admin/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ master_key: key })
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    sessionStorage.removeItem('finn_master_key');
+                    alert('Falscher Admin-Master-Schlüssel');
+                    return;
+                }
+                adminMasterKey = key;
+                sessionStorage.setItem('finn_master_key', key);
+
+                const modal = document.getElementById('key-admin-modal');
+                if (modal) modal.style.display = 'flex';
+                fetchAdminKeys();
+            } catch (err) {
+                alert('Server nicht erreichbar');
+            }
+        }
+
+        function closeKeyAdminModal() {
+            const modal = document.getElementById('key-admin-modal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        async function fetchAdminKeys() {
+            if (!adminMasterKey) return;
+            const listEl = document.getElementById('admin-keys-list');
+            if (listEl) listEl.innerHTML = '<div style="color:#888; text-align:center; padding:15px; font-size:0.85rem;">Lade Schlüssel...</div>';
+
+            try {
+                const res = await fetch('/api/keys/admin/list', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ master_key: adminMasterKey })
+                });
+                const data = await res.json();
+                if (data.success && data.keys) {
+                    renderAdminKeys(data.keys);
+                } else {
+                    if (listEl) listEl.innerHTML = '<div style="color:#ff5252; text-align:center; padding:15px; font-size:0.85rem;">Fehler beim Laden</div>';
+                }
+            } catch (e) {
+                if (listEl) listEl.innerHTML = '<div style="color:#ff5252; text-align:center; padding:15px; font-size:0.85rem;">Serverfehler</div>';
+            }
+        }
+
+        function renderAdminKeys(keys) {
+            const listEl = document.getElementById('admin-keys-list');
+            const totalEl = document.getElementById('admin-stat-total');
+            const activeEl = document.getElementById('admin-stat-active');
+            const usesEl = document.getElementById('admin-stat-uses');
+
+            let totalUses = 0;
+            let activeCount = 0;
+            keys.forEach(k => {
+                if (k.active !== false) activeCount++;
+                totalUses += (k.uses || 0);
+            });
+
+            if (totalEl) totalEl.innerText = keys.length;
+            if (activeEl) activeEl.innerText = activeCount;
+            if (usesEl) usesEl.innerText = totalUses;
+
+            if (!listEl) return;
+            if (keys.length === 0) {
+                listEl.innerHTML = '<div style="color:#888; text-align:center; padding:20px; font-size:0.85rem;">Noch keine Schlüssel angelegt.</div>';
+                return;
+            }
+
+            listEl.innerHTML = keys.map(k => {
+                const isActive = k.active !== false;
+                const badgeClass = isActive ? 'badge-active' : 'badge-inactive';
+                const badgeText = isActive ? 'Aktiv' : 'Gesperrt';
+                const toggleBtnText = isActive ? 'Sperren' : 'Aktivieren';
+                const usesCount = k.uses || 0;
+                const lastUsedStr = k.last_used ? `Zuletzt: ${escapeKeyHtml(k.last_used)}` : 'Noch ungenutzt';
+
+                return `
+                    <div class="admin-key-card" id="key-card-${escapeKeyHtml(k.key)}">
+                        <div class="admin-key-info">
+                            <div class="admin-key-string-wrap">
+                                <span class="admin-key-string">${escapeKeyHtml(k.key)}</span>
+                                <span class="admin-key-status-badge ${badgeClass}">${badgeText}</span>
+                            </div>
+                            <div class="admin-key-meta">
+                                <span style="color:#ddd; font-weight:600;">${escapeKeyHtml(k.label || 'Standard')}</span>
+                                <span>Erstellt: ${escapeKeyHtml(k.created_at || '-')}</span>
+                                <span>${usesCount}x verwendet</span>
+                                <span>${lastUsedStr}</span>
+                            </div>
+                        </div>
+                        <div class="admin-key-actions">
+                            <button class="admin-act-btn" onclick="copyAdminKey('${escapeKeyHtml(k.key)}')" title="Schlüssel kopieren">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                                Kopieren
+                            </button>
+                            <button class="admin-act-btn" onclick="toggleAdminKey('${escapeKeyHtml(k.key)}')">
+                                ${toggleBtnText}
+                            </button>
+                            <button class="admin-act-btn admin-act-btn-del" onclick="deleteAdminKey('${escapeKeyHtml(k.key)}')" title="Löschen">
+                                Löschen
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function createAdminKey() {
+            if (!adminMasterKey) return;
+            const labelInput = document.getElementById('admin-new-label');
+            const customInput = document.getElementById('admin-new-custom');
+            const label = labelInput ? labelInput.value.trim() : '';
+            const customKey = customInput ? customInput.value.trim().toUpperCase() : '';
+
+            try {
+                const res = await fetch('/api/keys/admin/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        master_key: adminMasterKey,
+                        label: label || 'Freund',
+                        custom_key: customKey
+                    })
+                });
+                const data = await res.json();
+                if (data.success && data.key) {
+                    if (labelInput) labelInput.value = '';
+                    if (customInput) customInput.value = '';
+                    fetchAdminKeys();
+                    copyAdminKey(data.key.key);
+                    showAppToast(`Schlüssel ${data.key.key} erstellt und kopiert!`);
+                } else {
+                    alert(data.error || 'Fehler beim Erstellen des Schlüssels');
+                }
+            } catch (e) {
+                alert('Serverfehler beim Erstellen');
+            }
+        }
+
+        async function toggleAdminKey(targetKey) {
+            if (!adminMasterKey) return;
+            try {
+                const res = await fetch('/api/keys/admin/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        master_key: adminMasterKey,
+                        key: targetKey
+                    })
+                });
+                const data = await res.json();
+                if (data.success && data.keys) {
+                    renderAdminKeys(data.keys);
+                    showAppToast(`Status für ${targetKey} geändert`);
+                }
+            } catch (e) {
+                alert('Fehler beim Ändern des Status');
+            }
+        }
+
+        async function deleteAdminKey(targetKey) {
+            if (!adminMasterKey) return;
+            if (!confirm(`Möchtest du den Schlüssel "${targetKey}" wirklich dauerhaft löschen?`)) return;
+
+            try {
+                const res = await fetch('/api/keys/admin/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        master_key: adminMasterKey,
+                        key: targetKey
+                    })
+                });
+                const data = await res.json();
+                if (data.success && data.keys) {
+                    renderAdminKeys(data.keys);
+                    showAppToast(`Schlüssel ${targetKey} gelöscht`);
+                }
+            } catch (e) {
+                alert('Fehler beim Löschen');
+            }
+        }
+
+        function copyAdminKey(keyString) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(keyString).then(() => {
+                    showAppToast(`Schlüssel ${keyString} kopiert!`);
+                }).catch(() => {
+                    prompt('Schlüssel kopieren:', keyString);
+                });
+            } else {
+                prompt('Schlüssel kopieren:', keyString);
+            }
+        }
+
+        function showKeyError(msg) {
+            const errEl = document.getElementById('key-lock-error');
+            if (errEl) {
+                errEl.innerText = msg;
+                errEl.style.display = 'block';
+            }
+        }
+
+        function escapeKeyHtml(str) {
+            if (!str) return '';
+            return String(str).replace(/[&<>"']/g, function(m) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
+            });
+        }
 
         // === APP INITIALISIERUNG ===
         function initApp() {
@@ -9328,7 +10239,7 @@
 
         // --- SWIPE DOWN TO CLOSE SHEETS (HANDY & IPAD GESTE) ---
         function setupSheetTouchDismiss() {
-            const sheetIds = ['details-modal', 'profile-menu-modal', 'party-modal', 'vote-modal', 'stats-modal', 'roulette-modal', 'ios-pwa-modal', 'playlist-add-modal'];
+            const sheetIds = ['details-modal', 'profile-menu-modal', 'key-admin-modal', 'party-modal', 'vote-modal', 'stats-modal', 'roulette-modal', 'ios-pwa-modal', 'playlist-add-modal'];
             sheetIds.forEach(id => {
                 const modal = document.getElementById(id);
                 if (!modal) return;
