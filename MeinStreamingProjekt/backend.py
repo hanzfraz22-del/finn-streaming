@@ -17,7 +17,8 @@ except ImportError:
     print("Fehler: MediaForge-Module nicht gefunden. Bitte 'pip install mediaforge' ausführen.")
     sys.exit(1)
 
-app = Flask(__name__, template_folder='.')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+app = Flask(__name__, template_folder=BASE_DIR)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 def slugify(text):
