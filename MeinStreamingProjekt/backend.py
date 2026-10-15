@@ -31,6 +31,16 @@ except ImportError as e:
     except Exception as e2:
         print(f"[!] Warnung: Scraper-Module nicht geladen: {e2}")
 
+import threading
+def _warmup_scraper_gate():
+    try:
+        print("[*] Waerme Scraper-Sitzung im Hintergrund auf...")
+        megakino_search("a")
+        print("[+] Scraper-Sitzung aufgewaermt (Highspeed aktiv)!")
+    except Exception as e:
+        print(f"[*] Warmup Hinweis: {e}")
+threading.Thread(target=_warmup_scraper_gate, daemon=True).start()
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, template_folder=BASE_DIR)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
