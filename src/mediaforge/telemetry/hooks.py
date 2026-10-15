@@ -1,0 +1,315 @@
+"""Telemetry hook wiring -- four independent capture paths, because a real
+crash in this app can reach the user in four different ways:
+
+  1. sys.excepthook       -- an unhandled exception on the MAIN thread.
+  2. threading.excepthook -- an unhandled exception on any OTHER thread
+                              (Python 3.8+; sys.excepthook never fires here).
+                              This app starts ~30 background daemon threads
+                              (queue_worker, autosync_worker, upscale_worker,
+                              calendar/uptime/mediascan loops, ...) -- before
+                              this hook existed, a crash in any one of them
+                              was invisible to telemetry no matter how badly
+                              it failed, since neither sys.excepthook nor the
+                              Flask error handler below ever sees it.
+  3. the Flask error handler -- an exception that reaches Flask's request
+                              dispatch without being caught by the view.
+  4. the logging handler  -- BY FAR the most common case in practice: code
+                              that already catches its own exception and
+                              reports it via logger.error(...)/.exception(...)
+                              (a provider's scrape failing, an ffmpeg
+                              subprocess erroring out, a network timeout) and
+                              deliberately does NOT re-raise, so it would
+                              never reach any of the three hooks above. Since
+                              logger.py's get_logger() hands back one single
+                              shared "mediaforge" logger instance no matter
+                              which module calls it, attaching one handler to
+                              that one instance sees every ERROR-level log
+                              call anywhere in the codebase, with no changes
+                              needed at any individual call site.
+
+init_telemetry(app) is the single entry point called once from
+web/app.py's create_app() -- see that call site for why it's placed where
+it is (right next to the other always-on background workers).
+"""
+
+import functools
+import logging
+import sys
+import threading
+
+from ..logger import get_logger
+from . import events
+from .classify import is_local_storage_error, is_transport_failure, is_user_cancellation
+from .client import get_client
+from .sanitize import mentions_adult_provider
+
+logger = get_logger(__name__)
+
+_excepthook_installed = False
+_excepthook_lock = threading.Lock()
+_thread_excepthook_installed = False
+_thread_excepthook_lock = threading.Lock()
+_log_handler_installed = False
+_log_handler_lock = threading.Lock()
+
+
+def _report_exception(exc_type, exc_value, tb):
+    """Build (if enabled) and submit a crash_reports event. Wrapped in its
+    own try/except so a bug in the telemetry path itself can never turn one
+    crash report into a second, unrelated crash.
+
+    User-initiated cancellations are dropped before anything is built.
+    events.build_crash_event() enforces the same rule (it is the real gate --
+    every caller goes through it), but doing it here as well keeps the
+    sanitizing/traceback work out of the hot path of a cancelled queue item,
+    where several threads can unwind at once.
+    """
+    try:
+        if is_user_cancellation(exc_type, exc_value):
+            return
+        event = events.build_crash_event(exc_type, exc_value, tb)
+        if event:
+            get_client().submit(event)
+    except Exception:
+        logger.debug("[Telemetry] failed to build/submit crash event", exc_info=True)
+
+
+def install_excepthook():
+    """Wrap sys.excepthook so unhandled exceptions in the main thread are
+    reported before falling through to the previous hook (normally
+    sys.__excepthook__, i.e. the default "print traceback to stderr"
+    behaviour -- this never swallows or replaces that output).
+
+    Safe to call more than once; only the first call actually wraps the hook.
+    """
+    global _excepthook_installed
+    with _excepthook_lock:
+        if _excepthook_installed:
+            return
+        _excepthook_installed = True
+
+        previous_hook = sys.excepthook
+
+        def _telemetry_excepthook(exc_type, exc_value, tb):
+            _report_exception(exc_type, exc_value, tb)
+            previous_hook(exc_type, exc_value, tb)
+
+        sys.excepthook = _telemetry_excepthook
+        logger.debug("[Telemetry] sys.excepthook installed")
+
+
+def install_thread_excepthook():
+    """Wrap threading.excepthook (Python 3.8+) so an unhandled exception on
+    ANY background thread is reported, the same way install_excepthook()
+    covers the main thread. See the module docstring's capture path #2 --
+    without this, none of this app's daemon worker threads were ever able to
+    report a crash unless they happened to route it through logger.error()
+    (see install_log_handler() below) or re-raise all the way out.
+
+    Safe to call more than once; only the first call actually wraps the hook.
+    """
+    global _thread_excepthook_installed
+    with _thread_excepthook_lock:
+        if _thread_excepthook_installed:
+            return
+        _thread_excepthook_installed = True
+
+        previous_hook = threading.excepthook
+
+        def _telemetry_thread_excepthook(args):
+            # args is a threading.ExceptHookArgs namedtuple:
+            # (exc_type, exc_value, exc_traceback, thread)
+            _report_exception(args.exc_type, args.exc_value, args.exc_traceback)
+            previous_hook(args)
+
+        threading.excepthook = _telemetry_thread_excepthook
+        logger.debug("[Telemetry] threading.excepthook installed")
+
+
+class _TelemetryLogHandler(logging.Handler):
+    """Reports every ERROR-level-or-above record on the shared "mediaforge"
+    logger as a crash_reports event -- see the module docstring's capture
+    path #4, the one that actually matters most in practice: nearly every
+    real failure in this codebase (a provider's scrape failing, ffmpeg
+    erroring out, a timed-out request) is already caught and logged via
+    logger.error(...)/.exception(...) and deliberately not re-raised, so it
+    never reaches sys.excepthook/threading.excepthook/the Flask handler.
+
+    If the log call happened from inside the except block that caught the
+    error (the overwhelming majority of logger.error(f"...: {e}") call sites
+    in this codebase), sys.exc_info() is still populated at the time this
+    handler runs -- logging is synchronous on the same thread/call stack --
+    so a full, real traceback is available even when the call site never
+    passed exc_info=True explicitly. Only when there is truly no exception
+    object anywhere (a bare logger.error("something looks wrong") with no
+    except block at all) does this fall back to a location-only report.
+    """
+
+    def emit(self, record):
+        if record.levelno < logging.ERROR:
+            return
+        try:
+            # Cancellation check on the MESSAGE first, before touching exc_info.
+            # sys.exc_info() below is a live read of whatever exception context
+            # this thread happens to be in -- for a log line that says "download
+            # cancelled" that context IS the cancellation, and reporting it would
+            # file a crash report for a user pressing the Cancel button.
+            raw_message = record.getMessage()
+            if is_user_cancellation(message=raw_message):
+                return
+            # "The remote side never answered" -- a DNS failure, a read timeout
+            # against a source site, a refused connection. The code that logged
+            # this already handled it; it is the network being the network, not
+            # a defect. Checked on the message first for the same reason as the
+            # cancellation check above: most of these are logged as plain text
+            # with no exception object attached.
+            if is_transport_failure(message=raw_message):
+                return
+            # Same for the local disk: no write permission on a media folder or
+            # a full volume. The operator's environment, and it repeats once per
+            # queue item until they fix it. See classify.is_local_storage_error().
+            if is_local_storage_error(message=raw_message):
+                return
+            # The 18+ hard rule (sanitize.is_adult_provider) applied to the raw
+            # log text, before anything is built. Call sites log content-
+            # identifying URLs directly -- web/queue_worker.py's download
+            # watchdog logs the episode URL -- and this handler turns EVERY
+            # ERROR record into a crash_reports event, i.e. a stage-1 channel a
+            # user can enable without consenting to any watch data. The event
+            # builders' provider guard never sees this path (there is no
+            # provider argument here), so the check has to happen on the message
+            # itself. Both branches below are covered: the exc_info branch
+            # reports the exception raised in the same context this line
+            # describes.
+            if mentions_adult_provider(raw_message):
+                return
+            exc_info = record.exc_info or sys.exc_info()
+            if exc_info and exc_info[0] is not None and is_user_cancellation(exc_info[0], exc_info[1]):
+                return
+            if exc_info and exc_info[0] is not None and is_transport_failure(exc_info[0], exc_info[1]):
+                return
+            if exc_info and exc_info[0] is not None and is_local_storage_error(exc_info[0], exc_info[1]):
+                return
+            if exc_info and exc_info[0] is not None:
+                event = events.build_crash_event(*exc_info)
+            else:
+                event = events.build_log_error_event(record)
+            if event:
+                get_client().submit(event)
+        except Exception:
+            pass  # a bug in telemetry must never take down logging itself
+
+
+def install_log_handler():
+    """Attach _TelemetryLogHandler to the one shared "mediaforge" logger
+    instance (logger.py's get_logger() -- singleton regardless of which
+    module calls it, propagate=False so this is the only place records from
+    anywhere in the app pass through). Safe to call more than once; only the
+    first call actually attaches the handler.
+    """
+    global _log_handler_installed
+    with _log_handler_lock:
+        if _log_handler_installed:
+            return
+        _log_handler_installed = True
+        get_logger(__name__).addHandler(_TelemetryLogHandler())
+        logger.debug("[Telemetry] log handler installed")
+
+
+def emit_system_info():
+    """Submit a fresh system_info event (if the user has it enabled).
+
+    Called at startup and again whenever an install-level field inside that
+    event changes at runtime -- in practice the applied theme pack, which
+    otherwise sat unreported on the server until the next restart: the event
+    is built once per process and a theme is switched far more often than the
+    app is restarted.
+
+    Off-thread and fully guarded, for the same reason the startup emit is:
+    building the event runs sysinfo.collect(), whose (cached) first run may
+    spawn ffmpeg/nvidia-smi probes. No request should ever wait on that, and
+    a telemetry hiccup must never fail the setting the user just saved.
+    """
+    def _run():
+        try:
+            event = events.build_system_info_event()
+            if event:
+                get_client().submit(event)
+        except Exception:
+            logger.debug("[Telemetry] system_info event failed", exc_info=True)
+
+    threading.Thread(
+        target=_run, daemon=True, name="telemetry-sysinfo"
+    ).start()
+
+
+def register_error_handler(app):
+    """Register a Flask app.errorhandler(Exception) that reports the crash
+    and then re-raises, handing back to Flask's own normal exception
+    handling (500 page / interactive debugger in debug mode) -- this must
+    never swallow the error, only observe it (TELEMETRY_IMPLEMENTATION_PLAN.md
+    §3.6: "meldet den Fehler und gibt danach den normalen 500-Handler
+    zurück -- kein Verschlucken von Fehlern").
+
+    Used by: init_telemetry(app), called once from create_app().
+    """
+    from werkzeug.exceptions import HTTPException
+
+    @app.errorhandler(Exception)
+    def _telemetry_flask_error_handler(e):
+        # Exception's MRO covers HTTPException too (404, 403, 405, ...) -- those are
+        # Flask/Werkzeug doing their normal job (a browser requesting /favicon.ico on an
+        # app that doesn't serve one, a bad method on a route, ...), not application
+        # crashes. Reporting them would flood crash_reports with routing noise, and
+        # re-raising one here breaks Flask's own default HTTPException handling and
+        # turns a harmless 404 into a logged 500 (this is the standard Flask "generic
+        # exception handler" pitfall -- see Flask's docs on errorhandler(Exception)).
+        # Returning the exception itself lets Flask render its normal error response.
+        if isinstance(e, HTTPException):
+            return e
+        exc_type, exc_value, tb = type(e), e, e.__traceback__
+        _report_exception(exc_type, exc_value, tb)
+        raise e
+
+
+def telemetry_guarded(func):
+    """Decorator for background worker-thread bodies (queue_worker,
+    autosync_worker, upscale_worker, ...) that run entirely outside Flask
+    request handling and therefore never reach the errorhandler above.
+    Reports any exception the wrapped function raises, then re-raises it
+    unchanged so the worker's own existing error handling/logging keeps
+    working exactly as before -- this decorator only adds a report, it
+    changes no control flow.
+    """
+
+    @functools.wraps(func)
+    def _wrapped(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            _report_exception(type(e), e, e.__traceback__)
+            raise
+
+    return _wrapped
+
+
+def init_telemetry(app):
+    """Install all four capture paths (see module docstring), register the
+    Flask error handler, and start the background TelemetryClient worker
+    thread. Called once from create_app() -- see web/app.py, placed next to
+    the other always-on background workers (devinfos poller, update checker,
+    ...) started there.
+    """
+    install_excepthook()
+    install_thread_excepthook()
+    install_log_handler()
+    register_error_handler(app)
+    get_client().start()
+
+    # A one-off system_info event on startup (if the user has enabled it) so
+    # the devInfo server sees an install "check in" even on runs with no
+    # crash at all -- not gated behind any particular route/request.
+    # emit_system_info() does it off-thread; see its docstring for why.
+    emit_system_info()
+
+    logger.debug("[Telemetry] initialized")

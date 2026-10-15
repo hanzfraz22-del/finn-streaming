@@ -1,0 +1,359 @@
+import sys
+import os
+import re
+import queue
+import concurrent.futures
+from flask import Flask, request, jsonify, render_template
+
+# Fallback für lokales Ausführen
+if os.path.exists(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))):
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+
+try:
+    from mediaforge.providers import resolve_provider
+    from mediaforge.search import megakino_search, query_s_to
+    from mediaforge.search import query as aniworld_search
+except ImportError:
+    print("Fehler: MediaForge-Module nicht gefunden. Bitte 'pip install mediaforge' ausführen.")
+    sys.exit(1)
+
+app = Flask(__name__, template_folder='.')
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+
+def slugify(text):
+    if not text: return ""
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9äöüß]+', '-', text)
+    text = text.replace('ä', 'ae').replace('ö', 'oe').replace('ü', 'ue').replace('ß', 'ss')
+    return text.strip('-')
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/manifest.json')
+def manifest():
+    manifest_data = {
+        "name": "Finn Streaming",
+        "short_name": "FinnStream",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#000000",
+        "theme_color": "#E50914",
+        "icons": [{"src": "https://upload.wikimedia.org/wikipedia/commons/0/08/Netflix_2015_logo.svg", "sizes": "192x192", "type": "image/svg+xml"}]
+    }
+    return jsonify(manifest_data)
+
+import concurrent.futures
+
+def try_url(url, title):
+    try:
+        print(f"[*] Versuche URL: {url}")
+        provider = resolve_provider(url)
+        if not provider or not provider.episode_cls: return None
+        
+        # Teste verfügbare Provider (bevorzugt VOE, dann Vidoza, Streamtape etc.)
+        providers_to_test = ["VOE", "Vidoza", "Streamtape", "Doodstream"]
+        languages_to_test = ["German", "Deutsch", "Ger-Dub", "English", "Englisch"]
+
+        try:
+            probe_ep = provider.episode_cls(url=url)
+            if hasattr(probe_ep, 'available_providers') and probe_ep.available_providers:
+                providers_to_test = [p for p in probe_ep.available_providers if p == "VOE"] + [p for p in probe_ep.available_providers if p != "VOE"]
+            if hasattr(probe_ep, 'languages') and probe_ep.languages:
+                languages_to_test = [l for l in languages_to_test if l in probe_ep.languages] or probe_ep.languages
+        except:
+            pass
+
+        for lang in languages_to_test:
+            for p_name in providers_to_test:
+                try:
+                    ep = provider.episode_cls(url=url, selected_language=lang, selected_provider=p_name)
+                    stream = ep.stream_url
+                    if stream:
+                        return {
+                            "original_url": url,
+                            "stream_url": stream,
+                            "serie": title,
+                            "provider": p_name,
+                            "language": lang,
+                            "mode": "direct"
+                        }
+                except:
+                    continue
+    except: pass
+    return None
+
+import queue
+
+@app.route('/api/smart_play')
+def smart_play():
+    title = request.args.get('title', '')
+    original_title = request.args.get('original_title', '')
+    media_type = request.args.get('type', 'movie')
+    season = request.args.get('season', '1')
+    episode = request.args.get('episode', '1')
+    tmdb_id = request.args.get('tmdb_id', '')
+
+    if not title: return jsonify({"error": "Kein Titel übergeben"}), 400
+
+    q = queue.Queue()
+    
+    # Intelligente Varianten generieren
+    raw_titles = [title, original_title]
+    for t in list(raw_titles):
+        if not t: continue
+        if ':' in t:
+            raw_titles.append(t.split(':')[0].strip())
+            raw_titles.append(t.replace(':', ' ').strip())
+        if '-' in t:
+            raw_titles.append(t.split('-')[0].strip())
+            raw_titles.append(t.replace('-', ' ').strip())
+        for art in ['The ', 'Der ', 'Die ', 'Das ', 'A ', 'Ein ', 'Eine ']:
+            if t.lower().startswith(art.lower()):
+                raw_titles.append(t[len(art):].strip())
+
+    slugs = list(set([slugify(t) for t in raw_titles if t and slugify(t)]))
+    urls_to_try = []
+    for slug in slugs:
+        if media_type == 'tv':
+            urls_to_try.append(f"https://s.to/serie/stream/{slug}/staffel-{season}/episode-{episode}")
+        else:
+            urls_to_try.append(f"https://filmpalast.to/stream/{slug}")
+            urls_to_try.append(f"https://filmpalast.to/stream/{slug}-1")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        def check_url_and_push(url):
+            res = try_url(url, title)
+            if res: q.put(res)
+            
+        for u in urls_to_try: executor.submit(check_url_and_push, u)
+            
+        def api_search_worker(func, q_str, prefix, suffix):
+            if not q_str: return
+            try:
+                res = func(q_str)
+                if res:
+                    for r in res:
+                        if 'link' in r: executor.submit(check_url_and_push, f"{prefix}{r['link']}{suffix}")
+                        elif 'url' in r: executor.submit(check_url_and_push, r['url'])
+            except: pass
+
+        unique_queries = list(set([t for t in raw_titles if t and len(t) > 2]))[:6]
+
+        if media_type == 'tv':
+            for q_term in unique_queries:
+                executor.submit(api_search_worker, query_s_to, q_term, "https://s.to", f"/staffel-{season}/episode-{episode}")
+                executor.submit(api_search_worker, aniworld_search, q_term, "https://aniworld.to", f"/staffel-{season}/episode-{episode}")
+        else:
+            for q_term in unique_queries:
+                executor.submit(api_search_worker, megakino_search, q_term, "", "")
+            
+        try:
+            result = q.get(timeout=9)
+            if result:
+                result["mode"] = "direct"
+                return jsonify(result)
+        except queue.Empty: pass
+
+    # FALLBACK: Wenn kein deutscher Hoster-Stream gefunden wurde, aber eine TMDB-ID existiert
+    if tmdb_id:
+        if media_type == 'tv':
+            fallback_embed = f"https://vidlink.pro/tv/{tmdb_id}/{season}/{episode}"
+            alt_embed = f"https://vidsrc.cc/v2/embed/tv/{tmdb_id}/{season}/{episode}"
+        else:
+            fallback_embed = f"https://vidlink.pro/movie/{tmdb_id}"
+            alt_embed = f"https://vidsrc.cc/v2/embed/movie/{tmdb_id}"
+        
+        return jsonify({
+            "mode": "embed",
+            "fallback": True,
+            "embed_url": fallback_embed,
+            "alt_embed_url": alt_embed,
+            "title": title,
+            "message": "Stream auf Backup-Server geladen"
+        }), 200
+
+    return jsonify({"error": "Konnte keinen funktionierenden Stream finden."}), 404
+
+
+@app.route('/api/get_video')
+def get_video():
+    """Fallback für direkte URL Eingaben"""
+    url = request.args.get('url')
+    if not url: return jsonify({"error": "Bitte eine URL übergeben"}), 400
+    try:
+        provider = resolve_provider(url)
+        ep = provider.episode_cls(url=url, selected_language="German", selected_provider="VOE")
+        stream_url = ep.stream_url
+        if not stream_url: return jsonify({"error": "Konnte keinen Stream-Link finden."}), 400
+        return jsonify({"original_url": url, "stream_url": stream_url})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- WATCH PARTY (GEMEINSAM SCHAUEN) SYSTEM ---
+import time
+import random
+import string
+
+watch_rooms = {}
+
+def cleanup_old_rooms():
+    now = time.time()
+    to_delete = [rid for rid, r in watch_rooms.items() if now - r.get('last_updated', now) > 18000]
+    for rid in to_delete:
+        watch_rooms.pop(rid, None)
+
+@app.route('/api/party/create', methods=['POST'])
+def party_create():
+    cleanup_old_rooms()
+    data = request.get_json(force=True, silent=True) or {}
+    room_id = "FINN-" + "".join(random.choices(string.digits, k=3))
+    while room_id in watch_rooms:
+        room_id = "FINN-" + "".join(random.choices(string.digits, k=3))
+
+    watch_rooms[room_id] = {
+        'room_id': room_id,
+        'movie': data.get('movie', {}),
+        'host': data.get('host', 'Finn'),
+        'state': 'playing',
+        'current_time': float(data.get('time', 0)),
+        'season': int(data.get('season', 1)),
+        'episode': int(data.get('episode', 1)),
+        'last_updated': time.time(),
+        'members': 1
+    }
+    return jsonify({'success': True, 'room': watch_rooms[room_id]})
+
+@app.route('/api/party/status', methods=['GET'])
+def party_status():
+    cleanup_old_rooms()
+    room_id = request.args.get('room_id', '').strip().upper()
+    room = watch_rooms.get(room_id)
+    if not room:
+        return jsonify({'success': False, 'error': 'Raum nicht gefunden'}), 404
+    return jsonify({'success': True, 'room': room})
+
+@app.route('/api/party/update', methods=['POST'])
+def party_update():
+    data = request.get_json(force=True, silent=True) or {}
+    room_id = data.get('room_id', '').strip().upper()
+    room = watch_rooms.get(room_id)
+    if not room:
+        return jsonify({'success': False, 'error': 'Raum nicht gefunden'}), 404
+
+    if 'action' in data:
+        room['state'] = 'playing' if data['action'] == 'play' else 'paused'
+    if 'time' in data:
+        room['current_time'] = float(data['time'])
+    if 'season' in data:
+        room['season'] = int(data['season'])
+    if 'episode' in data:
+        room['episode'] = int(data['episode'])
+    if 'movie' in data and data['movie']:
+        room['movie'] = data['movie']
+
+    room['last_updated'] = time.time()
+    return jsonify({'success': True, 'room': room})
+
+@app.route('/api/tunnel_info')
+def tunnel_info():
+    tunnel_file = os.path.join(os.path.dirname(__file__), 'tunnel_url.txt')
+    url = None
+    if os.path.exists(tunnel_file):
+        try:
+            with open(tunnel_file, 'r', encoding='utf-8') as f:
+                url = f.read().strip()
+        except Exception:
+            pass
+    return jsonify({'tunnel_url': url})
+
+voting_sessions = {}
+
+def cleanup_old_votes():
+    now = time.time()
+    to_delete = [vid for vid, v in voting_sessions.items() if now - v.get('created_at', now) > 86400]
+    for vid in to_delete:
+        voting_sessions.pop(vid, None)
+
+@app.route('/api/vote/create', methods=['POST'])
+def vote_create():
+    cleanup_old_votes()
+    data = request.get_json(force=True, silent=True) or {}
+    vote_id = "VOTE-" + "".join(random.choices(string.digits, k=3))
+    while vote_id in voting_sessions:
+        vote_id = "VOTE-" + "".join(random.choices(string.digits, k=3))
+
+    movies_raw = data.get('movies', [])
+    movies_list = []
+    for m in movies_raw:
+        movies_list.append({
+            'movie': m,
+            'upvotes': 0,
+            'downvotes': 0
+        })
+
+    voting_sessions[vote_id] = {
+        'vote_id': vote_id,
+        'title': data.get('title', 'Was schauen wir heute?'),
+        'host': data.get('host', 'Finn'),
+        'movies': movies_list,
+        'created_at': time.time(),
+        'total_voters': 0
+    }
+    return jsonify({'success': True, 'session': voting_sessions[vote_id]})
+
+@app.route('/api/vote/status', methods=['GET'])
+def vote_status():
+    cleanup_old_votes()
+    vote_id = request.args.get('vote_id', '').strip().upper()
+    session = voting_sessions.get(vote_id)
+    if not session:
+        return jsonify({'success': False, 'error': 'Abstimmung nicht gefunden'}), 404
+    return jsonify({'success': True, 'session': session})
+
+@app.route('/api/vote/cast', methods=['POST'])
+def vote_cast():
+    data = request.get_json(force=True, silent=True) or {}
+    vote_id = data.get('vote_id', '').strip().upper()
+    movie_id = data.get('movie_id')
+    choice = data.get('choice', 'up')
+
+    session = voting_sessions.get(vote_id)
+    if not session:
+        return jsonify({'success': False, 'error': 'Abstimmung nicht gefunden'}), 404
+
+    found = False
+    for item in session['movies']:
+        if str(item['movie'].get('id')) == str(movie_id):
+            if choice == 'up':
+                item['upvotes'] += 1
+            else:
+                item['downvotes'] += 1
+            found = True
+            break
+
+    if found:
+        session['total_voters'] += 1
+
+    return jsonify({'success': True, 'session': session})
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    print("=========================================================")
+    print("Starte DEIN EIGENES STREAMING PROJEKT (Smart Backend)")
+    print(f"Server laeuft auf Port: {port}")
+    print("=========================================================")
+    
+    # Pruefe ob Waitress verfuegbar ist (robuster Produktions-Server)
+    use_waitress = os.environ.get('USE_WAITRESS', '1') == '1'
+    if use_waitress:
+        try:
+            from waitress import serve
+            print(f"[*] Starte stabilen Produktions-Server (Waitress) auf Port {port}...")
+            serve(app, host='0.0.0.0', port=port, threads=12)
+        except ImportError:
+            print("[*] Starte Standard Flask-Server...")
+            app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    else:
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)

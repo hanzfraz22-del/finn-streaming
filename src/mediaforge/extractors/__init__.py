@@ -1,0 +1,321 @@
+"""Extractor auto-discovery and dispatch registry.
+
+Every module under ``extractors/provider/`` implements one hoster (VOE,
+Filemoon, Vidoza, ...) and exposes plain functions named
+``get_direct_link_from_<provider>``, ``get_preview_image_link_from_<provider>``
+and/or ``get_subtitles_from_<provider>``.
+On import, this package scans all modules in ``provider/`` and collects every
+such function into the ``provider_functions`` dict, keyed by function name.
+
+Model code (e.g. episode/movie classes) never imports a specific provider
+module directly for this lookup; instead it picks the hoster the site
+offered (e.g. "VOE", "Vidmoly") and looks up
+``provider_functions[f"get_direct_link_from_{provider.lower()}"]`` to get the
+right extractor function at runtime. This lets new provider modules be added
+without touching any dispatch code.
+
+A third-party module cannot drop a file into this package (it lives inside
+MediaForge's own source tree, not the external ``~/.mediaforge/thirdparties/``
+directory everything else discovers from) -- instead it calls
+:func:`register_hoster` from its own ``register(app)`` to add a hoster the
+same auto-discovered modules above end up in: ``provider_functions``,
+``HOST_PROVIDER_MAP`` and ``config.SUPPORTED_PROVIDERS`` all gain the new
+entry live, no restart needed for search text URLs. Live playback also picks
+it up immediately because ``web/runtime_state.py``'s ``WORKING_PROVIDERS`` is
+refreshed as part of registration (see :func:`register_hoster`).
+"""
+import importlib
+import inspect
+import pkgutil
+from pathlib import Path
+from urllib.parse import urlparse
+
+from ..logger import get_logger
+
+logger = get_logger(__name__)
+
+provider_functions = {}
+
+provider_path = Path(__path__[0]) / "provider"
+
+for _, module_name, _ in pkgutil.iter_modules([str(provider_path)]):
+    try:
+        mod = importlib.import_module(f".provider.{module_name}", __name__)
+        for name, obj in inspect.getmembers(mod, inspect.isfunction):
+            if name.startswith((
+                    "get_direct_link_from_",
+                    "get_preview_image_link_from_",
+                    "get_subtitles_from_",
+            )):
+                provider_functions[name] = obj
+    except Exception as e:
+        logger.warning(f"Failed to load provider module '{module_name}': {e}")
+
+# Example usage:
+# provider_functions["get_direct_link_from_voe"](url)
+#
+# Used by: models/s_to/episode.py, models/filmpalast_to/episode.py,
+# models/aniworld_to/episode.py, models/megakino_to/episode.py and
+# models/megakino_to/movie.py (all via get_direct_link_for() below, which is
+# keyed on the resolved host with the episode/movie's selected_provider label
+# only as a fallback).
+
+
+# Map a resolved hoster domain (netloc) to the provider key whose extractor
+# function handles it. Streaming sites frequently label an embed with one
+# hoster name while the /redirect actually lands on a *different* hoster's
+# domain (mirrored labels: an AniWorld "Vidara"/"Vidavaca" entry often points
+# straight at a voe.sx embed). Dispatching the extractor by the resolved host
+# instead of the site's label makes such mislabeled links resolve correctly.
+# Matched against the URL netloc by exact or subdomain-suffix comparison.
+HOST_PROVIDER_MAP = {
+    "voe.sx": "voe",
+    "vidoza.net": "vidoza", "vidoza.to": "vidoza",
+    "vidmoly.to": "vidmoly", "vidmoly.net": "vidmoly", "vidmoly.biz": "vidmoly",
+    "filemoon.sx": "filemoon", "filemoon.to": "filemoon",
+    "streamtape.com": "streamtape", "streamtape.to": "streamtape",
+    "doodstream.com": "doodstream", "dood.to": "doodstream",
+    "dood.watch": "doodstream", "dood.li": "doodstream",
+    "luluvdo.com": "luluvdo",
+    "vidara.to": "vidara", "vidara.so": "vidara",
+    "vidavaca.net": "vidavaca",
+    "veev.to": "veev",
+    "megaplay.buzz": "megaplay",
+    # 9anime.or.at's own player. Keyed on the registrable domain rather than
+    # the exact host, because the site addresses it as my.1anime.site today
+    # and the suffix match covers a sibling subdomain without a code change.
+    # Mapping it here is what makes it reachable at all: 9anime labels EVERY
+    # server "HD", so the label identifies nothing and only the resolved host
+    # can pick the extractor.
+    "1anime.site": "oneanime",
+    "echovideo.to": "echovideo", "echovideo.ru": "echovideo",
+}
+
+
+def provider_for_url(url):
+    """Return the provider key (extractor suffix, e.g. "voe") that owns *url*'s
+    host, or None when the host isn't a known provider domain.
+
+    Lets callers pick the right extractor by the actually-resolved host rather
+    than the (possibly wrong) hoster label the source site attached to the link
+    -- see HOST_PROVIDER_MAP for why the two disagree."""
+    try:
+        host = urlparse(url or "").netloc.lower()
+    except Exception:
+        return None
+    if not host:
+        return None
+    for netloc, provider in HOST_PROVIDER_MAP.items():
+        if host == netloc or host.endswith("." + netloc):
+            return provider
+    return None
+
+
+def canonical_provider_name(provider_key):
+    """The display spelling of a provider key, e.g. ``"voe"`` -> ``"VOE"``.
+
+    :func:`provider_for_url` answers in the *extractor* namespace, which is
+    lower-case because it is a module-name suffix. Everything user-facing --
+    ``config.SUPPORTED_PROVIDERS``, ``PROVIDER_HEADERS_D``/``_W``, the provider
+    dropdown, the queue's "provider" column -- uses the display spelling. The
+    two were being mixed: ``PROVIDER_HEADERS_D.get("voe")`` is None while
+    ``.get("VOE")`` is the header set, so a lookup that went through
+    provider_for_url() silently produced NO headers at all.
+
+    Returns *provider_key* unchanged when nothing matches, so an unknown or
+    already-canonical name passes through untouched.
+    """
+    if not provider_key:
+        return provider_key
+    try:
+        from ..config import SUPPORTED_PROVIDERS
+    except Exception:
+        return provider_key
+    key = str(provider_key).lower()
+    for name in SUPPORTED_PROVIDERS:
+        if name.lower() == key:
+            return name
+    return provider_key
+
+
+def get_direct_link_for(url, fallback_provider=None):
+    """Resolve the direct stream URL for *url*, choosing the extractor by the
+    resolved host first and only falling back to *fallback_provider* (the site's
+    hoster label) when the host is unknown.
+
+    Raises ValueError with the same "not yet implemented" message the per-model
+    dispatch used before, so existing error handling keeps working."""
+    provider = provider_for_url(url) or (fallback_provider or "").lower()
+    fn = provider_functions.get(f"get_direct_link_from_{provider}")
+    if fn is None:
+        raise ValueError(f"The provider '{provider}' is not yet implemented.")
+    return fn(url)
+
+
+def get_subtitles_for(url, fallback_provider=None, headers=None):
+    """Subtitle tracks the hoster's player offers for *url*, as
+    ``[{"url", "lang", "label"}]``.
+
+    Same provider dispatch as get_direct_link_for. Returns an empty list for a
+    provider that has no subtitle support, an unknown host, or any failure --
+    subtitles are a convenience and must never break a download.
+
+    These tracks are not in the HLS master playlist (which is why yt-dlp alone
+    reports none): the hosters load them out-of-band from the player config,
+    so each extractor re-reads that config and hands the discarded part to
+    extractors.subtitle_parse.
+    """
+    provider = provider_for_url(url) or (fallback_provider or "").lower()
+    fn = provider_functions.get(f"get_subtitles_from_{provider}")
+    if fn is None:
+        return []
+    try:
+        # Some extractors take a headers kwarg, others do not -- a provider
+        # without one must not turn into a TypeError that loses the tracks.
+        try:
+            tracks = fn(url, headers=headers) if headers is not None else fn(url)
+        except TypeError:
+            tracks = fn(url)
+        return list(tracks) if tracks else []
+    except Exception as exc:
+        logger.debug("[Extractors] Subtitle lookup failed for provider '%s': %s", provider, exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Third-party hosters
+# ---------------------------------------------------------------------------
+_EXTRA_HOSTERS = {}  # item_id -> provider key (lowercase)
+
+
+def register_hoster(
+    item_id,
+    name,
+    get_direct_link=None,
+    get_preview_image=None,
+    get_subtitles=None,
+    headers=None,
+    host_patterns=(),
+) -> None:
+    """Register an additional video-hoster extractor from a third-party
+    module's ``register(app)`` -- the external-module counterpart of dropping
+    a file into ``extractors/provider/`` (see the module docstring above).
+
+    - ``item_id``: the id already passed to ``register_thirdparty()`` for this
+      module's entry, so ``web/thirdparties/registry.py``'s
+      ``unregister_module()`` can undo this on disable/uninstall.
+    - ``name``: the hoster's display name, e.g. ``"MyHoster"`` -- becomes the
+      ``provider_functions`` key suffix (lower-cased) and the entry added to
+      ``config.SUPPORTED_PROVIDERS``. Must not collide with an existing name.
+    - ``get_direct_link(url) -> str``: same contract as a
+      ``get_direct_link_from_<provider>`` function in ``extractors/provider/``.
+      Optional if this hoster only needs preview images (unusual, but not
+      disallowed).
+    - ``get_preview_image(url) -> str | None``: optional, same contract as
+      ``get_preview_image_link_from_<provider>``.
+    - ``get_subtitles(url) -> list``: optional, same contract as
+      ``get_subtitles_from_<provider>`` -- returns the subtitle tracks the
+      hoster's player offers as ``[{"url", "lang", "label"}]``. Hosters keep
+      these out of the HLS manifest and only expose them in the player
+      config, so a hoster that serves subtitles has to report them here for
+      them to be muxed in. Should return ``[]`` rather than raise on failure;
+      :func:`get_subtitles_for` swallows exceptions either way.
+    - ``headers``: optional dict merged into both ``config.PROVIDER_HEADERS_D``
+      and ``config.PROVIDER_HEADERS_W`` under ``name`` (only if not already
+      present -- never overwrites a built-in hoster's headers).
+    - ``host_patterns``: optional iterable of domains (e.g.
+      ``("myhoster.com", "myhoster.cc")``) merged into ``HOST_PROVIDER_MAP``,
+      so :func:`provider_for_url` recognizes a resolved/mirrored embed URL as
+      this hoster even when the site's own label says something else.
+
+    Live effect: ``provider_functions`` and ``HOST_PROVIDER_MAP`` are plain
+    dict lookups, read fresh on every call, so both take effect immediately.
+    ``config.SUPPORTED_PROVIDERS`` is mutated in place (``list.append``, never
+    reassigned) for the same reason -- see that list's definition in
+    ``config.py``. ``web/runtime_state.py``'s ``WORKING_PROVIDERS`` (what the
+    UI actually offers users) is refreshed as part of this call too, via a
+    lazy import (avoids a load-time circular import between this package and
+    ``web/runtime_state.py``, which itself imports ``provider_functions`` from
+    here).
+    """
+    if get_direct_link is None and get_preview_image is None and get_subtitles is None:
+        raise ValueError(
+            "register_hoster: need at least one of "
+            "get_direct_link/get_preview_image/get_subtitles"
+        )
+    key = name.lower()
+    from .. import config as _config
+
+    existing = {p.lower() for p in _config.SUPPORTED_PROVIDERS} | set(_EXTRA_HOSTERS.values())
+    if key in existing:
+        raise ValueError(f"register_hoster: name already registered: {name!r}")
+
+    if get_direct_link is not None:
+        provider_functions[f"get_direct_link_from_{key}"] = get_direct_link
+    if get_preview_image is not None:
+        provider_functions[f"get_preview_image_link_from_{key}"] = get_preview_image
+    if get_subtitles is not None:
+        provider_functions[f"get_subtitles_from_{key}"] = get_subtitles
+    for host in host_patterns:
+        HOST_PROVIDER_MAP[host.lower()] = key
+    if headers:
+        _config.PROVIDER_HEADERS_D.setdefault(name, dict(headers))
+        _config.PROVIDER_HEADERS_W.setdefault(name, dict(headers))
+
+    _config.SUPPORTED_PROVIDERS.append(name)
+    _EXTRA_HOSTERS[item_id] = key
+
+    try:
+        from ..web import runtime_state as _runtime_state
+        _runtime_state.refresh_working_providers()
+    except Exception:
+        logger.exception("[Extractors] Failed to refresh WORKING_PROVIDERS after registering hoster '%s'", name)
+
+    logger.info("[Extractors] Registered third-party hoster: %s (%s)", name, item_id)
+
+
+def thirdparty_hoster_ids() -> set:
+    """item_ids that currently own a third-party hoster.
+
+    Read-only counterpart of :func:`unregister_hoster` -- the Modulmanager
+    uses it to report what a module registered without reaching into this
+    module's private dict.
+    """
+    return set(_EXTRA_HOSTERS)
+
+
+def hoster_owner(name) -> str | None:
+    """Which module registered this hoster, or None for a built-in one.
+
+    The reverse of :data:`_EXTRA_HOSTERS`, so a caller can ask
+    ``thirdparties.registry.item_enabled()`` whether a hoster should be offered
+    right now. A module's ``register(app)`` runs even while the module is
+    switched off (see item_enabled's docstring for why the gate sits at the
+    point of use), so the registry alone never answers that question.
+    """
+    key = str(name or "").lower()
+    for item_id, registered in _EXTRA_HOSTERS.items():
+        if registered == key:
+            return item_id
+    return None
+
+
+def unregister_hoster(item_id) -> None:
+    """Drop a hoster previously added via :func:`register_hoster`. Leaves
+    ``config.SUPPORTED_PROVIDERS``/``HOST_PROVIDER_MAP`` entries in place
+    (harmless once ``provider_functions`` no longer resolves them -- callers
+    already treat an unresolvable provider as "not implemented") but removes
+    it from ``provider_functions`` and refreshes ``WORKING_PROVIDERS`` so it
+    stops being offered."""
+    key = _EXTRA_HOSTERS.pop(item_id, None)
+    if key is None:
+        return
+    provider_functions.pop(f"get_direct_link_from_{key}", None)
+    provider_functions.pop(f"get_preview_image_link_from_{key}", None)
+    provider_functions.pop(f"get_subtitles_from_{key}", None)
+    try:
+        from ..web import runtime_state as _runtime_state
+        _runtime_state.refresh_working_providers()
+    except Exception:
+        logger.exception("[Extractors] Failed to refresh WORKING_PROVIDERS after unregistering hoster '%s'", item_id)
+    logger.info("[Extractors] Unregistered third-party hoster: %s", item_id)

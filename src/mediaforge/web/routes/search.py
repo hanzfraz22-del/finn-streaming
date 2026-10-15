@@ -1,0 +1,2342 @@
+"""Search + TMDB discovery routes.
+
+Extracted from create_app as a plain route-registration function
+(no Flask blueprint: endpoint names stay bare so url_for() keeps working).
+"""
+
+from ...config import LANG_LABELS
+from ...config import MEDIAFORGE_CONFIG_DIR
+from ...config import check_redirect_available
+from ...config import probe_redirect
+from ...providers import resolve_provider
+from ...providers import movie_only_provider_for
+from ...providers import series_url_for
+from ...search import hanime_search
+from ...search import megakino_search
+from ...search import filmo_search
+from ...search import nineanime_search
+from ...search import aniwaves_search
+from ...search import query as aniworld_query
+from ...search import query_s_to
+from ...search import get_search_source
+from ...search import drop_unresolvable
+from ..source_policy import is_adult_source as _is_adult_source
+from ..source_policy import search_sources
+from ..db import clear_tmdb_cache
+from .browse import _browse_cache
+from .browse import _prefetch_cycle
+from ..db import get_custom_paths
+from ..db import get_setting
+from ...languages import label_for_pair
+# One shared rule for "does this folder hold this title?". It used to be an
+# inline folder.name.lower().startswith(title) in each of the three branches
+# below, which is why "already downloaded" depended on WHICH provider you
+# arrived from -- see titles_match()'s docstring. folder_holds_title() adds the
+# alias index on top, which is what catches a provider that calls the same show
+# by a different name entirely (web/library_aliases.py).
+from ..library_aliases import alias_index as _alias_index
+from ..library_aliases import folder_holds_title as _folder_holds
+from ..lang_folders import LANG_FOLDERS
+from ..episode_marker import EPISODE_MARKER_RE
+from ..queue_worker import _hanime_enabled
+from ..queue_worker import _is_hanime_url
+from ..queue_worker import _is_megakino_url
+from ..queue_worker import _megakino_is_series
+from ..queue_worker import _megakino_watch
+from ..queue_worker import _is_filmo_url
+from ..queue_worker import _is_nineanime_url
+from ..queue_worker import _nineanime_enabled
+from ..queue_worker import _is_aniwaves_url
+from ..queue_worker import _aniwaves_enabled
+from ..runtime_state import WORKING_PROVIDERS
+from .. import runtime_state as _runtime_state
+from ..runtime_state import _SERIES_LINK_PATTERN
+from ..runtime_state import _STO_SERIES_LINK_PATTERN
+from flask import jsonify
+from flask import render_template
+from flask import request
+from flask import session
+from html import unescape as _html_unescape
+import json
+import os
+import re
+import threading
+import time
+from ..tmdb_cache import _tmdb_lookup_cached
+from ..tmdb_cache import _tmdb_rl
+from .image_proxy import _poster_proxy
+from ..cineinfo import enrich as _cineinfo_enrich
+from ..cineinfo import QueryContext as _CineInfoCtx
+from ...logger import get_logger
+
+
+logger = get_logger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Advanced Search / TMDB Discover — shared helpers
+#  (rework July 2026: parameter whitelist, error sanitising, response cache)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Reference data (genres, watch regions/providers, languages, networks) changes
+# a few times per year but used to be re-fetched from TMDB on *every* page load
+# of the Advanced Search — the genre dropdown alone cost four upstream calls per
+# visit. Everything is cached process-wide instead; discover result pages get a
+# much shorter TTL because they are live user queries.
+_TMDB_REF_TTL = 6 * 60 * 60        # 6 h  — genres / regions / providers / languages / networks
+_TMDB_DISCOVER_TTL = 5 * 60        # 5 min — discover result pages
+_TMDB_SEASONS_TTL = 6 * 60 * 60    # 6 h  — season counts per TV id
+# Hard caps: a crafted query flood must not grow either cache unbounded.
+# Two separate buckets on purpose — the season counts are one entry per TV id
+# (~20 per result page), so a few minutes of paging would otherwise evict the
+# reference data (rebuilding "networks" alone costs 35 upstream calls).
+_TMDB_CACHE_MAX_ENTRIES = 400
+_TMDB_SEASONS_MAX_ENTRIES = 2000
+
+_tmdb_ref_cache: dict = {}
+_tmdb_seasons_cache: dict = {}
+_tmdb_ref_lock = threading.Lock()
+
+
+def _cache_bucket(key):
+    """Season counts live in their own bucket, everything else shares one."""
+    if key.startswith("seasons:"):
+        return _tmdb_seasons_cache, _TMDB_SEASONS_MAX_ENTRIES
+    return _tmdb_ref_cache, _TMDB_CACHE_MAX_ENTRIES
+
+
+def _ref_cache_get(key):
+    """Return a cached TMDB helper response, or None when absent/expired."""
+    bucket, _limit = _cache_bucket(key)
+    with _tmdb_ref_lock:
+        entry = bucket.get(key)
+        if not entry:
+            return None
+        expires_at, _stored_at, value = entry
+        if expires_at < time.monotonic():
+            bucket.pop(key, None)
+            return None
+        return value
+
+
+def _ref_cache_put(key, value, ttl):
+    """Store a TMDB helper response with a TTL, evicting expired/oldest first.
+
+    Eviction goes by insertion time, not by expiry: one bucket mixes 5-minute
+    discover pages with 6-hour reference data, and evicting the soonest-to-
+    expire entry would drop every discover page the moment the cache fills up
+    — exactly the entries the cache exists for.
+    """
+    bucket, limit = _cache_bucket(key)
+    now = time.monotonic()
+    with _tmdb_ref_lock:
+        if len(bucket) >= limit:
+            for stale in [k for k, (exp, _s, _v) in bucket.items() if exp < now]:
+                bucket.pop(stale, None)
+            while len(bucket) >= limit:
+                oldest = min(bucket, key=lambda k: bucket[k][1])
+                bucket.pop(oldest, None)
+        bucket[key] = (now + ttl, now, value)
+
+
+def clear_tmdb_discover_cache():
+    """Drop every cached TMDB discover/reference response (called on cache clear)."""
+    with _tmdb_ref_lock:
+        _tmdb_ref_cache.clear()
+        _tmdb_seasons_cache.clear()
+
+
+def _safe_tmdb_error(exc):
+    """Map an upstream exception to a (code, message) pair that is safe to return.
+
+    SECURITY: ``requests`` embeds the full request URL in the text of the
+    exceptions raised by ``raise_for_status()`` and by connection errors — and
+    that URL carries ``api_key=<secret>``. The previous implementation returned
+    ``str(e)`` straight to the browser, so a single upstream 401 printed the
+    instance's TMDB API key into the page (and into any browser/proxy log along
+    the way). The detail is logged server-side; the browser only ever sees the
+    short classification below, which the UI translates via its ``code``.
+    """
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status == 401 or status == 403:
+        return "tmdb_unauthorized", "TMDB rejected the API key."
+    if status == 404:
+        return "tmdb_not_found", "TMDB resource not found."
+    if status == 429:
+        return "tmdb_rate_limited", "TMDB rate limit reached, please retry shortly."
+    if status:
+        return "tmdb_http_error", f"TMDB request failed (HTTP {status})."
+    if exc.__class__.__name__ in ("Timeout", "ConnectTimeout", "ReadTimeout"):
+        return "tmdb_timeout", "TMDB request timed out."
+    return "tmdb_error", "TMDB request failed."
+
+
+def _tmdb_error_response(exc, context):
+    """Log ``exc`` with context and build the sanitised JSON error response."""
+    code, message = _safe_tmdb_error(exc)
+    # The exception text carries the request URL — redact the key before it
+    # reaches the log file, which users routinely attach to support requests.
+    detail = re.sub(r"api_key=[^&\s'\"]+", "api_key=<redacted>", str(exc))
+    logger.error("[TMDB] %s failed: %s", context, detail, exc_info=False)
+    return jsonify({"error": message, "code": code}), 502
+
+
+# Every TMDB /discover parameter the Advanced Search is allowed to forward.
+# The old implementation passed **all** query args through verbatim, so any
+# caller could drive the upstream request with parameters the UI never offers
+# (and, by omission, whatever TMDB adds in future). Unknown keys are now
+# dropped silently — an explicit allow-list is the only thing that keeps this
+# proxy from being a general-purpose TMDB relay.
+_DISCOVER_ALLOWED_PARAMS = frozenset({
+    "page", "sort_by", "language",
+    "with_genres", "without_genres",
+    "with_keywords", "without_keywords",
+    "with_original_language",
+    "with_runtime.gte", "with_runtime.lte",
+    "with_status", "with_type",
+    "with_networks", "with_companies", "without_companies",
+    # Movies only — TMDB ignores people filters on /discover/tv.
+    "with_people", "with_cast", "with_crew",
+    "vote_average.gte", "vote_average.lte",
+    "vote_count.gte", "vote_count.lte",
+    "first_air_date.gte", "first_air_date.lte",
+    "primary_release_date.gte", "primary_release_date.lte",
+    "release_date.gte", "release_date.lte",
+    "air_date.gte", "air_date.lte",
+    "first_air_date_year", "primary_release_year", "year",
+    "watch_region", "with_watch_providers", "without_watch_providers",
+    "with_watch_monetization_types",
+    "include_null_first_air_dates",
+    "screened_theatrically",
+})
+
+# Candidate TMDB network ids offered by the "Network" filter (TV only). TMDB
+# exposes no search endpoint for networks, so the shortlist is curated here and
+# then verified against /network/<id> at runtime (see api_tmdb_networks): the
+# UI label always comes from TMDB and an id that does not resolve is dropped,
+# so a typo here degrades to "one entry missing", never to "filters for the
+# wrong broadcaster". Add ids freely — no other change is needed.
+_TMDB_NETWORK_CANDIDATES = (
+    2, 4, 6, 13, 16, 19, 26, 30, 33, 41, 47, 49, 54, 56, 64, 67, 71, 77, 80, 88,
+    94, 111, 174, 213, 318, 332, 359, 453, 1024, 1112, 2552, 2739, 3186, 3353, 4330,
+)
+
+# TMDB itself refuses discover pages above 500 (its 10 000-result window).
+_DISCOVER_MAX_PAGE = 500
+_DISCOVER_MAX_VALUE_LEN = 200
+
+
+def _sanitise_discover_params(raw_args):
+    """Filter/normalise incoming discover parameters against the allow-list.
+
+    Returns ``(params, page)``. Values are length-capped and stripped of control
+    characters; ``page`` is clamped into TMDB's own 1..500 window so the UI can
+    never ask for a page the upstream API rejects.
+    """
+    params = {}
+    for key in _DISCOVER_ALLOWED_PARAMS:
+        if key not in raw_args:
+            continue
+        value = raw_args.get(key)
+        if value is None:
+            continue
+        value = str(value).strip()
+        if not value or len(value) > _DISCOVER_MAX_VALUE_LEN:
+            continue
+        if any(ch in value for ch in ("\n", "\r", "\t", "\0")):
+            continue
+        params[key] = value
+
+    try:
+        page = int(params.get("page", 1))
+    except (TypeError, ValueError):
+        page = 1
+    page = max(1, min(page, _DISCOVER_MAX_PAGE))
+    params["page"] = str(page)
+
+    # Never let the caller decide this one — the UI has no adult mode.
+    params["include_adult"] = "false"
+    return params, page
+
+
+def _filter_and_dedup_providers(providers_map):
+    """Turn a {provider_label: redirect_url} map into an ordered list of live,
+    de-duplicated provider names for the provider dropdown.
+
+    For every listed hoster with a working extractor it does one live probe
+    (probe_redirect): dead/removed embeds are dropped, and entries whose
+    redirect resolves to the *same* real host are collapsed to a single provider
+    (labelled by the resolved host when known). This is what makes the dropdown
+    reflect what is actually playable rather than every label the site lists.
+    Runs for series as well as movies (previously movies-only), which is the
+    whole point of the check — a few extra GETs per modal open in exchange for
+    an accurate list.
+    """
+    from ...extractors import provider_for_url
+
+    wp_by_lower = {w.lower(): w for w in WORKING_PROVIDERS}
+    seen = set()
+    out = []
+    for name, redirect in providers_map.items():
+        # The site's LABEL is only one of two ways to identify a hoster, and
+        # not the reliable one: 9anime calls every server "HD", which matches
+        # nothing in WORKING_PROVIDERS and used to drop the entry here -- the
+        # provider list then came back empty and the modal said "no sources"
+        # for an episode that plays fine. So fall back to the hoster the embed
+        # URL's host belongs to, which is the same signal probe_redirect()
+        # already uses further down to collapse mirror labels.
+        #
+        # An entry is only skipped when NEITHER the label nor the host names a
+        # hoster we have a working extractor for -- that one really is
+        # unplayable, and listing it would just be a dead option in the
+        # dropdown.
+        host_key = provider_for_url(redirect)
+        if name not in WORKING_PROVIDERS and not (host_key and host_key in wp_by_lower):
+            continue
+        available, host_provider = probe_redirect(redirect, name)
+        host_provider = host_provider or host_key
+        if not available:
+            continue
+        # Collapse mirror labels that resolve to the same host; key by the
+        # resolved host when known, otherwise by the label itself.
+        key = host_provider or name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        # Prefer the canonical name of the resolved host (so a label that really
+        # lands on a known hoster shows that hoster); fall back to the original
+        # label when the host is unknown or has no working extractor.
+        out.append(wp_by_lower.get(host_provider) or name)
+    return out
+
+
+def _label_by_host(providers_map):
+    """Rename generic server labels to the hoster their embed URL belongs to.
+
+    For a site that labels its servers by quality ("HD") rather than by hoster,
+    the label carries no information a user can act on and no information the
+    download path can dispatch on. This maps each entry onto the canonical
+    hoster name instead, dropping the ones we cannot play.
+
+    Unlike :func:`_filter_and_dedup_providers` this makes no network request:
+    the caller uses it where a live probe is not worth it (see the 9anime
+    branch in api_providers).
+    """
+    from ...extractors import provider_for_url
+
+    wp_by_lower = {w.lower(): w for w in WORKING_PROVIDERS}
+    seen = set()
+    out = []
+    for name, embed in (providers_map or {}).items():
+        key = provider_for_url(embed) or name.lower()
+        canonical = wp_by_lower.get(key)
+        if canonical is None:
+            # Unknown host AND unknown label: nothing could play it.
+            if name not in WORKING_PROVIDERS:
+                continue
+            canonical = name
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        out.append(canonical)
+    return out
+
+
+def _filmpalast_search(keyword):
+    """Search filmpalast.to via autocomplete and return list of {title, url} dicts."""
+    import urllib.parse as _up
+    import requests as _req
+    try:
+        url = f"https://filmpalast.to/autocomplete.php?term={_up.quote(keyword)}"
+        resp = _req.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json, text/javascript, */*",
+                "Accept-Encoding": "gzip, deflate",  # requests decompresses automatically
+            },
+            timeout=8,
+        )
+        resp.raise_for_status()
+        if not resp.text.strip():
+            return []  # empty response = no results
+        titles = resp.json()
+    except Exception as e:
+        logger.warning("FilmPalast autocomplete failed: %s", e)
+        return []
+
+    # The API returns either a list ["Title1", "Title2", ...]
+    # or a dict {"0": "Title1", "1": "Title2", ...} depending on the query.
+    # Normalise to a flat list of title strings.
+    if isinstance(titles, dict):
+        title_list = list(titles.values())
+    elif isinstance(titles, list):
+        title_list = titles
+    else:
+        return []
+
+    candidates = []
+    seen_urls = set()
+    for title in title_list:
+        if not isinstance(title, str) or not title.strip():
+            continue
+        slugs = _filmpalast_title_to_slugs(title)
+        for slug in slugs:
+            fp_url = f"https://filmpalast.to/stream/{slug}"
+            if fp_url not in seen_urls:
+                seen_urls.add(fp_url)
+                candidates.append({"title": title, "url": fp_url})
+
+    if not candidates:
+        return []
+
+    # Validate each candidate URL exists (our slug may differ from the real slug).
+    # Run HEAD requests in parallel so the total wait is ~1 request RTT, not N×RTT.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import requests as _req2
+
+    _val_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+
+    def _head_ok(candidate):
+        try:
+            r = _req2.head(candidate["url"], headers=_val_headers, timeout=5, allow_redirects=True)
+            return candidate if r.status_code == 200 else None
+        except Exception:
+            return None
+
+    raw_ok = []
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_head_ok, c): c for c in candidates}
+        for fut in as_completed(futures):
+            ok = fut.result()
+            if ok:
+                raw_ok.append(ok)
+
+    # Restore original autocomplete order & keep only the first working URL per title
+    order = {c["url"]: i for i, c in enumerate(candidates)}
+    raw_ok.sort(key=lambda c: order.get(c["url"], 9999))
+
+    results = []
+    seen_titles = set()
+    for item in raw_ok:
+        if item["title"] not in seen_titles:
+            seen_titles.add(item["title"])
+            results.append(item)
+
+    # Re-sort results to preserve the original autocomplete order of titles
+    title_order = {t: i for i, t in enumerate(title_list)}
+    results.sort(key=lambda c: title_order.get(c["title"], 9999))
+    return results
+
+
+def _filmpalast_title_to_slugs(title):
+    """Convert a movie title to a list of potential filmpalast URL slugs.
+
+    Strategy: lowercase, replace umlauts with both simple and phonetic forms,
+    replace non-alphanumeric with hyphens, collapse consecutive hyphens,
+    strip leading/trailing hyphens.
+    """
+    import unicodedata
+    import itertools
+    import re as _r
+
+    replacements = {
+        "ä": ["a", "ae"],
+        "ö": ["o", "oe"],
+        "ü": ["u", "ue"],
+        "Ä": ["a", "ae"],
+        "Ö": ["o", "oe"],
+        "Ü": ["u", "ue"],
+        "ß": ["s", "ss"]
+    }
+
+    chars = list(title)
+    options = []
+    for c in chars:
+        if c in replacements:
+            options.append(replacements[c])
+        else:
+            options.append([c])
+
+    special_count = sum(1 for c in chars if c in replacements)
+    if special_count > 4:
+        simple_list = []
+        complex_list = []
+        for c in chars:
+            if c in replacements:
+                simple_list.append(replacements[c][0])
+                complex_list.append(replacements[c][1])
+            else:
+                simple_list.append(c)
+                complex_list.append(c)
+        combinations = ["".join(simple_list), "".join(complex_list)]
+    else:
+        combinations = ["".join(p) for p in itertools.product(*options)]
+
+    slugs = set()
+    for s in combinations:
+        s = unicodedata.normalize("NFKD", s)
+        s = s.encode("ascii", "ignore").decode("ascii")
+        s = s.lower()
+        s = _r.sub(r"[^a-z0-9]+", "-", s)
+        s = s.strip("-")
+        if s:
+            slugs.add(s)
+
+    return list(slugs)
+
+
+def _build_locations(hits):
+    """Turn raw scan hits into the `locations` list /api/episodes returns.
+
+    *hits* is a list of ``(folder, root, custom_path_id, custom_path_name)``
+    tuples, one per already-present episode, with repeats.
+
+    Two things happen here, and both are deliberate:
+
+    1. **De-duplication with a count.** A season of 26 files in one folder is
+       one location that holds 26 episodes, not 26 locations.
+    2. **The absolute path is admin-only.** Every logged-in account can open
+       this modal, and the server's directory layout is not something a normal
+       account needs -- so everyone gets the human label ("Anime NAS" plus the
+       title folder) and only an admin additionally gets `path`. The label is
+       enough to answer "which of my folders is it in?", which is the actual
+       question; the full path is for whoever administers the box.
+    """
+    if not hits:
+        return []
+    try:
+        from ..request_context import get_current_user_info
+        _username, is_admin = get_current_user_info()
+    except Exception:
+        # A request that cannot tell is treated as "not admin" -- the safe
+        # direction, and the same rule routes/home_panels.py::_is_admin uses.
+        is_admin = False
+
+    out = {}
+    for folder, _root, _cp_id, cp_name in hits:
+        key = str(folder)
+        entry = out.get(key)
+        if entry is None:
+            # "Standard" is resolved client-side so it follows the UI language;
+            # an empty root_label means "the global download folder".
+            entry = {
+                "root_label": cp_name or "",
+                "folder": folder.name,
+                "episodes": 0,
+            }
+            if is_admin:
+                entry["path"] = key
+            out[key] = entry
+        entry["episodes"] += 1
+    # Biggest first: with a split library the folder holding most of the show
+    # is the one the user means by "where is it".
+    return sorted(out.values(), key=lambda e: -e["episodes"])
+
+
+def _source_is_adult(site_id) -> bool:
+    """True if *site_id* is an 18+ source -- built-in or module-registered.
+
+    Kept next to the search route rather than inlined so the age gate in
+    api_search() and the listing in api_search_sources() cannot drift apart.
+    """
+    if _is_adult_source(site_id):
+        return True
+    entry = get_search_source(site_id)
+    return bool(entry and entry.get("adult"))
+
+
+def _movie_only_title(obj):
+    """The display title of a movie-only model, whichever name it uses.
+
+    FilmPalast calls it ``title_de``, Filmo calls it ``title``; a third-party
+    provider may pick either. Checked in that order so a site that offers both
+    keeps the localized one it already exposed to the rest of the app.
+    """
+    for attr in ("title_de", "title"):
+        value = getattr(obj, attr, None)
+        if value:
+            return _html_unescape(str(value))
+    return ""
+
+
+def _movie_only_languages(obj):
+    """Languages a movie-only model offers, as the episode list wants them.
+
+    ``available_languages`` when the model has it (Filmo and any third-party
+    provider that scrapes more than one audio track). Sites without the
+    property are single-language by construction -- FilmPalast is German-only
+    -- and reported as such, which is exactly what its hardcoded branch did
+    before this became generic.
+    """
+    langs = getattr(obj, "available_languages", None)
+    if langs:
+        return list(langs)
+    return ["German Dub"]
+
+
+def _movie_only_metadata(prov, url):
+    """Metadata for a movie-only provider's film page, TMDB-localized.
+
+    One implementation for every site that has films but no series: the
+    built-in ones (FilmPalast, Filmo) and every third-party source registered
+    via ``register_provider()`` with only ``episode_pattern``/``episode_cls``.
+    Before this existed, each site needed its own hardcoded branch in
+    api_series/api_seasons/api_episodes and a third-party one crashed those
+    routes with ``TypeError: 'NoneType' object is not callable`` on
+    ``prov.series_cls(url=url)`` -- see issue #29.
+
+    Returns the ``(model, payload)`` pair: the instantiated model so callers
+    that need more than the payload (the episode list needs the languages)
+    do not pay for a second page fetch, and the payload in exactly the shape
+    /api/series answers with.
+    """
+    obj = prov.episode_cls(url=url)
+
+    title = _movie_only_title(obj)
+    description = getattr(obj, "description", "") or ""
+    genres = getattr(obj, "genres", None) or []
+    poster = getattr(obj, "image_url", None) or getattr(obj, "poster_url", None)
+    # Relative poster paths (FilmPalast serves "/files/...") are only
+    # resolvable against the site the URL came from.
+    if poster and poster.startswith("/"):
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        poster = f"{parsed.scheme}://{parsed.netloc}{poster}"
+    # Built-in models expose ``imdb``; the payload below (and the TMDB helpers)
+    # call the same thing ``imdb_id``, and third-party models copy that
+    # spelling often enough that only accepting ``imdb`` silently cost them
+    # the IMDb-based TMDB match. Accept both.
+    imdb_id = getattr(obj, "imdb", None) or getattr(obj, "imdb_id", None) or None
+
+    api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+    if api_key:
+        try:
+            country = get_setting("cineinfo_country", "DE")
+            ui_lang = session.get("ui_language", "de")
+            tmdb_data = _tmdb_lookup_cached(title, imdb_id, api_key, country, ui_lang)
+            if tmdb_data.get("found"):
+                # Only adopt the TMDB title on a confident match -- same rule
+                # as the series path, so a spin-off cannot rename the film.
+                if tmdb_data.get("title_confident"):
+                    title = tmdb_data.get("title") or title
+                description = tmdb_data.get("overview") or description
+                if tmdb_data.get("genres"):
+                    genres = tmdb_data.get("genres")
+        except Exception as _tmdb_exc:
+            logger.debug("[api_series] TMDB localization failed for %s: %s",
+                         prov.name, _tmdb_exc)
+
+    release_year = getattr(obj, "release_year", None)
+    payload = {
+        "title": title,
+        "poster_url": _poster_proxy(poster),
+        "description": description,
+        "genres": genres,
+        "release_year": str(release_year) if release_year else "",
+        "is_movie": True,
+        "imdb_id": imdb_id,
+        "available_providers": getattr(obj, "available_providers", None) or [],
+        "url": url,
+    }
+    return obj, payload
+
+
+def _movie_only_season(url):
+    """The single synthetic season a movie-only page is presented as.
+
+    A film has no seasons, but the whole UI (season picker, episode
+    accordion, Auto-Sync filter) is built around them, so every movie is
+    shown as season 1 with exactly one episode. ``is_single_movie`` is what
+    the frontend keys the movie-specific labels off.
+    """
+    return {
+        "url": url,
+        "season_number": 1,
+        "episode_count": 1,
+        "are_movies": True,
+        "is_single_movie": True,
+    }
+
+
+def register_search_routes(app):
+    """Register search, series/season/episode/provider lookup, and TMDB discovery endpoints."""
+    @app.route("/api/search/sources", methods=["GET"])
+    def api_search_sources():
+        """List the content sources a keyword search can currently reach.
+
+        GET /api/search/sources. The one list the WebUI works from: the search
+        fan-out in app.js's doSearch(), the source chips under the search
+        field, the Sources tab in Settings and the UpTime tracking rows all
+        read it instead of each repeating the five built-in ids -- which is
+        what previously made a module's registered search source unreachable
+        from the normal search box.
+
+        Sources a module registered (``search.register_search_source()``)
+        appear here the moment the module is enabled and vanish when it is
+        disabled or uninstalled, without a restart.
+
+        18+ sources are omitted entirely for an age-limited session, so such a
+        session never even offers, chips or searches them -- the same rule
+        POST /api/search enforces with a 403.
+        """
+        from ..age_gate import allows_adult
+        sources = search_sources(include_adult=allows_adult())
+        return jsonify({
+            "sources": sources,
+            # The user's own ordering (Settings -> Sources). Sent along so the
+            # frontend does not need a second request to know how to sort, and
+            # so an id that is in the saved order but no longer installed is
+            # simply ignored by the client filtering against "sources".
+            "order": [
+                p.strip().lower()
+                for p in str(get_setting("home_source_order", "") or "").split(",")
+                if p.strip()
+            ],
+            "hide_disabled_in_search": get_setting("sources_hide_in_search", "0"),
+        })
+
+    @app.route("/api/search", methods=["POST"])
+    def api_search():
+        """Search a given site (aniworld/sto/filmpalast/megakino/hanime) for a keyword.
+
+        POST /api/search. Called from app.js's doSearch() and
+        runAniSearch(), and from seerr.js's search flow.
+        """
+        data = request.get_json(silent=True) or {}
+        keyword = (data.get("keyword") or "").strip()
+        keyword = re.sub(r"!+$", "", keyword).strip()
+        site = (data.get("site") or "aniworld").strip()
+        if not keyword:
+            return jsonify({"error": "keyword is required"}), 400
+
+        # A limited session may not search an adult source at all. Refused
+        # here rather than filtered afterwards: everything that site returns
+        # is over the limit by definition, and "search returned nothing" is a
+        # worse answer than "this source is not available to you".
+        # Asked via is_adult_source()/the source catalogue rather than by
+        # comparing against the literal "hanime", so a module that registers
+        # an 18+ source (register_search_source(..., adult=True)) is covered
+        # by the same gate instead of quietly bypassing it.
+        from ..age_gate import allows_adult, filter_items
+        if _source_is_adult(site) and not allows_adult():
+            return jsonify({"error": "not permitted", "code": "age_limited"}), 403
+
+        results = []
+
+        def _get_site_results(kw, site_name):
+            site_res = []
+            if site_name == "sto":
+                items = query_s_to(kw) or []
+                if isinstance(items, dict): items = [items]
+                for item in items:
+                    link = item.get("link") or item.get("url", "")
+                    if _STO_SERIES_LINK_PATTERN.match(link):
+                        title = _html_unescape(item.get("title") or item.get("name", "Unknown")).replace("<em>", "").replace("</em>", "")
+                        site_res.append({"title": title, "url": f"https://serienstream.to{link}"})
+            else:
+                items = aniworld_query(kw) or []
+                if isinstance(items, dict): items = [items]
+                for item in items:
+                    link = item.get("link") or item.get("url", "")
+                    if _SERIES_LINK_PATTERN.match(link):
+                        title = _html_unescape(item.get("title") or item.get("name", "Unknown")).replace("<em>", "").replace("</em>", "")
+                        site_res.append({"title": title, "url": f"https://aniworld.to{link}"})
+            return site_res
+
+        _extra_source = get_search_source(site)
+        if site == "filmpalast":
+            results = _filmpalast_search(keyword)
+        elif site == "megakino":
+            results = megakino_search(keyword) or []
+        elif site == "filmo":
+            results = filmo_search(keyword) or []
+        elif site == "nineanime":
+            # Opt-in, non-adult source: only search when explicitly enabled.
+            results = (nineanime_search(keyword) or []) if _nineanime_enabled() else []
+        elif site == "aniwaves":
+            results = (aniwaves_search(keyword) or []) if _aniwaves_enabled() else []
+        elif site == "hanime":
+            # Adult source: only search when explicitly enabled.
+            results = (hanime_search(keyword) or []) if _hanime_enabled() else []
+        elif _extra_source is not None:
+            # Third-party content source, see providers.register_provider /
+            # search.register_search_source.
+            try:
+                # A hit no provider resolves is a dead card: clicking it can
+                # only answer "Unsupported URL". See search.drop_unresolvable.
+                results = drop_unresolvable(_extra_source["search_fn"](keyword), site)
+            except Exception as exc:
+                logger.error("[Search] Third-party source '%s' failed: %s", site, exc, exc_info=True)
+                results = []
+        elif site in ("aniworld", "sto"):
+            results = _get_site_results(keyword, site)
+
+            # Fallback for apostrophes (AniWorld's search is broken for titles with apostrophes)
+            if not results and ("'" in keyword or "’" in keyword):
+                # Try the opposite apostrophe first
+                alt_keyword = keyword.replace("'", "’") if "'" in keyword else keyword.replace("’", "'")
+                if alt_keyword != keyword:
+                    logger.debug("[CineInfo] Fallback Alt Apostrophe: Searching for %r", alt_keyword)
+                    results = _get_site_results(alt_keyword, site)
+
+                # Strategy: search for the part before the apostrophe
+                if not results:
+                    clean = keyword.replace("’", "'").split("'")[0].strip()
+                    if clean and clean != keyword and clean != alt_keyword:
+                        logger.debug("[CineInfo] Fallback 1: Searching for %r", clean)
+                        results = _get_site_results(clean, site)
+                
+                # Secondary fallback: just remove the apostrophe
+                if not results:
+                    clean2 = keyword.replace("'", "").replace("’", "")
+                    if clean2 and clean2 != keyword and clean2 != alt_keyword:
+                        logger.debug("[CineInfo] Fallback 2: Searching for %r", clean2)
+                        results = _get_site_results(clean2, site)
+
+            # Fallback for hyphens / dashes
+            if not results and ("-" in keyword or "–" in keyword):
+                # Strategy: search for the part before the hyphen
+                clean_hyphen = re.split(r"[-–]", keyword)[0].strip()
+                if clean_hyphen and clean_hyphen != keyword:
+                    logger.debug("[CineInfo] Fallback Hyphen: Searching for %r", clean_hyphen)
+                    results = _get_site_results(clean_hyphen, site)
+
+        else:
+            # Unknown source id. This used to fall through to
+            # _get_site_results(), whose else-branch queries AniWorld -- so a
+            # module that only registered a provider (no search source) was
+            # listed as a source and then served AniWorld's hits under its own
+            # name. An unsearchable source has no results, not someone else's.
+            logger.warning("[Search] Unknown source '%s' requested", site)
+            results = []
+
+        # Provider results carry no rating of their own, so for a limited
+        # session the ceiling is applied against whatever TMDB data is already
+        # CACHED for these titles -- no lookup per hit, which would turn one
+        # search into forty API calls. Titles the cache cannot rate are kept
+        # (see age_gate).
+        #
+        # Only for a limited session: _proxy_result_list() also rewrites poster
+        # URLs, and running it unconditionally would quietly change what every
+        # other account's search returns.
+        from ..age_gate import ceiling as _age_ceiling
+        if _age_ceiling() is not None:
+            from .image_proxy import _proxy_result_list
+            results = filter_items(_proxy_result_list(results))
+
+        return jsonify({"results": results})
+    @app.route("/api/tmdb/genres")
+    def api_tmdb_genres():
+        """Fetch TV and Movie genres (German + English labels) from TMDB.
+
+        GET /api/tmdb/genres. Called from advanced_search.js's loadGenres().
+        Cached for _TMDB_REF_TTL: the four upstream calls below used to run on
+        every single page load of the Advanced Search.
+        """
+        import requests as _req
+        from ..db import get_setting
+        api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+        if not api_key:
+            return jsonify({"error": "No TMDB API Key", "code": "no_api_key"}), 400
+
+        cached = _ref_cache_get("genres")
+        if cached is not None:
+            return jsonify(cached)
+
+        try:
+            headers = {"accept": "application/json"}
+            responses = {}
+            for name, path, lang in (
+                ("tv_de",  "genre/tv/list",    "de"),
+                ("tv_en",  "genre/tv/list",    "en"),
+                ("mov_de", "genre/movie/list", "de"),
+                ("mov_en", "genre/movie/list", "en"),
+            ):
+                _tmdb_rl.acquire()
+                r = _req.get(
+                    f"https://api.themoviedb.org/3/{path}?language={lang}&api_key={api_key}",
+                    headers=headers, timeout=10,
+                )
+                r.raise_for_status()
+                responses[name] = r.json().get("genres", [])
+
+            payload = {
+                "tv":    {"de": responses["tv_de"],  "en": responses["tv_en"]},
+                "movie": {"de": responses["mov_de"], "en": responses["mov_en"]},
+            }
+            _ref_cache_put("genres", payload, _TMDB_REF_TTL)
+            return jsonify(payload)
+        except Exception as e:
+            return _tmdb_error_response(e, "genre list")
+    @app.route("/api/tmdb/keywords")
+    def api_tmdb_keywords():
+        """Autocomplete search over the downloaded keyword_ids.json file."""
+        query = request.args.get("q", "").strip().lower()
+        if not query or len(query) < 2:
+            return jsonify({"results": []})
+        
+        dest_file = MEDIAFORGE_CONFIG_DIR / "keyword_ids.json"
+        if not dest_file.exists():
+            return jsonify({"error": "Keyword data not downloaded yet. Please wait."}), 404
+            
+        results = []
+        try:
+            with open(dest_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if query in line.lower():
+                        data = json.loads(line)
+                        results.append(data)
+                        if len(results) >= 20:
+                            break
+            return jsonify({"results": results})
+        except Exception as e:
+            logger.error(f"Error searching TMDB keywords: {e}")
+            return jsonify({"error": str(e)}), 500
+    @app.route("/api/tmdb/people")
+    def api_tmdb_people():
+        """Autocomplete search for cast/crew members via TMDB /search/person.
+
+        GET /api/tmdb/people?q=... -> {"results": [{id, name, known_for}]}
+
+        Feeds the "Actor" filter of the Advanced Search, whose ids end up in
+        the discover parameter ``with_people``. Only the three fields the token
+        field actually renders are forwarded — the raw TMDB person object also
+        carries the full known_for media list, which is far more payload than a
+        dropdown row needs.
+        """
+        import requests as _req
+        from ..db import get_setting
+
+        query = request.args.get("q", "").strip()
+        if len(query) < 2:
+            return jsonify({"results": []})
+        query = query[:_DISCOVER_MAX_VALUE_LEN]
+
+        api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+        if not api_key:
+            return jsonify({"error": "No TMDB API Key", "code": "no_api_key"}), 400
+
+        _ui_lang = session.get("ui_language", "de")
+        _tmdb_lang = "en-US" if _ui_lang == "en" else "de-DE"
+        cache_key = f"people:{_tmdb_lang}:{query.lower()}"
+        cached = _ref_cache_get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
+
+        import urllib.parse
+        qs = urllib.parse.urlencode({
+            "query": query,
+            "language": _tmdb_lang,
+            "include_adult": "false",
+            "api_key": api_key,
+        })
+        try:
+            _tmdb_rl.acquire()
+            resp = _req.get(
+                f"https://api.themoviedb.org/3/search/person?{qs}",
+                headers={"accept": "application/json"}, timeout=10,
+            )
+            resp.raise_for_status()
+            results = []
+            for person in (resp.json().get("results") or [])[:20]:
+                name = (person.get("name") or "").strip()
+                if not name or not person.get("id"):
+                    continue
+                known_for = ", ".join(
+                    (item.get("title") or item.get("name") or "").strip()
+                    for item in (person.get("known_for") or [])[:2]
+                    if (item.get("title") or item.get("name"))
+                )
+                results.append({"id": person["id"], "name": name, "known_for": known_for})
+            payload = {"results": results}
+            # Short TTL: same bucket as the discover pages, and a person's
+            # popularity ranking shifts far more often than the genre list.
+            _ref_cache_put(cache_key, payload, _TMDB_DISCOVER_TTL)
+            return jsonify(payload)
+        except Exception as e:
+            return _tmdb_error_response(e, "person search")
+
+    @app.route("/api/tmdb/watch_regions")
+    def api_tmdb_watch_regions():
+        """Fetch the list of available watch-provider regions from TMDB (cached)."""
+        import requests as _req
+        from ..db import get_setting
+        api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+        if not api_key:
+            return jsonify({"error": "No TMDB API Key", "code": "no_api_key"}), 400
+
+        _ui_lang = session.get("ui_language", "de")
+        _tmdb_lang = "en-US" if _ui_lang == "en" else "de-DE"
+        cache_key = f"watch_regions:{_tmdb_lang}"
+        cached = _ref_cache_get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
+
+        url = f"https://api.themoviedb.org/3/watch/providers/regions?language={_tmdb_lang}&api_key={api_key}"
+        try:
+            _tmdb_rl.acquire()
+            resp = _req.get(url, headers={"accept": "application/json"}, timeout=10)
+            resp.raise_for_status()
+            payload = {"results": resp.json().get("results", [])}
+            _ref_cache_put(cache_key, payload, _TMDB_REF_TTL)
+            return jsonify(payload)
+        except Exception as e:
+            return _tmdb_error_response(e, "watch regions")
+    @app.route("/api/tmdb/watch_providers")
+    def api_tmdb_watch_providers():
+        """Fetch the list of watch providers for tv/movie from TMDB (cached)."""
+        import requests as _req
+        from ..db import get_setting
+        api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+        if not api_key:
+            return jsonify({"error": "No TMDB API Key", "code": "no_api_key"}), 400
+
+        media_type = request.args.get("type", "tv")
+        if media_type not in ("tv", "movie"):
+            media_type = "tv"
+        # ISO 3166-1 alpha-2 only — anything else is ignored rather than forwarded.
+        watch_region = (request.args.get("watch_region") or "").strip().upper()
+        if not re.fullmatch(r"[A-Z]{2}", watch_region or ""):
+            watch_region = ""
+
+        _ui_lang = session.get("ui_language", "de")
+        _tmdb_lang = "en-US" if _ui_lang == "en" else "de-DE"
+        cache_key = f"watch_providers:{media_type}:{watch_region}:{_tmdb_lang}"
+        cached = _ref_cache_get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
+
+        url = f"https://api.themoviedb.org/3/watch/providers/{media_type}?language={_tmdb_lang}&api_key={api_key}"
+        if watch_region:
+            url += f"&watch_region={watch_region}"
+        try:
+            _tmdb_rl.acquire()
+            resp = _req.get(url, headers={"accept": "application/json"}, timeout=10)
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            results.sort(key=lambda p: p.get("display_priority", 9999))
+            payload = {"results": results}
+            _ref_cache_put(cache_key, payload, _TMDB_REF_TTL)
+            return jsonify(payload)
+        except Exception as e:
+            return _tmdb_error_response(e, "watch providers")
+    @app.route("/api/tmdb/languages")
+    def api_tmdb_languages():
+        """Fetch TMDB's spoken-language list for the "original language" filter.
+
+        GET /api/tmdb/languages -> {"results": [{iso_639_1, name, english_name}]}
+        Static upstream data, cached for _TMDB_REF_TTL. Added with the Advanced
+        Search rework (July 2026).
+        """
+        import requests as _req
+        from ..db import get_setting
+        api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+        if not api_key:
+            return jsonify({"error": "No TMDB API Key", "code": "no_api_key"}), 400
+
+        cached = _ref_cache_get("languages")
+        if cached is not None:
+            return jsonify(cached)
+
+        try:
+            _tmdb_rl.acquire()
+            resp = _req.get(
+                f"https://api.themoviedb.org/3/configuration/languages?api_key={api_key}",
+                headers={"accept": "application/json"}, timeout=10,
+            )
+            resp.raise_for_status()
+            results = []
+            for entry in resp.json() or []:
+                iso = (entry.get("iso_639_1") or "").strip()
+                if not iso:
+                    continue
+                english = (entry.get("english_name") or "").strip()
+                native = (entry.get("name") or "").strip()
+                results.append({
+                    "iso_639_1": iso,
+                    "english_name": english or iso,
+                    "name": native or english or iso,
+                })
+            results.sort(key=lambda x: x["english_name"].lower())
+            payload = {"results": results}
+            _ref_cache_put("languages", payload, _TMDB_REF_TTL)
+            return jsonify(payload)
+        except Exception as e:
+            return _tmdb_error_response(e, "language list")
+    @app.route("/api/tmdb/networks")
+    def api_tmdb_networks():
+        """Resolve the curated TV-network shortlist for the "network" filter.
+
+        GET /api/tmdb/networks -> {"results": [{id, name}]}
+
+        TMDB has no search endpoint for *networks* (only for companies), so the
+        candidate ids below are curated. To make sure a wrong id can never
+        silently filter for the wrong broadcaster, every candidate is resolved
+        against /network/<id> once per _TMDB_REF_TTL: the label shown in the UI
+        is always the name TMDB returns, and ids that do not resolve are dropped
+        from the list instead of being offered. Extending the shortlist is
+        therefore just a matter of adding an id here.
+        """
+        import concurrent.futures as _cf
+        import requests as _req
+        from ..db import get_setting
+        api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+        if not api_key:
+            return jsonify({"error": "No TMDB API Key", "code": "no_api_key"}), 400
+
+        cached = _ref_cache_get("networks")
+        if cached is not None:
+            return jsonify(cached)
+
+        def _resolve(network_id):
+            try:
+                _tmdb_rl.acquire()
+                r = _req.get(
+                    f"https://api.themoviedb.org/3/network/{network_id}?api_key={api_key}",
+                    headers={"accept": "application/json"}, timeout=8,
+                )
+                r.raise_for_status()
+                name = (r.json() or {}).get("name") or ""
+                name = name.strip()
+                return {"id": network_id, "name": name} if name else None
+            except Exception:
+                logger.debug("[TMDB] network id %s did not resolve", network_id)
+                return None
+
+        results = []
+        try:
+            with _cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="tmdb-net") as pool:
+                for entry in pool.map(_resolve, _TMDB_NETWORK_CANDIDATES):
+                    if entry:
+                        results.append(entry)
+        except Exception as e:
+            return _tmdb_error_response(e, "network list")
+
+        results.sort(key=lambda x: x["name"].lower())
+        payload = {"results": results}
+        # Only cache a list that actually resolved — a transient outage should
+        # not pin an empty dropdown in place for six hours.
+        if results:
+            _ref_cache_put("networks", payload, _TMDB_REF_TTL)
+        return jsonify(payload)
+    @app.route("/api/tmdb/tv_seasons", methods=["POST"])
+    def api_tmdb_tv_seasons():
+        """Season counts for up to 40 TMDB TV ids in ONE request.
+
+        POST {"ids": [1399, 1396, ...]} -> {"1399": 8, "1396": 5}
+
+        PERFORMANCE: the Advanced Search result grid shows "N seasons" under
+        every TV card. That used to be one /api/tmdb/details round-trip *per
+        card* — 20 browser requests and 20 uncached upstream calls for a single
+        page of results, repeated on every page flip and every restore from
+        localStorage. This collapses them into one request, and each id is
+        cached for _TMDB_SEASONS_TTL so paging back and forth costs nothing.
+        """
+        import concurrent.futures as _cf
+        import requests as _req
+        from ..db import get_setting
+
+        data = request.get_json(silent=True) or {}
+        raw_ids = data.get("ids") or []
+        ids = []
+        for value in raw_ids:
+            try:
+                tv_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if tv_id > 0 and tv_id not in ids:
+                ids.append(tv_id)
+            if len(ids) >= 40:
+                break
+        if not ids:
+            return jsonify({})
+
+        api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+        if not api_key:
+            return jsonify({"error": "No TMDB API Key", "code": "no_api_key"}), 400
+
+        out = {}
+        missing = []
+        for tv_id in ids:
+            cached = _ref_cache_get(f"seasons:{tv_id}")
+            if cached is not None:
+                out[str(tv_id)] = cached
+            else:
+                missing.append(tv_id)
+
+        def _fetch(tv_id):
+            try:
+                _tmdb_rl.acquire()
+                r = _req.get(
+                    f"https://api.themoviedb.org/3/tv/{tv_id}?api_key={api_key}",
+                    headers={"accept": "application/json"}, timeout=8,
+                )
+                r.raise_for_status()
+                return tv_id, (r.json() or {}).get("number_of_seasons")
+            except Exception:
+                logger.debug("[TMDB] season count for tv/%s failed", tv_id)
+                return tv_id, None
+
+        if missing:
+            try:
+                with _cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="tmdb-seasons") as pool:
+                    for tv_id, seasons in pool.map(_fetch, missing):
+                        if isinstance(seasons, int):
+                            _ref_cache_put(f"seasons:{tv_id}", seasons, _TMDB_SEASONS_TTL)
+                            out[str(tv_id)] = seasons
+            except Exception as e:
+                return _tmdb_error_response(e, "season counts")
+
+        return jsonify(out)
+    @app.route("/api/tmdb/discover")
+    def api_tmdb_discover():
+        """Proxy TMDB's /discover API for the Advanced Search.
+
+        GET /api/tmdb/discover?type=tv|movie&<filters>
+
+        Reworked July 2026:
+          * parameters are matched against _DISCOVER_ALLOWED_PARAMS instead of
+            being forwarded verbatim (see the note there),
+          * ``page`` is clamped to TMDB's own 1..500 window,
+          * upstream errors are sanitised (the raw text carries the API key),
+          * identical queries are served from a 5-minute in-process cache, which
+            is what makes paging back and forth in the grid free.
+        """
+        import requests as _req
+        from ..db import get_setting
+        api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+        if not api_key:
+            return jsonify({"error": "No TMDB API Key", "code": "no_api_key"}), 400
+
+        media_type = request.args.get("type", "tv")
+        if media_type not in ("tv", "movie"):
+            media_type = "tv"
+
+        params, _page = _sanitise_discover_params(request.args)
+
+        # Age limit, applied as a TMDB QUERY rather than by filtering the
+        # answer. Discover pages 20 results at a time, so dropping rows after
+        # the fact would hand back short, ragged pages and eventually an
+        # "empty" page 3 that is really a filtered one. certification.lte
+        # makes TMDB do the paging on the already-limited set.
+        #
+        # include_adult is forced off in the same breath: it is not part of the
+        # allow-list, so a client cannot set it either way, but a limited
+        # session must not depend on that staying true.
+        from ..age_gate import ceiling as _age_ceiling
+        limit = _age_ceiling()
+        if limit is not None:
+            params["include_adult"] = "false"
+            params["certification_country"] = get_setting("cineinfo_country", "DE") or "DE"
+            params["certification.lte"] = str(limit)
+            # The cache key is built from `params` below, so a limited and an
+            # unlimited session can never be served each other's page.
+
+        # TMDB uses different date keys for series and movies — accept either
+        # spelling from the client and normalise to the one this type needs.
+        sort_val = params.get("sort_by") or ""
+        if media_type == "tv" and sort_val.startswith("primary_release_date"):
+            params["sort_by"] = sort_val.replace("primary_release_date", "first_air_date")
+        elif media_type == "movie" and sort_val.startswith("first_air_date"):
+            params["sort_by"] = sort_val.replace("first_air_date", "primary_release_date")
+
+        cache_key = "discover:" + media_type + ":" + json.dumps(params, sort_keys=True)
+        cached = _ref_cache_get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
+
+        import urllib.parse
+        qs = urllib.parse.urlencode({**params, "api_key": api_key})
+        url = f"https://api.themoviedb.org/3/discover/{media_type}?{qs}"
+        logger.info("Discovering on TMDB: /discover/%s (%d params, redacted)", media_type, len(params))
+        try:
+            _tmdb_rl.acquire()
+            resp = _req.get(url, headers={"accept": "application/json"}, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            _ref_cache_put(cache_key, data, _TMDB_DISCOVER_TTL)
+            return jsonify(data)
+        except Exception as e:
+            return _tmdb_error_response(e, "discover")
+    @app.route("/api/tmdb/details")
+    def api_tmdb_details():
+        """Fetch details for a specific TMDB item (e.g., to get number of seasons)."""
+        import requests as _req
+        from ..db import get_setting
+        api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+        if not api_key:
+            return jsonify({"error": "No TMDB API Key"}), 400
+            
+        tmdb_id = request.args.get("id")
+        media_type = request.args.get("type", "tv")
+        
+        if not tmdb_id or media_type not in ["tv", "movie"]:
+            return jsonify({"error": "Invalid params"}), 400
+            
+        _ui_lang = session.get("ui_language", "de")
+        _tmdb_lang = "en" if _ui_lang == "en" else "de"
+        url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?language={_tmdb_lang}&api_key={api_key}&append_to_response=translations"
+        try:
+            resp = _req.get(url, headers={"accept": "application/json"}, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            return jsonify(data)
+        except Exception as e:
+            # Same leak as the other TMDB endpoints: requests puts the full
+            # request URL (with api_key=...) into the exception text.
+            return _tmdb_error_response(e, "details")
+    @app.route("/api/series")
+    def api_series():
+        """Fetch series/movie metadata (title, poster, description, genres) for a URL.
+
+        GET /api/series. Called from app.js's loadPoster() and
+        openSeries(), and from seerr.js, when a search result is opened.
+        Localizes title/description/genres via TMDB when an API key is
+        configured.
+        """
+        url = request.args.get("url", "").strip()
+        if not url:
+            return jsonify({"error": "url is required"}), 400
+
+        # Movie-only sources (FilmPalast, Filmo, and every third-party
+        # provider registered with only episode_pattern/episode_cls): the film
+        # page IS the metadata source, there is no series class to call. One
+        # generic branch instead of one hardcoded branch per site -- see
+        # _movie_only_metadata() and issue #29.
+        _movie_prov = movie_only_provider_for(url)
+        if _movie_prov is not None:
+            try:
+                _obj, payload = _movie_only_metadata(_movie_prov, url)
+                return jsonify(payload)
+            except Exception as e:
+                logger.error("Movie metadata fetch failed for %s: %s",
+                             _movie_prov.name, e, exc_info=True)
+                return jsonify({"error": str(e)}), 500
+
+        # MegaKino (movie or series) — the /watch URL is shared; the JSON API's
+        # "tv" field decides the type.
+        if _is_megakino_url(url):
+            from ...models.megakino_to.scraper import MegakinoUnavailable
+            try:
+                _mk_data = _megakino_watch(url)
+                from ..db import get_setting
+                api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+                _country = get_setting("cineinfo_country", "DE")
+                _ui_lang = session.get("ui_language", "de")
+
+                if _megakino_is_series(_mk_data):
+                    from ...models.megakino_to.series import MegakinoSeries
+                    series = MegakinoSeries(url=url, _data=_mk_data)
+                    title = _html_unescape(series.title)
+                    description = series.description or ""
+                    genres = series.genres or []
+                    poster = series.poster_url
+                    imdb_id = series.imdb or None
+                    if api_key:
+                        try:
+                            tmdb_data = _tmdb_lookup_cached(title, imdb_id, api_key, _country, _ui_lang)
+                            if tmdb_data.get("found"):
+                                if tmdb_data.get("title_confident"):
+                                    title = tmdb_data.get("title") or title
+                                description = tmdb_data.get("overview") or description
+                                if tmdb_data.get("genres"):
+                                    genres = tmdb_data.get("genres")
+                        except Exception as _tmdb_exc:
+                            logger.debug("[api_series] TMDB localization failed for MegaKino series: %s", _tmdb_exc)
+                    return jsonify({
+                        "title": title,
+                        "poster_url": _poster_proxy(poster),
+                        "description": description,
+                        "genres": genres,
+                        "release_year": series.release_year or "",
+                        "imdb_id": imdb_id,
+                    })
+
+                from ...models.megakino_to.movie import MegakinoMovie
+                mv = MegakinoMovie(url=url, _data=_mk_data)
+                title = mv.title_de or ""
+                description = mv.description or ""
+                genres = mv.genres or []
+                poster = mv.image_url
+                imdb_id = mv.imdb or None
+                if api_key:
+                    try:
+                        tmdb_data = _tmdb_lookup_cached(title, imdb_id, api_key, _country, _ui_lang)
+                        if tmdb_data.get("found"):
+                            if tmdb_data.get("title_confident"):
+                                title = tmdb_data.get("title") or title
+                            description = tmdb_data.get("overview") or description
+                            if tmdb_data.get("genres"):
+                                genres = tmdb_data.get("genres")
+                    except Exception as _tmdb_exc:
+                        logger.debug("[api_series] TMDB localization failed for MegaKino movie: %s", _tmdb_exc)
+                return jsonify({
+                    "title": title,
+                    "poster_url": _poster_proxy(poster),
+                    "description": description,
+                    "genres": genres,
+                    "release_year": str(mv.release_year) if mv.release_year else "",
+                    "is_movie": True,
+                    "available_providers": mv.available_providers,
+                })
+            except MegakinoUnavailable as e:
+                # Upstream had a bad day (unreachable, challenge page, truncated
+                # body) -- 502 and a WARNING, never 500/ERROR: an ERROR here is
+                # picked up by telemetry/hooks.py and filed as a crash report
+                # against MediaForge for a fault on megakino.to's side.
+                logger.warning("MegaKino unavailable: %s", e)
+                return jsonify({"error": "MegaKino is currently unavailable"}), 502
+            except Exception as e:
+                logger.error(f"MegaKino series/movie fetch failed: {e}", exc_info=True)
+                return jsonify({"error": str(e)}), 500
+        try:
+            # A card may link to an EPISODE (9anime's "Recently Updated" row is
+            # the only markup that site offers), and series_cls would reject
+            # that with a 500. Map it to the series page first; a URL that
+            # already is one comes back untouched and costs nothing.
+            url = series_url_for(url)
+            prov = resolve_provider(url)
+            if prov.series_cls is None:
+                # Movie-only providers never get here (handled above); this is
+                # a provider registered with neither series_cls nor
+                # episode_cls, i.e. an incomplete third-party registration.
+                logger.warning("[api_series] provider %s registered no series_cls", prov.name)
+                return jsonify({
+                    "error": f"Provider {prov.name} does not support series",
+                }), 400
+            series = prov.series_cls(url=url)
+            poster = getattr(series, "poster_url", None)
+            # s.to returns relative poster paths - make them absolute
+            if poster and poster.startswith("/"):
+                from urllib.parse import urlparse
+
+                parsed = urlparse(url)
+                poster = f"{parsed.scheme}://{parsed.netloc}{poster}"
+                
+            title = _html_unescape(series.title)
+            description = getattr(series, "description", "")
+            genres = getattr(series, "genres", [])
+            imdb_id = getattr(series, "imdb", None) or None
+            
+            from ..db import get_setting
+            api_key = get_setting("cineinfo_tmdb_api_key", "").strip()
+            if api_key:
+                try:
+                    country = get_setting("cineinfo_country", "DE")
+                    ui_lang = session.get("ui_language", "de")
+                    tmdb_data = _tmdb_lookup_cached(title, imdb_id, api_key, country, ui_lang)
+                    if tmdb_data.get("found"):
+                        # Only adopt the TMDB title when it is a confident match,
+                        # otherwise keep the original site title (avoids wrong
+                        # matches like a spin-off overriding the real name).
+                        if tmdb_data.get("title_confident"):
+                            title = tmdb_data.get("title") or title
+                        description = tmdb_data.get("overview") or description
+                        if tmdb_data.get("genres"):
+                            genres = tmdb_data.get("genres")
+                except Exception as _tmdb_exc:
+                    logger.debug("[api_series] TMDB localization failed: %s", _tmdb_exc)
+
+            return jsonify(
+                {
+                    "title": title,
+                    "poster_url": _poster_proxy(poster),
+                    "description": description,
+                    "genres": genres,
+                    "release_year": getattr(series, "release_year", ""),
+                    "imdb_id": imdb_id,
+                    # The URL this answer is actually about. Normally identical
+                    # to what was asked for; different when an episode URL was
+                    # normalized above (see providers.series_url_for). The
+                    # client adopts it so everything that follows -- episodes,
+                    # downloads, favourites, Auto-Sync -- is keyed to the
+                    # series and not to whichever episode happened to be the
+                    # newest on the day the card was rendered.
+                    "url": url,
+                }
+            )
+        except Exception as e:
+            logger.error(f"Series fetch failed: {e}", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+    @app.route("/api/seasons")
+    def api_seasons():
+        """List the seasons available for a series/movie URL.
+
+        GET /api/seasons. Called from app.js's openSeries() and
+        autosync_filter.js, and from seerr.js, to populate the season
+        picker. Movies are represented as a single fake season.
+        """
+        url = request.args.get("url", "").strip()
+        if not url:
+            return jsonify({"error": "url is required"}), 400
+
+        # Movie-only sources: a single fake "season 1 / episode 1 = the movie
+        # itself". No page fetch needed -- the answer only depends on the
+        # provider kind, not on the film. Covers FilmPalast, Filmo and every
+        # third-party movie-only provider (issue #29).
+        if movie_only_provider_for(url) is not None:
+            return jsonify({"seasons": [_movie_only_season(url)]})
+
+        # MegaKino: movie -> single fake season; series -> the one season post
+        if _is_megakino_url(url):
+            from ...models.megakino_to.scraper import MegakinoUnavailable
+            try:
+                _mk_data = _megakino_watch(url)
+                if not _megakino_is_series(_mk_data):
+                    # Same synthetic shape as the movie-only providers above --
+                    # MegaKino only cannot use that branch because it has a
+                    # series class too and shares one URL pattern for both.
+                    return jsonify({"seasons": [_movie_only_season(url)]})
+                from ...models.megakino_to.series import MegakinoSeries
+                series = MegakinoSeries(url=url, _data=_mk_data)
+                seasons_data = []
+                for season in series.seasons:
+                    seasons_data.append({
+                        "url": season.url,
+                        "season_number": season.season_number,
+                        "episode_count": season.episode_count,
+                        "are_movies": False,
+                    })
+                return jsonify({"seasons": seasons_data})
+            except MegakinoUnavailable as e:
+                logger.warning("MegaKino unavailable: %s", e)
+                return jsonify({"error": "MegaKino is currently unavailable"}), 502
+            except Exception as e:
+                logger.error(f"MegaKino seasons fetch failed: {e}", exc_info=True)
+                return jsonify({"error": str(e)}), 500
+
+        try:
+            # Same episode-URL normalization as api_series() -- both are called
+            # with whatever URL the card carried.
+            url = series_url_for(url)
+            prov = resolve_provider(url)
+            if prov.series_cls is None:
+                # See the same guard in api_series() above.
+                logger.warning("[api_seasons] provider %s registered no series_cls", prov.name)
+                return jsonify({
+                    "error": f"Provider {prov.name} does not support series",
+                }), 400
+            series = prov.series_cls(url=url)
+            seasons_data = []
+            for season in series.seasons:
+                seasons_data.append(
+                    {
+                        "url": season.url,
+                        "season_number": season.season_number,
+                        "episode_count": season.episode_count,
+                        "are_movies": getattr(season, "are_movies", False),
+                    }
+                )
+            return jsonify({"seasons": seasons_data})
+        except Exception as e:
+            logger.error(f"Seasons fetch failed: {e}", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+    @app.route("/api/episodes")
+    def api_episodes():
+        """List episodes for a season/movie URL, with downloaded/language-flag detection.
+
+        GET /api/episodes. Called from app.js's buildAccordion(),
+        autosync_filter.js, and seerr.js, to populate the episode list
+        once a season is selected.
+        """
+        url = request.args.get("url", "").strip()
+        if not url:
+            return jsonify({"error": "url is required"}), 400
+
+        # Movie-only sources: the film itself as a single episode entry.
+        # "languages" comes from the model when it knows more than one
+        # (Filmo does, FilmPalast does not) -- see _movie_only_languages().
+        # Movie entries report "downloaded" as False regardless, same as the
+        # MegaKino movie block below, which does not call .is_downloaded
+        # either. Generic since issue #29: any third-party movie-only
+        # provider lands here instead of crashing on season_cls further down.
+        _movie_prov = movie_only_provider_for(url)
+        if _movie_prov is not None:
+            try:
+                obj = _movie_prov.episode_cls(url=url)
+                title = _movie_only_title(obj)
+                return jsonify({"episodes": [{
+                    "url": url,
+                    "episode_number": 1,
+                    "season_number": 1,
+                    "title_de": title,
+                    "title_en": title,
+                    "downloaded": False,
+                    "languages": _movie_only_languages(obj),
+                }]})
+            except Exception as e:
+                logger.error("Movie episode fetch failed for %s: %s",
+                             _movie_prov.name, e, exc_info=True)
+                return jsonify({"error": str(e)}), 500
+
+        # MegaKino: movie -> single episode; series -> all episodes of the season
+        if _is_megakino_url(url):
+            from ...models.megakino_to.scraper import MegakinoUnavailable
+            try:
+                from pathlib import Path as _P
+                _mk_data = _megakino_watch(url)
+                if not _megakino_is_series(_mk_data):
+                    from ...models.megakino_to.movie import MegakinoMovie
+                    mv = MegakinoMovie(url=url, _data=_mk_data)
+                    return jsonify({"episodes": [{
+                        "url": url,
+                        "episode_number": 1,
+                        "season_number": 1,
+                        "title_de": mv.title_de or "",
+                        "title_en": mv.title_de or "",
+                        "downloaded": False,
+                        "languages": ["German Dub"],
+                    }]})
+
+                from ...models.megakino_to.series import MegakinoSeries
+                series = MegakinoSeries(url=url, _data=_mk_data)
+                season = series.seasons[0]
+                sn = season.season_number
+
+                # Downloaded detection via SxxExx filename scan
+                downloaded_eps = set()
+                try:
+                    title_clean = (series.title_cleaned or "").lower()
+                    # Built once per request, not per folder: alias_index() is a
+                    # table read, and this sits directly outside a loop over
+                    # every folder in every scan root.
+                    _aliases = _alias_index()
+                    if title_clean:
+                        raw = os.environ.get("MEDIAFORGE_DOWNLOAD_PATH", "")
+                        dl_base = _P(raw).expanduser() if raw else (_P.home() / "Downloads")
+                        if not dl_base.is_absolute():
+                            dl_base = _P.home() / dl_base
+                        roots = [dl_base]
+                        for cp in get_custom_paths():
+                            cpp = _P(cp["path"]).expanduser()
+                            if not cpp.is_absolute():
+                                cpp = _P.home() / cpp
+                            roots.append(cpp)
+                        lang_sep = os.environ.get("MEDIAFORGE_LANG_SEPARATION", "0") == "1"
+                        lang_folders = LANG_FOLDERS
+                        ep_re = EPISODE_MARKER_RE  # shared: S(\d{1,4})E(\d{1,4})(?!\d)
+                        bases = []
+                        for root in roots:
+                            bases.extend([root / lf for lf in lang_folders] if lang_sep else [root])
+                        for base in bases:
+                            if not base.is_dir():
+                                continue
+                            for folder in base.iterdir():
+                                if folder.is_dir() and _folder_holds(folder.name, title_clean, _aliases):
+                                    for f in folder.rglob("*"):
+                                        if f.is_file():
+                                            mm = ep_re.search(f.name)
+                                            if mm:
+                                                downloaded_eps.add((int(mm.group(1)), int(mm.group(2))))
+                except Exception:
+                    pass
+
+                episodes_data = []
+                for ep in season.episodes:
+                    episodes_data.append({
+                        "url": ep.url,
+                        "episode_number": ep.episode_number,
+                        "title_de": ep.title_de or "",
+                        "title_en": ep.title_en or "",
+                        "downloaded": (sn, ep.episode_number) in downloaded_eps,
+                        "languages": ["German Dub"],
+                    })
+                return jsonify({"episodes": episodes_data})
+            except MegakinoUnavailable as e:
+                logger.warning("MegaKino unavailable: %s", e)
+                return jsonify({"error": "MegaKino is currently unavailable"}), 502
+            except Exception as e:
+                logger.error(f"MegaKino episodes fetch failed: {e}", exc_info=True)
+                return jsonify({"error": str(e)}), 500
+
+        # hanime: list the franchise's episodes (single "Japanese Dub" language)
+        if _is_hanime_url(url):
+            try:
+                from pathlib import Path as _P
+                from ...models.hanime_tv.series import HanimeSeries
+                series = HanimeSeries(url=url)
+                season = series.seasons[0]
+                sn = season.season_number
+                downloaded_eps = set()
+                try:
+                    title_clean = (series.title_cleaned or "").lower()
+                    # Built once per request, not per folder: alias_index() is a
+                    # table read, and this sits directly outside a loop over
+                    # every folder in every scan root.
+                    _aliases = _alias_index()
+                    if title_clean:
+                        raw = os.environ.get("MEDIAFORGE_DOWNLOAD_PATH", "")
+                        dl_base = _P(raw).expanduser() if raw else (_P.home() / "Downloads")
+                        if not dl_base.is_absolute():
+                            dl_base = _P.home() / dl_base
+                        roots = [dl_base]
+                        for cp in get_custom_paths():
+                            cpp = _P(cp["path"]).expanduser()
+                            if not cpp.is_absolute():
+                                cpp = _P.home() / cpp
+                            roots.append(cpp)
+                        ep_re = EPISODE_MARKER_RE  # shared: S(\d{1,4})E(\d{1,4})(?!\d)
+                        # With language separation on, hanime lands in the
+                        # "japanese-dub" subfolder, not in the root itself.
+                        lang_sep = os.environ.get("MEDIAFORGE_LANG_SEPARATION", "0") == "1"
+                        bases = []
+                        for root in roots:
+                            bases.extend([root / lf for lf in LANG_FOLDERS] if lang_sep else [root])
+                        for base in bases:
+                            if not base.is_dir():
+                                continue
+                            for folder in base.iterdir():
+                                if folder.is_dir() and _folder_holds(folder.name, title_clean, _aliases):
+                                    for f in folder.rglob("*"):
+                                        if f.is_file():
+                                            mm = ep_re.search(f.name)
+                                            if mm:
+                                                downloaded_eps.add((int(mm.group(1)), int(mm.group(2))))
+                except Exception:
+                    pass
+                episodes_data = []
+                for ep in season.episodes:
+                    episodes_data.append({
+                        "url": ep.url,
+                        "episode_number": ep.episode_number,
+                        "title_de": ep.title_de or "",
+                        "title_en": ep.title_en or "",
+                        "downloaded": (sn, ep.episode_number) in downloaded_eps,
+                        "languages": ["Japanese Dub"],
+                    })
+                return jsonify({"episodes": episodes_data})
+            except Exception as e:
+                logger.error(f"hanime episodes fetch failed: {e}", exc_info=True)
+                return jsonify({"error": str(e)}), 500
+
+        try:
+            prov = resolve_provider(url)
+            # A provider with no season class at all cannot answer this, and
+            # calling None raises a TypeError that would surface as a 500 with
+            # a message telling nobody anything. Movie-only providers are
+            # already handled above, so reaching this means a partially
+            # registered third-party provider -- say so instead.
+            if prov.season_cls is None:
+                logger.warning("[api_episodes] provider %s registered no season_cls", prov.name)
+                return jsonify({
+                    "error": f"Provider {prov.name} does not support seasons",
+                }), 400
+            # Pass series to avoid broken series URL reconstruction in s.to
+            # season model (its fallback splits on "-" which fails)
+            series_url = re.sub(r"/staffel-\d+/?$", "", url)
+            series_url = re.sub(r"/filme/?$", "", series_url)
+            try:
+                series = prov.series_cls(url=series_url) if prov.series_cls else None
+            except Exception:
+                series = None
+            season = prov.season_cls(url=url, series=series)
+
+            # Scan download directory for downloaded episodes.
+            # Uses S##E### filename matching so it works regardless of
+            # which NAMING_TEMPLATE was active when files were downloaded.
+            from pathlib import Path
+
+            lang_sep = os.environ.get("MEDIAFORGE_LANG_SEPARATION", "0") == "1"
+            lang_folders = LANG_FOLDERS
+
+            raw = os.environ.get("MEDIAFORGE_DOWNLOAD_PATH", "")
+            if raw:
+                dl_base = Path(raw).expanduser()
+                if not dl_base.is_absolute():
+                    dl_base = Path.home() / dl_base
+            else:
+                dl_base = Path.home() / "Downloads"
+
+            # Collect all scan roots: default + custom paths.
+            # The label travels with the root so a found file can be reported
+            # back as "Anime NAS > Naruto (2002)" rather than as a bare server
+            # path -- see _build_locations() above.
+            scan_roots = [(dl_base, None, "")]
+            for cp in get_custom_paths():
+                cp_path = Path(cp["path"]).expanduser()
+                if not cp_path.is_absolute():
+                    cp_path = Path.home() / cp_path
+                scan_roots.append((cp_path, cp["id"], cp["name"]))
+
+            # Build set of (season_num, episode_num) found on disk
+            downloaded_eps = set()
+            # (season, episode) -> the title folder the file was found in.
+            # The scan already walks these folders to decide "downloaded"; it
+            # used to throw the location away, so the modal could say THAT a
+            # season exists but never WHERE. First match wins: a file that
+            # somehow sits in two roots is reported at the first one rather
+            # than making the common case a list.
+            ep_folders = {}
+            try:
+                _aliases = _alias_index()      # once per request, see above
+                title_clean = ""
+                if series:
+                    title_clean = (
+                        getattr(series, "title_cleaned", None)
+                        or getattr(series, "title", "")
+                    ).lower()
+                if title_clean:
+                    ep_re = EPISODE_MARKER_RE  # shared: S(\d{1,4})E(\d{1,4})(?!\d)
+                    all_bases = []
+                    for root, cp_id, cp_name in scan_roots:
+                        if lang_sep:
+                            all_bases.extend(
+                                [(root / lf, root, cp_id, cp_name) for lf in lang_folders]
+                            )
+                        else:
+                            all_bases.append((root, root, cp_id, cp_name))
+                    for base, root, cp_id, cp_name in all_bases:
+                        if not base.is_dir():
+                            continue
+                        for folder in base.iterdir():
+                            if not folder.is_dir() or not _folder_holds(folder.name, title_clean, _aliases):
+                                continue
+                            for f in folder.rglob("*"):
+                                if f.is_file():
+                                    m = ep_re.search(f.name)
+                                    if m:
+                                        key = (int(m.group(1)), int(m.group(2)))
+                                        downloaded_eps.add(key)
+                                        ep_folders.setdefault(
+                                            key, (folder, root, cp_id, cp_name)
+                                        )
+            except Exception:
+                pass
+
+            # Parse language flags per episode from the already-fetched season HTML
+            # (no extra network requests — flags are embedded in the season page)
+            ep_languages: dict[str, list[str]] = {}
+            try:
+                s_html = getattr(season, "_html", None) or ""
+                _is_sto = "serienstream" in url or "/serie/" in url
+
+                if _is_sto:
+                    # Determine actual base domain from the season URL
+                    _sto_base = "https://serienstream.to" if "serienstream" in url else "https://s.to"
+                    # s.to: <tr class="episode-row" onclick="window.location='/serie/.../episode-X'">
+                    #         <td class="episode-language-cell"> <svg class="svg-flag-german"> ...
+                    # Trailing quote prevents svg-flag-german matching svg-flag-english-german
+                    _sto_flag_map = {
+                        'svg-flag-german':          "German Dub",
+                        'svg-flag-english':         "English Dub",
+                        'svg-flag-english-german':  "English Dub (German Sub)",
+                        'svg-flag-english-english': "English Sub",
+                    }
+                    for _tr_m in re.finditer(r'<tr[^>]+class="episode-row[^"]*"[^>]*onclick="[^"]*\'(/serie/[^\']+)\'"', s_html):
+                        _ep_path = _tr_m.group(1)
+                        _ep_url = _sto_base + _ep_path
+                        _tr_end = s_html.find("</tr>", _tr_m.start())
+                        _tr_chunk = s_html[_tr_m.start():_tr_end]
+                        _flag_classes = re.findall(r'svg-flag-[\w-]+', _tr_chunk)
+                        _langs = []
+                        for _cls in _flag_classes:
+                            lbl = _sto_flag_map.get(_cls)
+                            if lbl and lbl not in _langs:
+                                _langs.append(lbl)
+                        ep_languages[_ep_url] = _langs
+                else:
+                    # AniWorld: <td class="editFunctions"> with <img src=".../german.svg">
+                    _flag_map = {
+                        "/german.svg":           "German Dub",
+                        "/japanese-german.svg":  "German Sub",
+                        "/japanese-english.svg": "English Sub",
+                        "/english.svg":          "English Dub",
+                        "/english-german.svg":   "English Dub (German Sub)",
+                    }
+                    _marker = 'itemtype="http://schema.org/Episode"'
+                    _pos = 0
+                    while True:
+                        _pos = s_html.find(_marker, _pos)
+                        if _pos == -1:
+                            break
+                        _tr_s = s_html.rfind("<tr", 0, _pos)
+                        _tr_e = s_html.find("</tr>", _pos)
+                        if _tr_s == -1 or _tr_e == -1:
+                            break
+                        _tr = s_html[_tr_s:_tr_e]
+                        _ep_url = None
+                        _up = _tr.find('itemprop="url"')
+                        if _up != -1:
+                            _hs = _tr.find('href="', _up) + 6
+                            _he = _tr.find('"', _hs)
+                            _href = _tr[_hs:_he]
+                            _ep_url = ("https://aniworld.to" + _href) if _href.startswith("/") else _href
+                        if not _ep_url:
+                            _hp = _tr.find("film-")
+                            if _hp != -1:
+                                _hs = _tr.rfind('href="', 0, _hp) + 6
+                                _he = _tr.find('"', _hs)
+                                _href = _tr[_hs:_he]
+                                _ep_url = ("https://aniworld.to" + _href) if _href.startswith("/") else _href
+                        if _ep_url:
+                            _ed = _tr.find('class="editFunctions"')
+                            if _ed != -1:
+                                _ee = _tr.find("</td>", _ed)
+                                _edit = _tr[_ed:_ee]
+                                _langs = [lbl for src, lbl in _flag_map.items() if src in _edit]
+                                ep_languages[_ep_url] = _langs
+                        _pos = _tr_e
+            except Exception as _lang_exc:
+                logger.debug("[api_episodes] language flag parsing failed: %s", _lang_exc)
+
+            # The flag parsing above reads AniWorld's / s.to's season-page
+            # markup. Every OTHER site that lands in this generic branch
+            # (9anime, aniwaves.ru, and anything a module registers) has no
+            # such markup, so it produced nothing at all -- and an episode
+            # list with "languages": [] makes the frontend keep the language
+            # dropdown it built from AniWorld's fixed language set, which is
+            # how a 9anime episode ended up asking for "German Dub" and being
+            # told "No source available" for a language the site never had.
+            #
+            # So: when the season yielded no flags, ask the episode models
+            # themselves. They know (available_languages), it just costs a
+            # request each, which is why this is a fallback and not the
+            # primary path.
+            if not ep_languages:
+                _eps = list(season.episodes)
+                if _eps and hasattr(_eps[0], "available_languages"):
+                    # Bounded: a pool so a 24-episode season is one round trip
+                    # wide instead of 24 deep, and a ceiling so an absurdly
+                    # long season cannot turn one page open into hundreds of
+                    # requests -- past it every episode inherits the first
+                    # one's languages, which on these single-season anime
+                    # sites is the same answer anyway.
+                    _LANG_PROBE_MAX = 60
+                    from concurrent.futures import ThreadPoolExecutor
+
+                    def _langs_of(_ep):
+                        try:
+                            return _ep.url, list(_ep.available_languages or [])
+                        except Exception as _exc:
+                            logger.debug("[api_episodes] language lookup failed for %s: %s",
+                                         getattr(_ep, "url", "?"), _exc)
+                            return getattr(_ep, "url", ""), []
+
+                    _probe = _eps[:_LANG_PROBE_MAX]
+                    try:
+                        with ThreadPoolExecutor(max_workers=min(8, len(_probe)),
+                                                thread_name_prefix="ep-langs") as _pool:
+                            for _u, _langs in _pool.map(_langs_of, _probe):
+                                if _u:
+                                    ep_languages[_u] = _langs
+                    except Exception as _exc:
+                        logger.debug("[api_episodes] language probe pool failed: %s", _exc)
+                    if len(_eps) > _LANG_PROBE_MAX and ep_languages:
+                        _fallback_langs = next(iter(ep_languages.values()))
+                        for _ep in _eps[_LANG_PROBE_MAX:]:
+                            ep_languages.setdefault(_ep.url, list(_fallback_langs))
+
+            episodes_data = []
+            # Folder hits for the episodes of THIS season only. ep_folders is
+            # series-wide (the scan rglobs the whole title folder), so it would
+            # report seasons the caller did not ask about.
+            _season_hits = []
+            for ep in season.episodes:
+                # Not just (season_number, episode_number): with AniWorld's
+                # absolute-numbering option the same episode is called S02E062
+                # on disk instead of S02E001, and a library from before the
+                # switch still uses the old number. file_number_candidates lists
+                # both, so an episode already there is recognised either way --
+                # otherwise the whole show would show up as missing the moment
+                # the setting is flipped. Other providers have one name only.
+                _candidates = getattr(
+                    ep, "file_number_candidates",
+                    ((ep.season.season_number, ep.episode_number),),
+                )
+                downloaded = any(pair in downloaded_eps for pair in _candidates)
+                for pair in _candidates:
+                    if pair in ep_folders:
+                        _season_hits.append(ep_folders[pair])
+                        break
+
+                episodes_data.append(
+                    {
+                        "url": ep.url,
+                        "episode_number": ep.episode_number,
+                        "title_de": getattr(ep, "title_de", ""),
+                        "title_en": getattr(ep, "title_en", ""),
+                        "downloaded": downloaded,
+                        "languages": ep_languages.get(ep.url, []),
+                    }
+                )
+            return jsonify(
+                {
+                    "episodes": episodes_data,
+                    # Where THIS season's existing files sit. The endpoint is
+                    # called once per season, so this is per-season for free --
+                    # which is what lets the modal name one location for the
+                    # whole series and flag only the season that sits elsewhere.
+                    "locations": _build_locations(_season_hits),
+                }
+            )
+        except Exception as e:
+            logger.error(f"Episodes fetch failed: {e}", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+    @app.route("/api/providers")
+    def api_providers():
+        """List available hoster providers per language for an episode URL.
+
+        GET /api/providers. Called from app.js's fetchProviders() and
+        seerr.js, to populate the provider dropdown once an episode is
+        selected. Runs a live-availability check for movies only.
+        """
+        url = request.args.get("url", "").strip()
+        if not url:
+            return jsonify({"error": "url is required"}), 400
+
+        # hanime: no third-party hoster and one stream -> a single pseudo provider.
+        if _is_hanime_url(url):
+            return jsonify({"providers": {"Japanese Dub": ["hanime"]}})
+
+        # 9anime.or.at: the server list labels everything by QUALITY ("HD"),
+        # never by hoster -- and it embeds more than one (MegaPlay, plus the
+        # site's own player on my.1anime.site). A label that names no hoster is
+        # useless to both the user and the extractor dispatch, so the hoster is
+        # taken from the embed URL's host instead (_label_by_host).
+        #
+        # No live probe here, deliberately: these embeds are 403 without the
+        # right Referer (see PROVIDER_HEADERS_D["OneAnime"] in config.py), so
+        # probe_redirect() would report a perfectly playable server as dead --
+        # or, via its "network error -> assume available" fallback, report
+        # nothing useful at all. Availability is established at download time,
+        # where the correct headers are sent.
+        if _is_nineanime_url(url):
+            try:
+                prov = resolve_provider(url)
+                episode = prov.episode_cls(url=url)
+                provider_info = {}
+                for lang_key, servers in (episode.provider_data or {}).items():
+                    label = label_for_pair(lang_key) or str(lang_key)
+                    hosters = _label_by_host(servers)
+                    if hosters:
+                        provider_info[label] = hosters
+                return jsonify({"providers": provider_info})
+            except Exception as e:
+                logger.error(f"9anime providers fetch failed: {e}", exc_info=True)
+                return jsonify({"error": str(e)}), 500
+
+        # aniwaves.ru: the site's own "server list" hands back an opaque
+        # per-hoster token, not a fetchable URL (see
+        # models/aniwaves_ru/scraper.py's resolve_source docstring) -- running
+        # it through the generic live-probe below would either waste the
+        # request budget on a guaranteed-garbage fetch or silently depend on
+        # probe_redirect()'s "network error -> assume available" fallback.
+        # Skip the live-availability check and list "EchoVideo" directly for
+        # every language the episode actually offers; the token is resolved
+        # lazily, at download time, by AniwavesEpisode.provider_url.
+        if _is_aniwaves_url(url):
+            try:
+                prov = resolve_provider(url)
+                episode = prov.episode_cls(url=url)
+                provider_info = {lang: ["EchoVideo"] for lang in episode.available_languages}
+                return jsonify({"providers": provider_info})
+            except Exception as e:
+                logger.error(f"Aniwaves providers fetch failed: {e}", exc_info=True)
+                return jsonify({"error": str(e)}), 500
+
+        # Filmo: provider_data keys are the site's own language label strings
+        # (not (Audio, Subtitles) enum pairs -- filmo.to is multi-language per
+        # movie in a shape none of the branches below expect), and its values
+        # are one-shot mint tokens ({"data_p", "movie_link_id"}), not fetchable
+        # URLs -- see models/filmo_to/movie.py's provider_data/provider_url.
+        # Skip the generic normalization and live-probe entirely; list the
+        # hoster names directly per language, filtered to hosters with a
+        # working extractor. Resolution happens lazily, at download time, in
+        # FilmoMovie.provider_url.
+        if _is_filmo_url(url):
+            try:
+                from ...models.filmo_to.movie import FilmoMovie
+                mv = FilmoMovie(url=url)
+                provider_info = {
+                    label: [name for name in hosters if name in WORKING_PROVIDERS]
+                    for label, hosters in mv.provider_data.items()
+                }
+                provider_info = {k: v for k, v in provider_info.items() if v}
+                return jsonify({"providers": provider_info})
+            except Exception as e:
+                logger.error(f"Filmo providers fetch failed: {e}", exc_info=True)
+                return jsonify({"error": str(e)}), 500
+
+        # MegaKino: single German language, direct hoster embeds (VOE etc.)
+        if _is_megakino_url(url):
+            from ...models.megakino_to.scraper import MegakinoUnavailable
+            try:
+                from ...models.megakino_to.movie import MegakinoMovie
+                prov = resolve_provider(url)
+                ep = prov.episode_cls(url=url)
+                pd = ep.provider_data  # {"German Dub": {hoster: embed_url}}
+                # Live-availability check + mirror de-dup for every label, movies
+                # and series alike (MegaKino posts are user-edited and often keep
+                # dead/removed hoster embeds listed).
+                provider_info = {}
+                for label, hosters in pd.items():
+                    working = _filter_and_dedup_providers(hosters)
+                    if working:
+                        provider_info[label] = working
+                return jsonify({"providers": provider_info})
+            except MegakinoUnavailable as e:
+                logger.warning("MegaKino unavailable: %s", e)
+                return jsonify({"error": "MegaKino is currently unavailable"}), 502
+            except Exception as e:
+                logger.error(f"MegaKino providers fetch failed: {e}", exc_info=True)
+                return jsonify({"error": str(e)}), 500
+
+        try:
+            prov = resolve_provider(url)
+            episode = prov.episode_cls(url=url)
+            pd = episode.provider_data
+
+            disable_eng_sub = os.environ.get("MEDIAFORGE_DISABLE_ENGLISH_SUB", "0") == "1"
+            provider_info = {}
+
+            # Normalize any provider_data format into {label: {name: url}}
+            # so the availability check runs once, uniformly for all sites.
+            raw_by_label = {}
+
+            if isinstance(pd, list):
+                # FilmPalast: [{"name": "VOE HD", "url": "..."}, ...]
+                def _norm_fp(n):
+                    n_clean = n.replace(" HD", "").replace(" HQ", "").strip()
+                    for wp in WORKING_PROVIDERS:
+                        if wp.lower() == n_clean.lower():
+                            return wp
+                    return n_clean
+                raw_by_label["German Dub"] = {
+                    _norm_fp(p["name"]): p["url"]
+                    for p in pd
+                    if p.get("name") and p.get("url")
+                }
+            elif hasattr(pd, "_data"):
+                # AniWorld: ProviderData object wrapping the same
+                # (Audio, Subtitles) -> providers dict.
+                for key, providers in pd._data.items():
+                    label = label_for_pair(key)
+                    if not label or (disable_eng_sub and label == "English Sub"):
+                        continue
+                    raw_by_label[label] = dict(providers)
+            else:
+                # s.to: plain dict with (Audio, Subtitles) enum tuple keys.
+                # label_for_pair() is the shared mapping from
+                # mediaforge.languages -- never re-declare a local copy here,
+                # that is exactly how "English Dub (German Sub)" once went
+                # missing and left the dropdown empty for Ger-Sub episodes.
+                #
+                # ...and, since the same branch catches every module-registered
+                # provider: a plain STRING key ("German Dub") is accepted as the
+                # label it already is. label_for_pair() cannot unpack a string,
+                # returned None, and the `continue` below then threw the entry
+                # away -- which is why a module's series modal came up with an
+                # empty language and hoster dropdown while the built-ins were
+                # fine. Modules were told to return exactly this shape (see
+                # .examples/thirdparties/README.md), so the documented contract
+                # and the code disagreed and the code lost silently.
+                for key, providers in pd.items():
+                    if isinstance(key, str):
+                        label = key.strip()
+                    else:
+                        label = label_for_pair(key)
+                    if not label or (disable_eng_sub and label == "English Sub"):
+                        continue
+                    # Merge rather than assign: a module may legitimately spell
+                    # the same label twice (a tuple key and a string key that
+                    # resolve to one label), and the second would otherwise
+                    # silently drop the first one's hosters.
+                    raw_by_label.setdefault(label, {}).update(dict(providers))
+
+            # Single unified live-availability check + mirror de-dup for every
+            # label / site, movies and series alike (previously movies-only).
+            # This is what keeps dead hosters and duplicate mirror labels out of
+            # the provider dropdown for AniWorld/s.to series too.
+            for label, providers in raw_by_label.items():
+                working = _filter_and_dedup_providers(providers)
+                if working:
+                    provider_info[label] = working
+
+            return jsonify({"providers": provider_info})
+        except Exception as e:
+            logger.error(f"Providers fetch failed: {e}", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+    @app.route("/api/veev/check", methods=["POST"])
+    def api_veev_check():
+        """Check whether a VeeV-hosted episode is actually available for streaming.
+
+        The VeeV CDN sometimes serves a placeholder / offline page instead of
+        real video.  We detect this by launching the same headless-browser session
+        that the downloader uses and checking whether a 206-response CDN URL is
+        captured.  If yes → available, if not → unavailable.
+        """
+        data = request.get_json(silent=True) or {}
+        episode_url = (data.get("episode_url") or "").strip()
+        if not episode_url:
+            return jsonify({"available": False, "error": "episode_url fehlt"}), 400
+
+        try:
+            from ...providers import resolve_provider
+            from ...extractors.provider.veev import _extract_veev_details
+        except ImportError:
+            try:
+                from mediaforge.providers import resolve_provider
+                from mediaforge.extractors.provider.veev import _extract_veev_details
+            except ImportError as ie:
+                return jsonify({"available": False, "error": f"Import-Fehler: {ie}"}), 500
+
+        try:
+            # VeeV is a hoster offered by several providers (FilmPalast,
+            # MegaKino, Filmo, ...), not just FilmPalast -- this used to
+            # hardcode FilmPalastEpisode, which rejects any URL that doesn't
+            # match FilmPalast's own pattern, so the check silently failed
+            # ("Episode konnte nicht aufgelöst werden") for every other
+            # provider's Veev links. resolve_provider() picks the right
+            # episode class the same way the actual downloader does.
+            prov = resolve_provider(episode_url)
+            ep = prov.episode_cls(url=episode_url, selected_provider="VeeV")
+            embed_url = ep.provider_url
+        except Exception as e:
+            return jsonify({"available": False, "error": f"Episode konnte nicht aufgelöst werden: {e}"})
+
+        try:
+            cdn_url, _, _ = _extract_veev_details(embed_url, timeout_ms=30_000)
+        except Exception as e:
+            return jsonify({"available": False, "error": f"Veev-Prüfung fehlgeschlagen: {e}"})
+
+        if cdn_url:
+            return jsonify({"available": True})
+        return jsonify({
+            "available": False,
+            "error": "Dieser Film ist auf Veev momentan nicht verfügbar (kein Stream gefunden).",
+        })
+    @app.route("/advanced-search")
+    def advanced_search_page():
+        """Render the advanced (TMDB discover) search page, if the feature is enabled.
+
+        GET /advanced-search. Linked from templates/base.html's nav.
+        Redirects to the index page when the "cineinfo_advanced_search"
+        setting is off.
+        """
+        from ..db import get_setting
+        if get_setting("cineinfo_advanced_search", "0") != "1":
+            from flask import redirect, url_for
+            return redirect(url_for("index"))
+        sto_lang_labels = {"1": "German Dub", "2": "English Dub", "3": "English Dub (German Sub)"}
+        return render_template(
+            "advanced_search.html",
+            lang_labels=LANG_LABELS,
+            sto_lang_labels=sto_lang_labels,
+            supported_providers=_runtime_state.enabled_providers(),
+        )
+    @app.route("/api/tmdb/info")
+    def api_tmdb_info():
+        """Look up a single title/imdb_id against TMDB (cached).
+
+        GET /api/tmdb/info. Called from app.js and seerr.js when TMDB
+        localization data is needed for a single title (batch requests use
+        /api/tmdb/batch instead).
+        """
+        title   = (request.args.get("title")   or "").strip()
+        imdb_id = (request.args.get("imdb_id") or "").strip() or None
+        if not title and not imdb_id:
+            return jsonify({"error": "title or imdb_id required"}), 400
+        api_key = get_setting("cineinfo_tmdb_api_key", "")
+        if not api_key:
+            return jsonify({"found": False, "reason": "no_key"})
+        country  = get_setting("cineinfo_country", "DE")
+        ui_lang  = session.get("ui_language", "de")
+        base = _tmdb_lookup_cached(title, imdb_id, api_key, country, ui_lang)
+        # Layer any registered CineInfo module sources on top of the TMDB result.
+        # Zero-overhead pass-through when no source is registered (the common case).
+        merged = _cineinfo_enrich(
+            [{"key": "q", "title": title, "imdb_id": imdb_id}],
+            {"q": base},
+            _CineInfoCtx(country=country, ui_lang=ui_lang),
+        )
+        return jsonify(merged.get("q", base))
+    @app.route("/api/tmdb/batch", methods=["POST"])
+    def api_tmdb_batch():
+        """Fetch TMDB data for multiple titles in one request.
+
+        Accepts: {"titles": ["Title A", "Title B", ...]}  (max 25)
+        Returns: {"Title A": {found, ...}, "Title B": {found, ...}}
+
+        Internally uses a thread pool (max 3 workers) so lookups for
+        already-cached titles complete instantly while cold ones are
+        fetched concurrently. All HTTP calls to TMDB still go through
+        the shared rate-limiter, so we never exceed 40 req/s globally.
+        """
+        import concurrent.futures as _cf
+        data = request.get_json(silent=True) or {}
+        raw_titles = data.get("titles") or []
+        titles = [str(t).strip() for t in raw_titles if t][:25]  # cap at 25
+        if not titles:
+            return jsonify({})
+        api_key = get_setting("cineinfo_tmdb_api_key", "")
+        if not api_key:
+            return jsonify({t: {"found": False, "reason": "no_key"} for t in titles})
+        country  = get_setting("cineinfo_country", "DE")
+        ui_lang  = session.get("ui_language", "de")
+
+        results = {}
+        # max_workers=3 limits concurrent lookups; the rate limiter inside
+        # _tmdb_lookup_cached serialises the actual TMDB HTTP calls globally.
+        with _cf.ThreadPoolExecutor(max_workers=3, thread_name_prefix="tmdb-batch") as pool:
+            future_to_title = {
+                pool.submit(_tmdb_lookup_cached, t, None, api_key, country, ui_lang): t
+                for t in titles
+            }
+            for fut in _cf.as_completed(future_to_title, timeout=35):
+                t = future_to_title[fut]
+                try:
+                    results[t] = fut.result()
+                except Exception as exc:
+                    logger.debug("[CineInfo] batch lookup failed for %r: %s", t, exc)
+                    results[t] = {"found": False}
+        # Layer any registered CineInfo module sources on top of the TMDB results.
+        # A bulk-capable source resolves all titles in ONE request; a per-item
+        # source is looped. Zero-overhead pass-through when nothing is registered.
+        results = _cineinfo_enrich(
+            [{"key": t, "title": t, "imdb_id": None} for t in titles],
+            results,
+            _CineInfoCtx(country=country, ui_lang=ui_lang),
+        )
+        return jsonify(results)
+    @app.route("/api/tmdb/cache/clear", methods=["POST"])
+    def api_tmdb_cache_clear():
+        """Clear all CineInfo/TMDB cached data and trigger a fresh prefetch cycle.
+
+        Steps:
+          1. Wipe the SQLite tmdb_cache table (24h persistent data)
+          2. Clear the in-memory browse cache so the next browse request
+             re-attaches TMDB data from scratch
+          3. Kick off a new prefetch cycle in the background so data is
+             warmed up without making the caller wait
+        """
+        clear_tmdb_cache()
+        _browse_cache.clear()   # force re-evaluation of inline TMDB data
+        # Advanced Search reference data + discover pages live in their own
+        # in-process cache (see clear_tmdb_discover_cache) — drop them too, or
+        # "Clear cache" would leave a stale genre/provider list behind.
+        clear_tmdb_discover_cache()
+        # Also drop the Fernsehserien and Crunchyroll provider caches — they're
+        # part of the same "Cache Options" section in the UI and now use the
+        # same persistent (SQLite) caching mechanism as TMDB.
+        try:
+            from .. import fernsehserien_service
+            fernsehserien_service.invalidate_cache()
+        except Exception:
+            logger.debug("[Fernsehserien] could not invalidate cache", exc_info=True)
+        try:
+            from .. import crunchyroll_service
+            crunchyroll_service.invalidate_availability_cache()
+        except Exception:
+            logger.debug("[Crunchyroll] could not invalidate cache", exc_info=True)
+        # Start a fresh prefetch in background — returns immediately to caller
+        threading.Thread(
+            target=_prefetch_cycle,
+            daemon=True,
+            name="cineinfo-manual-refresh",
+        ).start()
+        logger.info("[CineInfo] Cache manually cleared — prefetch triggered")
+        return jsonify({"ok": True, "message": "Cache geleert, Neuladen gestartet"})

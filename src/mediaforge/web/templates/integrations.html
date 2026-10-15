@@ -1,0 +1,1476 @@
+{% extends "base.html" %} {% block title %}{{ _('Integrations') }} — MediaForge{% endblock %}
+{% import "_settings_card_macro.html" as ext %}
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='settings_rows.css') }}">
+{# sources.css carries the drag-and-drop order-row styles reused by the
+   CineInfo provider-order list below (same rows as Settings › Sources). #}
+<link rel="stylesheet" href="{{ url_for('static', filename='sources.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='integrations.css') }}">{% endblock %}
+{% block content %}
+<div class="settings-container has-floating-menu">
+  <div class="page-header integ-page-header">
+    <h1 class="page-title">{{ _('Integrations') }}</h1>
+    <p class="page-subtitle">{{ _('Connect external services') }}</p>
+  </div>
+
+  {# In-page floating side menu. Was hidden (navigation used to happen via the
+     sidebar sub-menu); the menu rework moves that sub-navigation into the page
+     as a vertical floating menu. switchIntegTab() (integrations.js) is
+     unchanged. There is no "Modules" group here: this page places every
+     module card on the Third Party tab, so the tab list is fixed. #}
+  <div class="settings-tabs floating-side-menu" id="integTabs">
+    <button class="settings-tab active" data-tab="overview" onclick="switchIntegTab('overview')">{{ _('Overview') }}</button>
+    <button class="settings-tab" data-tab="seerr" onclick="switchIntegTab('seerr')">Seerr</button>
+    <button class="settings-tab" data-tab="mediaplayer" onclick="switchIntegTab('mediaplayer')">Mediaplayer</button>
+    <button class="settings-tab" data-tab="cineinfo" onclick="switchIntegTab('cineinfo')">CineInfo</button>
+    <button class="settings-tab" data-tab="thirdparty" onclick="switchIntegTab('thirdparty')">{{ _('Third Party') }}</button>
+    <button class="settings-tab" data-tab="jellyfinnfo" onclick="switchIntegTab('jellyfinnfo')">Jellyfin NFO</button>
+    <button class="settings-tab" data-tab="syncplay" onclick="switchIntegTab('syncplay')">SyncPlay</button>
+    <button class="settings-tab" data-tab="uptime" onclick="switchIntegTab('uptime')">UpTime</button>
+    {# No module tabs here on purpose: every settings_host="integrations" card
+       goes to the "Third Party" tab above, whatever settings_tab the module
+       asked for (registry.py's _FORCED_TABS / _placed_tab()). Modules that
+       want a tab of their own use settings_host="notifications" or
+       "monitoring", which do give them one. #}
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Übersicht (Overview Dashboard)
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel active" id="tab-overview">
+    <div class="settings-overview-grid">
+      <div class="settings-overview-card" onclick="switchIntegTab('seerr')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          </div>
+          <div class="settings-overview-title">Seerr</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Connect MediaForge with your Jellyseerr or Overseerr instance.') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchIntegTab('mediaplayer')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <div class="settings-overview-title">Mediaplayer</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Automatic library refresh for Jellyfin & Plex after every download.') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchIntegTab('cineinfo')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+          </div>
+          <div class="settings-overview-title">CineInfo</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Shows streaming providers, genres and age rating via TMDB API.') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchIntegTab('thirdparty')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Third Party') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Connect external services like Crunchyroll & Fernsehserien.de.') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchIntegTab('jellyfinnfo')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+          </div>
+          <div class="settings-overview-title">Jellyfin NFO Provider</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Automatic NFO metadata for downloaded media.') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchIntegTab('syncplay')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 2.1l4 4-4 4"/><path d="M3 12.2v-2a4 4 0 0 1 4-4h12.8M7 21.9l-4-4 4-4"/><path d="M21 11.8v2a4 4 0 0 1-4 4H4.2"/></svg>
+          </div>
+          <div class="settings-overview-title">SyncPlay</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Synchronized playback and party rooms with external instances.') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchIntegTab('uptime')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          </div>
+          <div class="settings-overview-title">UpTime</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Monitor site availability, response times and scrapable sources.') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+    </div>
+  </div><!-- /tab-overview -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Seerr
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-seerr">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">Seerr</h1>
+      <p class="page-subtitle">{{ _('Connect MediaForge with your Jellyseerr or Overseerr instance.') }}</p>
+    </div>
+    <div class="settings-section">
+      <h2>{{ _('Seerr Integration') }}</h2>
+      <div class="settings-hint integ-hint-border">
+        {{ _('Connect MediaForge with your Jellyseerr or Overseerr instance. Pending requests will appear under "Seerr Requests".') }}
+      </div>
+      <div class="integ-input-row">
+        <div class="settings-field">
+          <label class="settings-field-label">Seerr URL</label>
+          <input type="text" id="seerrUrl" placeholder="http://192.168.1.100:5055" />
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label">API Key</label>
+          <input type="password" id="seerrApiKey" placeholder="{{ _('Settings → General') }}" />
+        </div>
+        <button onclick="saveSeerrSettings()">{{ _('Save') }}</button>
+      </div>
+    </div>
+    {# Extensions attaching to this existing tab (settings_host="integrations",
+       settings_tab="seerr") — see register_thirdparty() in registry.py. #}
+    {% for card in get_settings_cards('integrations', 'seerr') %}
+    {{ ext.render_settings_card(card) }}
+    {% endfor %}
+  </div><!-- /tab-seerr -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Mediaplayer (Jellyfin / Plex + MediaScan)
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-mediaplayer">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">Mediaplayer</h1>
+      <p class="page-subtitle">{{ _('Automatic library refresh for Jellyfin & Plex after every download.') }}</p>
+    </div>
+
+    <!-- ===== Jellyfin / Plex ===== -->
+    <div class="settings-section">
+      <h2>
+        Mediaplayer
+        <span class="section-badge integ-jf-badge">Jellyfin / Plex</span>
+      </h2>
+      <div class="settings-hint integ-hint-sep">
+        {{ _('After every completed download, a library refresh is automatically triggered on the selected server.') }}
+      </div>
+
+      <!-- Dienst -->
+      <div class="integ-form-row integ-border-b">
+        <div class="integ-form-row-inner">
+          <div class="integ-label-group">
+            <div class="integ-label">{{ _('Service') }}</div>
+            <div class="integ-desc">{{ _('Which media server should MediaForge use?') }}</div>
+          </div>
+          <div class="integ-control-group">
+            <select id="mediaplayerType" class="integ-select" onchange="onMediaplayerTypeChange()">
+              <option value="">{{ _('— Disabled —') }}</option>
+              <option value="jellyfin">Jellyfin</option>
+              <option value="plex">Plex</option>
+            </select>
+            <button onclick="saveMediaplayerSettings()" id="mediaplayerSaveBtn">{{ _('Save') }}</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Jellyfin ────────────────────────────────────────────────── -->
+      <div id="mediaplayerJellyfinFields" style="display:none;">
+        <div class="integ-fields-grid integ-border-b">
+          <div class="integ-field">
+            <label class="settings-field-label">Server-URL</label>
+            <input type="text" id="mediaplayerUrl" placeholder="192.168.1.100:8096" oninput="onJfUrlInput()" />
+          </div>
+          <div class="integ-field">
+            <label class="settings-field-label">API Key</label>
+            <input type="password" id="mediaplayerApikey" placeholder="{{ _('Enter API key') }}" autocomplete="off" />
+          </div>
+        </div>
+        <div class="integ-form-row integ-border-b">
+          <div class="integ-form-row-inner integ-toggle-row">
+            <div class="integ-label-group">
+              <div class="integ-label">SSL / HTTPS</div>
+              <div class="integ-desc">{{ _('Enable if your Jellyfin is accessible via HTTPS') }}</div>
+            </div>
+            <label class="toggle"><input type="checkbox"  id="mediaplayerSsl" onchange="onJfSslToggle()" /><span
+                class="toggle-slider"></span></label>
+          </div>
+        </div>
+        <div class="integ-hint-box">
+          💡 {{ _('Jellyfin Dashboard → Advanced → API Keys → Create → copy the key and paste it here.') }}
+        </div>
+        <div class="integ-action-bar">
+          <button class="btn btn-ghost" onclick="testMediaplayerConnection()" id="mediaplayerTestBtn">{{ _('Test connection') }}</button>
+          <button class="btn btn-ghost" onclick="triggerMediaScan()" id="mediaplayerScanBtn">{{ _('Test media scan') }}</button>
+        </div>
+        <div id="mediaplayerTestResult" class="integ-result-box" style="display:none;"></div>
+      </div>
+
+      <!-- ── Plex ─────────────────────────────────────────────────────── -->
+      <div id="mediaplayerPlexFields" style="display:none;">
+        <div class="integ-fields-grid integ-border-b">
+          <div class="integ-field">
+            <label class="settings-field-label">Server-URL</label>
+            <input type="text" id="mediaplayerPlexUrl" placeholder="192.168.1.100:32400" oninput="onPlexUrlInput()" />
+          </div>
+        </div>
+        <div class="integ-form-row integ-border-b">
+          <div class="integ-form-row-inner integ-toggle-row">
+            <div class="integ-label-group">
+              <div class="integ-label">SSL / HTTPS</div>
+              <div class="integ-desc">{{ _('Enable if your Plex is accessible via HTTPS') }}</div>
+            </div>
+            <label class="toggle"><input type="checkbox"  id="mediaplayerPlexSsl" onchange="onPlexSslToggle()" /><span
+                class="toggle-slider"></span></label>
+          </div>
+        </div>
+        <div class="integ-form-row integ-border-b">
+          <div class="integ-form-row-inner integ-wrap">
+            <div class="integ-label-group">
+              <div class="integ-label">Plex Token</div>
+              <div class="integ-desc">{{ _('Retrieve automatically via Plex login') }}</div>
+            </div>
+            <div class="integ-plex-token-ctrl">
+              <span id="plexTokenBadge" class="integ-token-badge">{{ _('No token stored') }}</span>
+              <button class="btn btn-ghost integ-plex-login-btn" onclick="startPlexOAuth()" id="plexLoginBtn">
+                <svg viewBox="0 0 24 24" fill="currentColor" class="integ-icon-sm">
+                  <path d="M11 7L9.6 8.4l2.6 2.6H2v2h10.2l-2.6 2.6L11 17l5-5-5-5zm9 12h-8v2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-8v2h8v14z" />
+                </svg>
+                {{ _('Sign in with Plex') }}
+              </button>
+              <span id="plexOAuthStatus" class="integ-oauth-status" style="display:none;"></span>
+            </div>
+          </div>
+          <input type="hidden" id="mediaplayerPlexApikey" />
+        </div>
+        <div class="integ-form-row integ-border-b">
+          <div class="integ-form-row-inner integ-wrap">
+            <div class="integ-label-group">
+              <div class="integ-label">{{ _('Library') }}</div>
+              <div class="integ-desc">{{ _('Which one should be refreshed after a download?') }}</div>
+            </div>
+            <div class="integ-lib-ctrl">
+              <select id="mediaplayerPlexSectionId" class="integ-select integ-lib-select">
+                <option value="">{{ _('Scan all') }}</option>
+              </select>
+              <button class="btn btn-ghost" onclick="loadPlexLibraries()" id="plexLibLoadBtn" title="{{ _('Load libraries') }}">↻ {{ _('Load') }}</button>
+            </div>
+          </div>
+        </div>
+        <div class="integ-action-bar">
+          <button class="btn btn-ghost" onclick="testMediaplayerConnection()" id="mediaplayerTestBtn2">{{ _('Test connection') }}</button>
+          <button class="btn btn-ghost" onclick="triggerMediaScan()" id="mediaplayerScanBtn2">{{ _('Test media scan') }}</button>
+        </div>
+        <div id="mediaplayerTestResult2" class="integ-result-box" style="display:none;"></div>
+      </div>
+    </div>
+
+    <!-- ===== MediaScan ===== -->
+    <div class="settings-section">
+      <h2>
+        MediaScan
+        <span class="section-badge integ-ms-badge">Plex / Jellyfin</span>
+      </h2>
+      <div class="settings-hint integ-hint-border">
+        {{ _('Detects whether a series is already in your Plex or Jellyfin library and shows the ✓ Present badge on the home page. Connection data is automatically taken from the Mediaplayer integration.') }}
+      </div>
+
+      <!-- Aktiv-Toggle -->
+      <div class="integ-form-row integ-border-b">
+        <div class="integ-form-row-inner integ-toggle-row">
+          <div class="integ-label-group">
+            <div class="integ-label">{{ _('Enable') }}</div>
+            <div class="integ-desc">{{ _('Presence detection via library instead of folder scan') }}</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="mediascanEnabled" onchange="onMediascanToggle()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Quelle -->
+      <div id="mediascanFields" style="display:none;">
+        <div class="integ-form-row integ-border-b">
+          <div class="integ-form-row-inner">
+            <div class="integ-label-group">
+              <div class="integ-label">{{ _('Source') }}</div>
+              <div class="integ-desc">{{ _('Which library should be used for detection?') }}</div>
+            </div>
+            <div class="integ-control-group">
+              <select id="mediascanSource" class="integ-select" onchange="onMediascanSourceChange()">
+                <option value="folders">📁 {{ _('Folders (Default)') }}</option>
+                <option value="jellyfin">Jellyfin</option>
+                <option value="plex">Plex</option>
+              </select>
+              <button onclick="saveMediascanSettings()">{{ _('Save') }}</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Jellyfin ── -->
+        <div id="mediascanJellyfinFields" style="display:none;">
+          <div class="integ-fields-grid integ-border-b">
+            <div class="integ-field">
+              <label class="settings-field-label">Server-URL</label>
+              <input type="text" id="mediascanJfUrl" placeholder="192.168.1.100:8096" oninput="onMsJfUrlInput()" />
+            </div>
+            <div class="integ-field">
+              <label class="settings-field-label">API Key</label>
+              <input type="password" id="mediascanJfApikey" placeholder="{{ _('Enter API key') }}" autocomplete="off" />
+            </div>
+          </div>
+          <div class="integ-form-row integ-border-b">
+            <div class="integ-form-row-inner integ-toggle-row">
+              <div class="integ-label-group">
+                <div class="integ-label">SSL / HTTPS</div>
+                <div class="integ-desc">{{ _('Enable if Jellyfin is accessible via HTTPS') }}</div>
+              </div>
+              <label class="toggle"><input type="checkbox"  id="mediascanJfSsl" /><span class="toggle-slider"></span></label>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Plex ── -->
+        <div id="mediascanPlexFields" style="display:none;">
+          <div class="integ-fields-grid integ-border-b">
+            <div class="integ-field">
+              <label class="settings-field-label">Server-URL</label>
+              <input type="text" id="mediascanPlexUrl" placeholder="192.168.1.100:32400" oninput="onMsPlexUrlInput()" />
+            </div>
+          </div>
+          <div class="integ-form-row integ-border-b">
+            <div class="integ-form-row-inner integ-toggle-row">
+              <div class="integ-label-group">
+                <div class="integ-label">SSL / HTTPS</div>
+                <div class="integ-desc">{{ _('Enable if Plex is accessible via HTTPS') }}</div>
+              </div>
+              <label class="toggle"><input type="checkbox"  id="mediascanPlexSsl" /><span class="toggle-slider"></span></label>
+            </div>
+          </div>
+          <div class="integ-form-row integ-border-b">
+            <div class="integ-form-row-inner integ-wrap">
+              <div class="integ-label-group">
+                <div class="integ-label">Plex Token</div>
+                <div class="integ-desc">{{ _('Shared with Mediaplayer — sign in once for both') }}</div>
+              </div>
+              <div class="integ-plex-token-ctrl">
+                <span id="msPlexTokenBadge" class="integ-token-badge">{{ _('No token stored') }}</span>
+                <button class="btn btn-ghost integ-plex-login-btn" onclick="startMsPlexOAuth()" id="msPlexLoginBtn">
+                  <svg viewBox="0 0 24 24" fill="currentColor" class="integ-icon-sm">
+                    <path d="M11 7L9.6 8.4l2.6 2.6H2v2h10.2l-2.6 2.6L11 17l5-5-5-5zm9 12h-8v2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-8v2h8v14z" />
+                  </svg>
+                  {{ _('Sign in with Plex') }}
+                </button>
+                <span id="msPlexOAuthStatus" class="integ-oauth-status" style="display:none;"></span>
+              </div>
+            </div>
+            <input type="hidden" id="mediascanPlexTokenHidden" />
+          </div>
+          <div class="integ-form-row integ-border-b">
+            <div class="integ-form-row-inner integ-wrap">
+              <div class="integ-label-group">
+                <div class="integ-label">{{ _('Library') }}</div>
+                <div class="integ-desc">{{ _('Which one should be used for detection?') }}</div>
+              </div>
+              <div class="integ-lib-ctrl">
+                <select id="mediascanPlexSection" class="integ-select integ-lib-select">
+                  <option value="">{{ _('Scan all') }}</option>
+                </select>
+                <button class="btn btn-ghost" onclick="loadMsPlexLibraries()" id="msPlexLibLoadBtn" title="{{ _('Load libraries') }}">↻ {{ _('Load') }}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Kein TMDB-Key Warnung -->
+        <div id="mediascanNoTmdbWarn" class="integ-hint-box integ-warn-box" style="display:none;">
+          ⚠️ <strong>{{ _('CineInfo not configured.') }}</strong>
+          {{ _('A TMDB API key is required for accurate matching (German ↔ English). Please configure it under') }} <a href="/integrations#cineinfo" class="integ-link">CineInfo</a>. {{ _('Until then, MediaScan is disabled.') }}
+        </div>
+
+        <!-- Status-Karte -->
+        <div id="mediascanStatusCard" class="integ-ms-status-card" style="display:none;">
+          <div class="integ-ms-status-row">
+            <span class="integ-ms-status-label">{{ _('Last update') }}</span>
+            <span id="mediascanLastUpdated" class="integ-ms-status-val">—</span>
+          </div>
+          <div class="integ-ms-status-row">
+            <span class="integ-ms-status-label">{{ _('Cached entries') }}</span>
+            <span id="mediascanCount" class="integ-ms-status-val">—</span>
+          </div>
+          <div class="integ-ms-status-row" id="mediascanScanRow">
+            <span class="integ-ms-status-label">{{ _('Status') }}</span>
+            <span id="mediascanScanStatus" class="integ-ms-status-val">—</span>
+          </div>
+        </div>
+
+        <!-- Fortschrittsbalken -->
+        <div id="mediascanProgressWrap" class="integ-ms-progress-wrap" style="display:none;">
+          <div class="integ-ms-progress-label">
+            <span id="mediascanProgressText">{{ _('Scan running…') }}</span>
+            <span id="mediascanProgressPct"></span>
+          </div>
+          <div class="integ-ms-progress-bar-track">
+            <div id="mediascanProgressBar" class="integ-ms-progress-bar"></div>
+          </div>
+        </div>
+
+        <!-- Aktionsleiste -->
+        <div class="integ-action-bar">
+          <button class="btn btn-ghost" onclick="triggerMediascanRefresh()" id="mediascanRefreshBtn">
+            ↻ {{ _('Refresh library now') }}
+          </button>
+        </div>
+        <div id="mediascanResult" class="integ-result-box" style="display:none;"></div>
+      </div>
+    </div>
+
+    {% for card in get_settings_cards('integrations', 'mediaplayer') %}
+    {{ ext.render_settings_card(card) }}
+    {% endfor %}
+  </div><!-- /tab-mediaplayer -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: CineInfo
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-cineinfo">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">CineInfo</h1>
+      <p class="page-subtitle">{{ _('Shows streaming providers, genres and age rating via TMDB API.') }}</p>
+    </div>
+    <div class="settings-section">
+      <h2>
+        CineInfo
+        <span class="section-badge integ-tmdb-badge">TMDB</span>
+      </h2>
+
+      <div class="settings-hint integ-hint-border">
+        {{ _('Shows streaming providers, genres and age rating on the home page and in the detail modal. Requires a free API key from') }} <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener" class="integ-link">themoviedb.org</a>. {{ _('Without a key, CineInfo is automatically inactive.') }}
+      </div>
+
+      <!-- API Key + Land -->
+      <div class="integ-input-row">
+        <div class="settings-field">
+          <label class="settings-field-label">TMDB API Key (v3)</label>
+          <input type="password" id="cineinfoApiKey" placeholder="{{ _('Your TMDB API key') }}" autocomplete="off" />
+        </div>
+        <div class="settings-field integ-country-field">
+          <label class="settings-field-label">{{ _('Country (Providers &amp; Age Rating)') }}</label>
+          <select id="cineinfoCountry" class="integ-cineinfo-select">
+            <option value="DE">🇩🇪 {{ _('Germany') }}</option>
+            <option value="AT">🇦🇹 {{ _('Austria') }}</option>
+            <option value="CH">🇨🇭 {{ _('Switzerland') }}</option>
+            <option value="US">🇺🇸 USA</option>
+            <option value="GB">🇬🇧 {{ _('United Kingdom') }}</option>
+          </select>
+        </div>
+        <button onclick="saveCineinfoSettings()">{{ _('Save') }}</button>
+      </div>
+
+      <!-- Erweiterte TMDB Suche — direkt nach dem Setup -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Advanced TMDB Search') }}</div>
+          <div class="settings-row-desc">{{ _('Shows a menu item in the sidebar for advanced search including genres and keywords.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoAdvancedSearch" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Kalenderansicht -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Calendar View') }}</div>
+          <div class="settings-row-desc">{{ _('Shows a sidebar menu item with upcoming episode air dates for your AutoSync jobs based on TMDB data.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoCalendar" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Seerr-Anfragen im Kalender (Unterpunkt) -->
+      <div class="settings-row" id="cineinfoCalendarSeerrRow" style="padding-left:44px;">
+        <div class="settings-row-left">
+          <div class="settings-row-label" style="font-size:0.9rem;">{{ _('↳ Show Seerr requests in calendar') }}</div>
+          <div class="settings-row-desc">{{ _('Adds open Seerr requests to the calendar based on their TMDB air/release dates.') }}</div>
+          <div class="settings-row-desc" id="cineinfoCalendarSeerrHint" style="display:none;color:var(--warning)">{{ _('Enable the calendar above and set up Seerr first to use this option.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoCalendarSeerr" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- MediaScan-Serien im Kalender (Unterpunkt) -->
+      <div class="settings-row" id="cineinfoCalendarMediathekRow" style="padding-left:44px;">
+        <div class="settings-row-left">
+          <div class="settings-row-label" style="font-size:0.9rem;">{{ _('↳ Show MediaScan series in calendar') }}</div>
+          <div class="settings-row-desc">{{ _('Adds series from the MediaScan inventory comparison (Jellyfin/Plex) to the calendar.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoCalendarMediathek" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Lokale Mediathek im Kalender (Unterpunkt) -->
+      <div class="settings-row" id="cineinfoCalendarLibraryRow" style="padding-left:44px;">
+        <div class="settings-row-left">
+          <div class="settings-row-label" style="font-size:0.9rem;">{{ _('↳ Show your own library in calendar') }}</div>
+          <div class="settings-row-desc">{{ _('Takes the series from your MediaForge library and adds their upcoming episodes to the calendar. Works without Jellyfin/Plex.') }}</div>
+          <div class="settings-row-desc">{{ _('Large libraries fill in gradually: the titles have to be matched against TMDB in the background first.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoCalendarLibrary" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Kalender Refresh Intervall (Unterpunkt) -->
+      <div class="settings-row" id="cineinfoCalendarRefreshIntervalRow" style="padding-left:44px;">
+        <div class="settings-row-left">
+          <div class="settings-row-label" style="font-size:0.9rem;">{{ _('↳ Calendar refresh interval') }}</div>
+          <div class="settings-row-desc">{{ _('How often to refresh existing calendar data from TMDB (in hours).') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <select id="cineinfoCalendarRefreshInterval" class="integ-select" style="width: auto; min-width: 100px; padding: 4px 8px;" onchange="saveCineinfoDisplayOptions()">
+            <option value="8">8 {{ _('Hours') }}</option>
+            <option value="12">12 {{ _('Hours') }}</option>
+            <option value="16">16 {{ _('Hours') }}</option>
+            <option value="24">24 {{ _('Hours') }}</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- ── Anzeige-Optionen ── -->
+      <h3 class="settings-subtitle">{{ _('Display Options') }}</h3>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Streaming Providers') }}</div>
+          <div class="settings-row-desc">{{ _('1 provider on the card · all in the modal below the title') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoShowProviders" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- ── Quellen-Reihenfolge (Pill-Chain + CineInfo-Quellen) ──
+           One list for both mechanisms; see static/integrations.js's
+           "CineInfo source order" block for why they share it. -->
+      <div class="settings-row" style="display:block;">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Source order') }}</div>
+          <div class="settings-row-desc">{{ _('Which source gets to speak first about a title. A provider pill: the first source that knows the title shows its badge, the rest are skipped. A CineInfo source: the first one that knows a field fills it — TMDB always keeps what it already has. Modules that register a pill or a CineInfo source appear here automatically, marked "Module".') }}</div>
+        </div>
+        <div class="source-order-list" id="cineinfoProviderOrderList" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Age Rating (FSK)') }}</div>
+          <div class="settings-row-desc">{{ _('FSK badge on the card and centered below the cover in the modal') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoShowFsk" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('TMDB Genres') }}</div>
+          <div class="settings-row-desc">{{ _('Replaces the original site genres in the modal with TMDB genres (e.g. Action, Fantasy)') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoShowGenres" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Rating') }}</div>
+          <div class="settings-row-desc">{{ _('Shows the TMDB user rating as a badge next to the series title in the modal') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoShowRating" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Similar Series (Recommendations)') }}</div>
+          <div class="settings-row-desc">{{ _('Shows a list of similar series based on TMDB below the episodes') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoShowRecommendations" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Show trailer') }}</div>
+          <div class="settings-row-desc">{{ _('Shows a YouTube trailer in the series detail modal (if available)') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoShowTrailer" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Show backdrop') }}</div>
+          <div class="settings-row-desc">{{ _('Uses the TMDB backdrop as the header image of the title window') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoShowBackdrop" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+
+      <!-- ── Hover-Effekte (Design) ── -->
+      <div class="integ-subsection-header">
+        <span class="integ-subsection-title">{{ _('Hover Effects') }}</span>
+        <span class="integ-subsection-badge">Design</span>
+      </div>
+      <div class="integ-subsection-hint">
+        {{ _('These options control which info is shown when hovering over a series card on the home page.') }}
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Show rating') }}</div>
+          <div class="settings-row-desc">{{ _('Shows the TMDB rating when hovering on the home page') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoShowHoverRating" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Show genres') }}</div>
+          <div class="settings-row-desc">{{ _('Shows the TMDB genres when hovering on the home page') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoShowHoverGenres" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Show age rating') }}</div>
+          <div class="settings-row-desc">{{ _('Shows the age rating when hovering on the home page') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cineinfoShowHoverFsk" onchange="saveCineinfoDisplayOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      </div>
+      <div class="settings-section">
+      <!-- ── Cache / Info ── -->
+       <div class="integ-subsection-header">
+        <span class="integ-subsection-title">{{ _('Cache Options') }}</span>
+        <span class="integ-subsection-badge" style="background:#f42121;color:#fff;">{{ _('ATTENTION') }}</span>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Clear cache &amp; reload') }}</div>
+          <div class="settings-row-desc">{{ _('Deletes all stored TMDB data and restarts the preloading process. Also clears cached Fernsehserien.de provider lookups. Useful when info is outdated or after an API key change.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <button id="clearCineinfoBtn" onclick="clearCineinfoCache(this)">{{ _('Clear cache') }}</button>
+        </div>
+      </div>
+
+      <div class="settings-hint">
+        {{ _('Metadata is preloaded in the background and cached in the database for 24 h. Fernsehserien.de provider lookups are cached for 24 h as well.') }}
+      </div>
+    </div>
+    {% for card in get_settings_cards('integrations', 'cineinfo') %}
+    {{ ext.render_settings_card(card) }}
+    {% endfor %}
+  </div><!-- /tab-cineinfo -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Third Party (Crunchyroll, Fernsehserien.de — collapsible cards)
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-thirdparty">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Third Party') }}</h1>
+      <p class="page-subtitle">{{ _('Connect external services like Crunchyroll & Fernsehserien.de.') }}</p>
+    </div>
+
+    <!-- ══ Crunchyroll (login, provider pill, calendar sync) ══ -->
+    <div class="settings-section integ-card collapsed" id="integCard-crunchyroll">
+      <div class="integ-subsection-header integ-collapsible-header" style="padding:unset !important;" onclick="toggleIntegCollapse('crunchyroll')">
+        <span class="integ-collapsible-chevron">▸</span>
+        <span class="integ-subsection-title">Crunchyroll</span>
+        <span class="integ-subsection-badge" style="background:#F47521;color:#fff;">API</span>
+      </div>
+      <div class="integ-collapsible-body">
+      <div class="integ-subsection-hint">
+        {{ _('Logs in to Crunchyroll to add provider pills for current simulcasts (which TMDB often lacks) and to sync the Crunchyroll calendar. Your password is stored encrypted. Without login, only public metadata is available in anonymous mode.') }}
+      </div>
+
+      <!-- Master toggle -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Enable Crunchyroll integration') }}</div>
+          <div class="settings-row-desc">{{ _('Master switch for all Crunchyroll features below.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="crEnabled" onchange="saveCrunchyrollOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Credentials -->
+      <div class="integ-input-row" id="crCredentialsRow">
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Email') }}</label>
+          <input type="email" id="crEmail" placeholder="{{ _('Crunchyroll account email') }}" autocomplete="off" />
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Password') }}</label>
+          <input type="password" id="crPassword" placeholder="{{ _('Stored encrypted') }}" autocomplete="new-password" />
+        </div>
+        <div class="settings-field integ-country-field">
+          <label class="settings-field-label">{{ _('Language (Locale)') }}</label>
+          <select id="crLocale" class="integ-cineinfo-select">
+            <option value="de-DE">🇩🇪 Deutsch</option>
+            <option value="en-US">🇺🇸 English</option>
+            <option value="en-GB">🇬🇧 English (UK)</option>
+            <option value="fr-FR">🇫🇷 Français</option>
+            <option value="es-ES">🇪🇸 Español</option>
+            <option value="it-IT">🇮🇹 Italiano</option>
+            <option value="pt-BR">🇧🇷 Português</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="saveCrunchyrollSettings()">{{ _('Save') }}</button>
+        <button class="btn btn-secondary" id="crTestBtn" onclick="testCrunchyroll(this)">{{ _('Test connection') }}</button>
+      </div>
+      <div class="settings-row-desc" id="crTestResult" style="display:none;margin-top:-6px;"></div>
+
+      <!-- Profile selector (populated after a successful login) -->
+      <div class="settings-row" id="crProfileRow" style="display:none;">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Profile') }}</div>
+          <div class="settings-row-desc">{{ _('Which account profile to use for watchlist and calendar sync.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <select id="crProfile" class="integ-select" onchange="saveCrunchyrollOptions()"></select>
+        </div>
+      </div>
+
+      <!-- Anonymous mode -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Anonymous mode (no account)') }}</div>
+          <div class="settings-row-desc">{{ _('Use public metadata only — no login required. Watchlist sync needs an account and is unavailable here.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="crAnon" onchange="saveCrunchyrollOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Provider pill -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Crunchyroll provider pill') }}</div>
+          <div class="settings-row-desc">{{ _('Adds a Crunchyroll pill in the detail modal when a title is on Crunchyroll — even for new simulcasts TMDB does not list yet.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="crShowProviders" onchange="saveCrunchyrollOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Calendar: simulcast -->
+      <div class="settings-row" style="padding-left:44px;">
+        <div class="settings-row-left">
+          <div class="settings-row-label" style="font-size:0.9rem;">{{ _('↳ Sync Crunchyroll simulcast calendar') }}</div>
+          <div class="settings-row-desc">{{ _('Adds the current Crunchyroll simulcast lineup to the calendar. Episode air dates are resolved via TMDB (CineInfo API key required).') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="crCalSimulcast" onchange="saveCrunchyrollOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Calendar: watchlist -->
+      <div class="settings-row" style="padding-left:44px;">
+        <div class="settings-row-left">
+          <div class="settings-row-label" style="font-size:0.9rem;">{{ _('↳ Sync with my CR Watchlist') }}</div>
+          <div class="settings-row-desc">{{ _('Adds your Crunchyroll watchlist series to the calendar — works even when the general Crunchyroll display is off, as long as a Crunchyroll account is configured. Episode dates come from TMDB (CineInfo API key required).') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="crCalWatchlist" onchange="saveCrunchyrollOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Calendar: custom lists (Crunchylists) -->
+      <div class="settings-row" style="padding-left:44px;">
+        <div class="settings-row-left">
+          <div class="settings-row-label" style="font-size:0.9rem;">{{ _('↳ Sync with my custom lists (Crunchylists)') }}</div>
+          <div class="settings-row-desc">{{ _('Adds the series from your Crunchyroll custom lists (Crunchylists) to the calendar — works even when the general Crunchyroll display is off, as long as a Crunchyroll account is configured. Episode dates come from TMDB (CineInfo API key required).') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="crCalLists" onchange="saveCrunchyrollOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-row-desc" id="crCalTmdbHint" style="display:none;padding-left:44px;color:var(--warning)">{{ _('Calendar sync requires a TMDB API key — configure it in CineInfo above.') }}</div>
+      </div>
+    </div>
+
+    <!-- ══ OpenSubtitles.com (external subtitle lookup, quota-bound) ══ -->
+    <div class="settings-section integ-card collapsed" id="integCard-opensubtitles">
+      <div class="integ-subsection-header integ-collapsible-header" style="padding:unset !important;" onclick="toggleIntegCollapse('opensubtitles')">
+        <span class="integ-collapsible-chevron">▸</span>
+        <span class="integ-subsection-title">OpenSubtitles</span>
+        <span class="integ-subsection-badge" style="background:#00a8e1;color:#fff;">API</span>
+        <span class="integ-subsection-badge" style="background:#ac7001;color:#fff;">{{ _('Quota') }}</span>
+      </div>
+      <div class="integ-collapsible-body">
+      <div class="integ-subsection-hint">
+        {{ _('Fetches subtitles from OpenSubtitles.com for languages the source itself does not offer, and muxes them into the finished file. Runs only after the hoster\'s own subtitle tracks came up empty, so nothing is downloaded twice. Needs a free API key (opensubtitles.com → Consumers) and an account login; both are stored encrypted. Free accounts have a small daily download limit.') }}
+      </div>
+
+      <!-- Master toggle -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Enable OpenSubtitles lookup') }}</div>
+          <div class="settings-row-desc">{{ _('Off by default: this contacts an external service with your account and spends its daily quota.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="osEnabled" onchange="saveOpenSubtitlesOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Credentials -->
+      <div class="integ-input-row" id="osCredentialsRow">
+        <div class="settings-field">
+          <label class="settings-field-label" for="osApiKey">{{ _('API key') }}</label>
+          <input type="password" id="osApiKey" placeholder="{{ _('Stored encrypted') }}" autocomplete="off" />
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label" for="osUsername">{{ _('Username') }}</label>
+          <input type="text" id="osUsername" placeholder="{{ _('OpenSubtitles account name') }}" autocomplete="off" />
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label" for="osPassword">{{ _('Password') }}</label>
+          <input type="password" id="osPassword" placeholder="{{ _('Stored encrypted') }}" autocomplete="new-password" />
+        </div>
+        <button class="btn btn-primary" onclick="saveOpenSubtitlesSettings()">{{ _('Save') }}</button>
+        <button class="btn btn-secondary" id="osTestBtn" onclick="testOpenSubtitles(this)">{{ _('Test connection') }}</button>
+      </div>
+      <div class="settings-row-desc" id="osTestResult" style="display:none;margin-top:-6px;"></div>
+
+      <!-- Languages -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Subtitle languages') }}</div>
+          <div class="settings-row-desc">{{ _('Only these languages are looked up, and only when the download does not already contain them. Every language costs one download from your daily quota.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <div class="mf-multiselect" id="osLanguages" data-mf-multiselect
+               data-none-label="{{ _('No language') }}" data-many-label="{{ _('languages') }}">
+            <button type="button" class="mf-multiselect-trigger" aria-expanded="false" aria-haspopup="true">
+              <span class="mf-multiselect-label">{{ _('No language') }}</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div class="mf-multiselect-dropdown">
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="de" /><span>{{ _('German') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="en" /><span>{{ _('English') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="fr" /><span>{{ _('French') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="es" /><span>{{ _('Spanish') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="it" /><span>{{ _('Italian') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="pt-BR" /><span>{{ _('Portuguese (Brazil)') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="pt-PT" /><span>{{ _('Portuguese') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="nl" /><span>{{ _('Dutch') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="pl" /><span>{{ _('Polish') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="ru" /><span>{{ _('Russian') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="tr" /><span>{{ _('Turkish') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="ar" /><span>{{ _('Arabic') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="ja" /><span>{{ _('Japanese') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="ko" /><span>{{ _('Korean') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="zh-CN" /><span>{{ _('Chinese (simplified)') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="cs" /><span>{{ _('Czech') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="da" /><span>{{ _('Danish') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="fi" /><span>{{ _('Finnish') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="sv" /><span>{{ _('Swedish') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="no" /><span>{{ _('Norwegian') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="el" /><span>{{ _('Greek') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="he" /><span>{{ _('Hebrew') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="hu" /><span>{{ _('Hungarian') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="ro" /><span>{{ _('Romanian') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="uk" /><span>{{ _('Ukrainian') }}</span>
+            </label>
+            <label class="mf-multiselect-item">
+              <input type="checkbox" class="chb-main" value="hi" /><span>{{ _('Hindi') }}</span>
+            </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hearing impaired -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Subtitles for the hearing impaired (SDH)') }}</div>
+          <div class="settings-row-desc">{{ _('SDH tracks also describe sounds and name the speaker. Excluded by default.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <select id="osHearingImpaired" onchange="saveOpenSubtitlesOptions()">
+            <option value="exclude">{{ _('Exclude') }}</option>
+            <option value="include">{{ _('Include') }}</option>
+            <option value="only">{{ _('Only SDH') }}</option>
+          </select>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <!-- ══ Fernsehserien.de (unofficial scraper, provider pill) ══ -->
+    <div class="settings-section integ-card collapsed" id="integCard-fernsehserien">
+      <div class="integ-subsection-header integ-collapsible-header" style="padding:unset !important;" onclick="toggleIntegCollapse('fernsehserien')">
+        <span class="integ-collapsible-chevron">▸</span>
+        <span class="integ-subsection-title">Fernsehserien.de</span>
+        <span class="integ-subsection-badge" style="background:#555;color:#fff;">{{ _('Scraper') }}</span>
+        <span class="integ-subsection-badge" style="background:#ac7001;color:#fff;">{{ _('German only') }}</span>
+      </div>
+      <div class="integ-collapsible-body">
+      <div class="integ-subsection-hint">
+        {{ _('Reads public pages on fernsehserien.de (no official API, no login) to add a provider pill in the detail modal showing the German streaming premiere provider — useful as a fallback when TMDB has no German provider data. Titles are matched to pages by a best-effort guess, so this sometimes shows no pill rather than a wrong one.') }}
+      </div>
+
+      <!-- Master toggle -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Enable Fernsehserien.de integration') }}</div>
+          <div class="settings-row-desc">{{ _('Master switch for the Fernsehserien provider pill below.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="fsEnabled" onchange="saveFernsehserienOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="integ-input-row" id="fsTestRow">
+        <button class="btn btn-secondary" id="fsTestBtn" onclick="testFernsehserien(this)">{{ _('Test connection') }}</button>
+      </div>
+      <div class="settings-row-desc" id="fsTestResult" style="display:none;margin-top:-6px;"></div>
+
+      <!-- Provider pill -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Fernsehserien provider pill') }}</div>
+          <div class="settings-row-desc">{{ _('Adds a pill in the detail modal naming the streaming provider fernsehserien.de reports for the German premiere.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="fsShowProviders" onchange="saveFernsehserienOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <!-- ══ ComicVine (optional online enrichment for the comic library) ══ -->
+    <div class="settings-section integ-card collapsed" id="integCard-comicvine">
+      <div class="integ-subsection-header integ-collapsible-header" style="padding:unset !important;" onclick="toggleIntegCollapse('comicvine')">
+        <span class="integ-collapsible-chevron">▸</span>
+        <span class="integ-subsection-title">ComicVine</span>
+        <span class="integ-subsection-badge" style="background:#00a8e1;color:#fff;">API</span>
+        <span class="integ-subsection-badge" style="background:#ac7001;color:#fff;">{{ _('Rate limit') }}</span>
+      </div>
+      <div class="integ-collapsible-body">
+      <div class="integ-subsection-hint">
+        {{ _('Adds publisher, plot, cover art and character lists to the comic library, looked up on comicvine.gamespot.com. Comics are always identified locally first (ComicInfo.xml and the file name) — this only fills in fields the files themselves do not carry and never overwrites them. Needs a free API key (comicvine.gamespot.com → API), stored encrypted. ComicVine allows 200 requests per hour and locks the key out on violation, so MediaForge caps itself below that: a large library is enriched over several hours instead of all at once.') }}
+      </div>
+
+      <!-- Master toggle -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Enable ComicVine enrichment') }}</div>
+          <div class="settings-row-desc">{{ _('Off by default: this sends the series name and issue number of your comics to an external service.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="cvEnabled" onchange="saveComicvineOptions()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- API key -->
+      <div class="integ-input-row" id="cvCredentialsRow">
+        <div class="settings-field">
+          <label class="settings-field-label" for="cvApiKey">{{ _('API key') }}</label>
+          <input type="password" id="cvApiKey" placeholder="{{ _('Stored encrypted') }}" autocomplete="off" />
+        </div>
+        <button class="btn btn-primary" id="cvSaveBtn" onclick="saveComicvineSettings()">{{ _('Save') }}</button>
+        <button class="btn btn-secondary" id="cvTestBtn" onclick="testComicvine(this)">{{ _('Test connection') }}</button>
+      </div>
+      <div class="settings-row-desc" id="cvTestResult" style="display:none;margin-top:-6px;"></div>
+      <div class="settings-row-desc" id="cvThrottle" style="display:none;margin-top:-6px;"></div>
+      </div>
+    </div>
+
+    <!-- Card moved to separate tab -->
+
+    <!-- ══ Module cards deliberately do NOT render here ══════════════════════
+         Modules that call register_thirdparty(settings_host="integrations")
+         used to have their settings card duplicated onto this tab as well as
+         onto Module Manager → Module Settings. Two pages editing the same
+         values is two places to look and one place to forget: a module is
+         installed, updated and removed in the Module Manager, so that is where
+         it is configured. This tab is now only for the integrations MediaForge
+         itself ships (Crunchyroll, Fernsehserien.de, ComicVine, …).
+         See web/thirdparties/registry.py's resolve_module_settings(). -->
+
+  </div><!-- /tab-thirdparty -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Jellyfin NFO Provider
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-jellyfinnfo">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">Jellyfin NFO Provider</h1>
+      <p class="page-subtitle">{{ _('Automatic NFO metadata for downloaded media.') }}</p>
+    </div>
+
+    <div class="settings-section">
+      <h2>
+        Jellyfin NFO Provider
+        <span class="section-badge" style="background:#00a4dc;color:#fff;">Metadata</span>
+      </h2>
+      <div class="settings-hint integ-hint-border">
+        {{ _('Automatically generates NFO metadata for Jellyfin, Kodi and Plex after successful downloads. Requires a TMDB API key configured in CineInfo.') }}
+      </div>
+
+      <div class="settings-hint" id="jellyfinNfoCineinfoWarning" style="display:none; color: var(--danger); margin-bottom: 15px; border-left: 3px solid var(--danger); padding-left: 10px;">
+        <i class="fas fa-exclamation-triangle"></i> {{ _('CineInfo Integration is not set up! To generate NFO files, CineInfo must be configured and enabled.') }}
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Enable Jellyfin NFO Generation') }}</div>
+          <div class="settings-row-desc">{{ _('Enables writing NFO files after a download.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="jellyfinNfoEnabled" onchange="saveJellyfinNfoSettings()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="integ-subsection-header"><span class="integ-subsection-title">{{ _('Create NFO for') }}</span></div>
+      
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Series (tvshow.nfo)') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle"><input type="checkbox" id="jellyfinNfoCreateSeries" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Season (season.nfo)') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle"><input type="checkbox" id="jellyfinNfoCreateSeason" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Episode (&lt;name&gt;.nfo)') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle"><input type="checkbox" id="jellyfinNfoCreateEpisode" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Movie (movie.nfo / &lt;name&gt;.nfo)') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle"><input type="checkbox" id="jellyfinNfoCreateMovie" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Enable Movie Subfolders') }}</div>
+          <div class="settings-row-desc">{{ _('Each movie gets its own subfolder (Synchronized with global download settings).') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle"><input type="checkbox" id="jellyfinNfoMovieSubfolder" onchange="saveJellyfinNfoMovieSubfolder()" /><span class="toggle-slider"></span></label>
+        </div>
+      </div>
+
+      <div class="integ-subsection-header"><span class="integ-subsection-title">{{ _('Include Metadata') }}</span></div>
+
+      <div class="settings-row">
+        <div class="settings-row-left"><div class="settings-row-label">{{ _('Plot / Overview') }}</div></div>
+        <div class="settings-row-right"><label class="toggle"><input type="checkbox" id="jellyfinNfoMetaPlot" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label></div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left"><div class="settings-row-label">{{ _('Genres') }}</div></div>
+        <div class="settings-row-right"><label class="toggle"><input type="checkbox" id="jellyfinNfoMetaGenres" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label></div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left"><div class="settings-row-label">{{ _('Rating') }}</div></div>
+        <div class="settings-row-right"><label class="toggle"><input type="checkbox" id="jellyfinNfoMetaRating" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label></div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left"><div class="settings-row-label">{{ _('Age Rating (FSK)') }}</div></div>
+        <div class="settings-row-right"><label class="toggle"><input type="checkbox" id="jellyfinNfoMetaFsk" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label></div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left"><div class="settings-row-label">{{ _('Cast / Crew') }}</div></div>
+        <div class="settings-row-right"><label class="toggle"><input type="checkbox" id="jellyfinNfoMetaActors" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label></div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left"><div class="settings-row-label">{{ _('Trailer Link') }}</div></div>
+        <div class="settings-row-right"><label class="toggle"><input type="checkbox" id="jellyfinNfoMetaTrailer" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label></div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left"><div class="settings-row-label">{{ _('Aired / Released Date') }}</div></div>
+        <div class="settings-row-right"><label class="toggle"><input type="checkbox" id="jellyfinNfoMetaDate" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label></div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left"><div class="settings-row-label">{{ _('Studio / Network') }}</div></div>
+        <div class="settings-row-right"><label class="toggle"><input type="checkbox" id="jellyfinNfoMetaStudio" onchange="saveJellyfinNfoSettings()" /><span class="toggle-slider"></span></label></div>
+      </div>
+    </div>
+  </div><!-- /tab-jellyfinnfo -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: SyncPlay (native watch-together, own server)
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-syncplay">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">SyncPlay</h1>
+      <p class="page-subtitle">{{ _('Synchronized playback and party rooms with external instances.') }}</p>
+    </div>
+    <div class="settings-section">
+      <h2>SyncPlay <span class="section-badge" style="background:var(--accent);color:#fff;">{{ _('Watch Together') }}</span></h2>
+      <div class="settings-hint integ-hint-border">
+        {{ _('Watch films and series together, perfectly in sync across phone, tablet and PC. Everyone connects to this instance — no third-party server. Invited guests can join via a link without an account.') }}
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Enable SyncPlay') }}</div>
+          <div class="settings-row-desc">{{ _('Adds a SyncPlay entry to the sidebar and lets you start watch-together rooms.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="spEnabled" onchange="saveSyncplaySettings()" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-row" id="spOpenRow" style="display:none;">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Open SyncPlay') }}</div>
+          <div class="settings-row-desc">{{ _('Also appears in the sidebar on the left once enabled.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <a href="/syncplay" class="settings-btn integ-open-btn">{{ _('Open SyncPlay →') }}</a>
+        </div>
+      </div>
+    </div>
+    {% for card in get_settings_cards('integrations', 'syncplay') %}
+    {{ ext.render_settings_card(card) }}
+    {% endfor %}
+  </div><!-- /tab-syncplay -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: UpTime (native provider-site monitoring)
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-uptime">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">UpTime</h1>
+      <p class="page-subtitle">{{ _('Monitor site availability, response times and scrapable sources.') }}</p>
+    </div>
+    <div class="settings-section">
+      <h2>UpTime <span class="section-badge" style="background:var(--accent);color:#fff;">{{ _('Monitoring') }}</span></h2>
+      <div class="settings-hint integ-hint-border">
+        {{ _('Continuously monitors your source sites — reachability and real-site verification, the same check used in the DNS diagnostics. When enabled, an "UpTime" entry appears in the sidebar with an Uptime-Kuma-style dashboard (online/offline, uptime percentage, response time, heartbeat history).') }}
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Enable UpTime monitoring') }}</div>
+          <div class="settings-row-desc">{{ _('Adds an UpTime entry to the sidebar and starts the background monitor.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="uptimeEnabled" onchange="saveUptimeSettings(true)" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div id="uptimeConfig" style="display:none;">
+        <div class="settings-row">
+          <div class="settings-row-left">
+            <div class="settings-row-label">{{ _('Check interval') }}</div>
+            <div class="settings-row-desc">{{ _('How often each site is checked. Minimum 1 minute.') }}</div>
+          </div>
+          <div class="settings-row-right">
+            <div class="uptime-num-field">
+              <input type="number" id="uptimeInterval" class="integ-num" min="1" max="1440" step="1" onchange="saveUptimeSettings()" />
+              <span class="uptime-num-unit">{{ _('min') }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div class="settings-row-left">
+            <div class="settings-row-label">{{ _('Retention') }}</div>
+            <div class="settings-row-desc">{{ _('How long heartbeats are kept. Maximum 7 days.') }}</div>
+          </div>
+          <div class="settings-row-right">
+            <div class="uptime-num-field">
+              <input type="number" id="uptimeRetention" class="integ-num" min="1" max="7" step="1" onchange="saveUptimeSettings()" />
+              <span class="uptime-num-unit">{{ _('days') }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div class="settings-row-left">
+            <div class="settings-row-label">{{ _('Timeout') }}</div>
+            <div class="settings-row-desc">{{ _('Request timeout per check (5–120 s).') }}</div>
+          </div>
+          <div class="settings-row-right">
+            <div class="uptime-num-field">
+              <input type="number" id="uptimeTimeout" class="integ-num" min="5" max="120" step="1" onchange="saveUptimeSettings()" />
+              <span class="uptime-num-unit">{{ _('sec') }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div class="settings-row-left">
+            <div class="settings-row-label">{{ _('Failure threshold') }}</div>
+            <div class="settings-row-desc">{{ _('Consecutive failed checks before a site is reported offline. Higher values ignore brief hiccups.') }}</div>
+          </div>
+          <div class="settings-row-right">
+            <div class="uptime-num-field">
+              <input type="number" id="uptimeFailureThreshold" class="integ-num" min="1" max="10" step="1" onchange="saveUptimeSettings()" />
+              <span class="uptime-num-unit">{{ _('checks') }}</span>
+            </div>
+          </div>
+        </div>
+
+        <label class="settings-checkbox-row" for="uptimeUseGet">
+          <input type="checkbox" class="chb-main" id="uptimeUseGet" onchange="saveUptimeSettings()" />
+          <span>{{ _('Verify with full GET request') }}
+            <small style="opacity:.6; display:block;">{{ _('More reliable for Cloudflare/DDoS-Guard sites than a HEAD request, at the cost of more bandwidth.') }}</small>
+          </span>
+        </label>
+
+        <div class="settings-subhead" style="padding-left:18px;">{{ _('Tracked sources') }}</div>
+        <div class="settings-row-desc" style="padding:0 0 8px 18px;">{{ _('Choose which of your source sites should be monitored.') }}</div>
+
+        <label class="settings-checkbox-row" for="uptimeTrack_aniworld">
+          <input type="checkbox" class="chb-main" id="uptimeTrack_aniworld" onchange="saveUptimeSettings()" />
+          <span>AniWorld <small style="opacity:.6">aniworld.to</small></span>
+        </label>
+        <label class="settings-checkbox-row" for="uptimeTrack_sto">
+          <input type="checkbox" class="chb-main" id="uptimeTrack_sto" onchange="saveUptimeSettings()" />
+          <span>SerienStream <small style="opacity:.6">serienstream.to</small></span>
+        </label>
+        <label class="settings-checkbox-row" for="uptimeTrack_filmpalast">
+          <input type="checkbox" class="chb-main" id="uptimeTrack_filmpalast" onchange="saveUptimeSettings()" />
+          <span>FilmPalast <small style="opacity:.6">filmpalast.to</small></span>
+        </label>
+        <label class="settings-checkbox-row" for="uptimeTrack_megakino">
+          <input type="checkbox" class="chb-main" id="uptimeTrack_megakino" onchange="saveUptimeSettings()" />
+          <!-- The domain is filled in from /api/uptime/status: MegaKino mints a
+               new one whenever the current is blocked (see
+               mediaforge/domain_resolver.py), so a hardcoded label goes stale.
+               The text below is only what shows before that answer arrives. -->
+          <span>MegaKino <small style="opacity:.6" data-uptime-domain="megakino"></small></span>
+        </label>
+        <label class="settings-checkbox-row" for="uptimeTrack_filmo">
+          <input type="checkbox" class="chb-main" id="uptimeTrack_filmo" onchange="saveUptimeSettings()" />
+          <span>filmo.to <small style="opacity:.6">filmo.to</small></span>
+        </label>
+        <label class="settings-checkbox-row" for="uptimeTrack_nineanime">
+          <input type="checkbox" class="chb-main" id="uptimeTrack_nineanime" onchange="saveUptimeSettings()" />
+          <span>9anime <small style="opacity:.6">9anime.or.at · EN</small></span>
+        </label>
+        <label class="settings-checkbox-row" for="uptimeTrack_aniwaves">
+          <input type="checkbox" class="chb-main" id="uptimeTrack_aniwaves" onchange="saveUptimeSettings()" />
+          <span>Aniwaves <small style="opacity:.6">aniwaves.ru · EN</small></span>
+        </label>
+        <label class="settings-checkbox-row" for="uptimeTrack_hanime">
+          <input type="checkbox" class="chb-main" id="uptimeTrack_hanime" onchange="saveUptimeSettings()" />
+          <span>hanime <small style="opacity:.6">hanime.tv · 18+</small></span>
+        </label>
+        {# Sites a module registered (uptime_monitor.register_monitor_site).
+           Filled by integrations.js from GET /api/uptime/status -> sources,
+           since only the running app knows which modules are installed. #}
+        <div id="uptimeThirdpartyTracks"></div>
+
+        <div class="settings-row" id="uptimeOpenRow" style="margin-top:14px;">
+          <div class="settings-row-left">
+            <div class="settings-row-label">{{ _('Open UpTime') }}</div>
+            <div class="settings-row-desc">{{ _('Also appears in the sidebar on the left once enabled.') }}</div>
+          </div>
+          <div class="settings-row-right">
+            <a href="/uptime" class="settings-btn integ-open-btn">{{ _('Open UpTime →') }}</a>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% for card in get_settings_cards('integrations', 'uptime') %}
+    {{ ext.render_settings_card(card) }}
+    {% endfor %}
+  </div><!-- /tab-uptime -->
+
+
+</div>
+<div id="toast" class="toast"></div>
+<!-- Shared collapsible-card behaviour + generic enable toggle for
+     auto-registered extensions (see _settings_card_macro.html /
+     web/thirdparties/registry.py). Also used by notifications.html. -->
+<script src="{{ url_for('static', filename='extension_cards.js') }}"></script>
+<script src="{{ url_for('static', filename='integrations.js') }}"></script>
+{% endblock %}

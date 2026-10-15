@@ -1,0 +1,4549 @@
+// ─── Tab navigation ────────────────────────────────────────────────────────
+
+function switchTab(name) {
+  document.querySelectorAll(".settings-tab-btn, .settings-tab").forEach(function (btn) {
+    btn.classList.toggle("active", btn.dataset.tab === name);
+  });
+  document.querySelectorAll(".settings-tab-panel").forEach(function (panel) {
+    panel.classList.toggle("active", panel.id === "tab-" + name);
+  });
+  // Sync sidebar sub-links and keep container open
+  var subContainer = document.getElementById("settingsSidebarSub");
+  if (subContainer) subContainer.classList.add("open");
+  var toggleBtn = document.getElementById("settingsSidebarToggle");
+  if (toggleBtn) toggleBtn.classList.remove("collapsed");
+  document.querySelectorAll(".sidebar-sub-link[data-settings-tab]").forEach(function (a) {
+    a.classList.toggle("active", a.dataset.settingsTab === name);
+  });
+  // Update URL hash without scrolling
+  try {
+    history.replaceState(null, "", "#" + name);
+    localStorage.setItem("settingsActiveTab", name);
+  } catch (e) { }
+
+  // The cache sizes are measurements, not settings: they change while this
+  // page is open, because the background workers keep producing covers. They
+  // used to be fetched exactly once, when the script loaded -- so a settings
+  // page opened before the covers existed went on reporting "empty" for as
+  // long as it stayed open, however many covers had been written since.
+  // Re-read them whenever the tab that shows them is opened.
+  if (name === "library") {
+    if (typeof loadComicCacheStats === "function") loadComicCacheStats();
+    if (typeof loadBookCacheStats === "function") loadBookCacheStats();
+  }
+}
+
+(function restoreTab() {
+  var hash = "";
+  try { hash = (window.location.hash || "").replace("#", "").trim(); } catch (e) { }
+  // Read valid tab ids off the DOM instead of a hardcoded list, so a tab a
+  // thirdparty registers dynamically (settings_host="settings", see
+  // registry.py's resolve_dynamic_tabs()) is restorable via #hash exactly
+  // like the built-in ones -- same pattern as integrations.js's
+  // restoreIntegTab().
+  var validTabs = Array.prototype.map.call(
+    document.querySelectorAll("#settingsTabs .settings-tab"),
+    function (btn) { return btn.dataset.tab; }
+  );
+  var tab = (hash && validTabs.indexOf(hash) !== -1) ? hash : "overview";
+  if (validTabs.indexOf(tab) === -1) tab = "overview";
+  switchTab(tab);
+})();
+
+// ─── Deep link from the Modulmanager ("Open module" button) ───────────────
+// Mirrors integrations.js's openDeepLinkedThirdpartyCard(): extensions.html
+// links here as .../settings?open=<item_id>#<tab> for any thirdparty
+// registered with settings_host="settings".
+(function openDeepLinkedThirdpartyCard() {
+  var openId = "";
+  try { openId = new URLSearchParams(window.location.search).get("open") || ""; } catch (e) {}
+  if (!openId) return;
+  document.addEventListener("DOMContentLoaded", function () {
+    setTimeout(function () {
+      var card = document.getElementById("integCard-" + openId);
+      if (!card) return;
+      card.classList.remove("collapsed");
+      try { localStorage.setItem("integCollapsed_" + openId, "0"); } catch (e) {}
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.classList.add("integ-card-highlight");
+      setTimeout(function () { card.classList.remove("integ-card-highlight"); }, 2200);
+    }, 60);
+  });
+})();
+
+// ─── Element references ─────────────────────────────────────────────────────
+
+const downloadPathInput = document.getElementById("downloadPath");
+const langSeparationCb = document.getElementById("langSeparation");
+const disableEnglishSubCb = document.getElementById("disableEnglishSub");
+const filmpalastSubfolderCb = document.getElementById("filmpalastSubfolder");
+const dlQualityUpgradeCb = document.getElementById("dlQualityUpgrade");
+const dlAudioTrackMergeCb = document.getElementById("dlAudioTrackMerge");
+const dlSubtitlesCb = document.getElementById("dlSubtitles");
+const aniworldAbsoluteEpisodesCb = document.getElementById("aniworldAbsoluteEpisodes");
+const syncScheduleSelect         = document.getElementById("syncSchedule");
+const syncLanguageSelect         = document.getElementById("syncLanguage");
+const syncProviderSelect         = document.getElementById("syncProvider");
+const syncPathUnavailableSelect  = document.getElementById("syncPathUnavailableAction");
+const syncDefaultPathSelect      = document.getElementById("syncDefaultPath");
+// Stored setting and available paths arrive from two independent requests, and
+// either can win the race. The wanted value is therefore remembered and applied
+// whenever the options are (re)built, instead of being set once on load.
+let _syncDefaultPathWanted = "";
+const historyRetentionSelect     = document.getElementById("historyRetention");
+const syncModeSelect             = document.getElementById("syncMode");
+const syncIntervalField          = document.getElementById("syncIntervalField");
+const syncWeeklyBlock            = document.getElementById("syncWeeklyBlock");
+const syncDaysToggles            = document.getElementById("syncDaysToggles");
+const syncTimesList              = document.getElementById("syncTimesList");
+
+// ─── Load all settings ──────────────────────────────────────────────────────
+
+async function loadSettings() {
+  try {
+    const resp = await fetch("/api/settings?_=" + Date.now()); //Prohibit Browser Caching because of "new URL"(Yes there was in issue during development)
+    const data = await resp.json();
+
+    // Downloads tab
+    if (downloadPathInput) downloadPathInput.value = data.download_path || "";
+    if (langSeparationCb) langSeparationCb.checked = data.lang_separation === "1";
+    if (disableEnglishSubCb) disableEnglishSubCb.checked = data.disable_english_sub === "1";
+    if (filmpalastSubfolderCb) filmpalastSubfolderCb.checked = data.movie_subfolder === "1" || data.filmpalast_movie_subfolder === "1";
+    if (dlQualityUpgradeCb) dlQualityUpgradeCb.checked = data.dl_quality_upgrade === "1";
+    if (dlAudioTrackMergeCb) dlAudioTrackMergeCb.checked = data.dl_audio_track_merge === "1";
+    // Defaults to on, so treat a missing value as enabled rather than unchecked.
+    if (dlSubtitlesCb) dlSubtitlesCb.checked = data.dl_subtitles === undefined || data.dl_subtitles === "1";
+    if (aniworldAbsoluteEpisodesCb) aniworldAbsoluteEpisodesCb.checked = data.aniworld_absolute_episodes === "1";
+
+    // Before any language dropdown gets its stored value: a saved default may
+    // BE a fallback group, and a select silently ignores a value it has no
+    // option for.
+    languageGroupsCache = data.language_groups || [];
+    _applyLanguageGroupOptions();
+
+    const dlLangEl = document.getElementById("downloadLanguage");
+    if (dlLangEl && data.download_language) dlLangEl.value = data.download_language;
+
+    const dlProvEl = document.getElementById("downloadProvider");
+    if (dlProvEl && data.download_provider) dlProvEl.value = data.download_provider;
+
+    const nmTplEl = document.getElementById("namingTemplate");
+    // Same broken "{season:02d}" spelling as the old Reset button used to
+    // write — the backend formats with strings that are already padded, so the
+    // spec raises on every download. Only reachable if naming_template ever
+    // came back empty, but there is no reason to keep a landmine around.
+    if (nmTplEl) nmTplEl.value = data.naming_template || NAMING_TEMPLATE_DEFAULT;
+
+    const rateLimitEl = document.getElementById("downloadRateLimit");
+    if (rateLimitEl && data.download_rate_limit !== undefined) rateLimitEl.value = data.download_rate_limit;
+    const winEnabledEl = document.getElementById("downloadWindowEnabled");
+    if (winEnabledEl) winEnabledEl.checked = data.download_window_enabled === "1";
+    const winStartEl = document.getElementById("downloadWindowStart");
+    if (winStartEl) {
+      if (data.download_window_start) winStartEl.value = data.download_window_start;
+      createCustomTimePicker(winStartEl);
+      if (winStartEl.syncCustomPicker) winStartEl.syncCustomPicker();
+    }
+    const winEndEl = document.getElementById("downloadWindowEnd");
+    if (winEndEl) {
+      if (data.download_window_end) winEndEl.value = data.download_window_end;
+      createCustomTimePicker(winEndEl);
+      if (winEndEl.syncCustomPicker) winEndEl.syncCustomPicker();
+    }
+    const timeFormatEl = document.getElementById("timeFormatSetting");
+    if (timeFormatEl) {
+      timeFormatEl.value = localStorage.getItem("timeFormatSetting") || "24h";
+    }
+    updateDownloadWindowDisabledState();
+
+    // Auto-Sync tab
+    if (syncScheduleSelect && data.sync_schedule) syncScheduleSelect.value = data.sync_schedule;
+    if (historyRetentionSelect && data.history_retention_days != null) historyRetentionSelect.value = String(data.history_retention_days);
+    if (syncModeSelect) syncModeSelect.value = data.sync_mode === "weekly" ? "weekly" : "interval";
+    _renderSyncDays(data.sync_days || "0,1,2,3,4,5,6");
+    _renderSyncTimes(data.sync_times || "06:00");
+    _applySyncModeUI();
+
+    // Updates tab — automatic update schedule
+    _renderAutoUpdateDays(data.auto_update_days || "0,1,2,3,4,5,6");
+    const _auEnabled = document.getElementById("autoUpdateEnabled");
+    if (_auEnabled) _auEnabled.checked = data.auto_update_enabled === "1";
+    const _auTime = document.getElementById("autoUpdateTime");
+    if (_auTime && data.auto_update_time) _auTime.value = data.auto_update_time;
+    const _auBlock = document.getElementById("autoUpdateBlock");
+    if (_auBlock) _auBlock.style.display = (data.auto_update_enabled === "1") ? "" : "none";
+
+    const isLangSep = data.lang_separation === "1";
+    let currentSyncLang = data.sync_language;
+    if (currentSyncLang === "All Languages" && !isLangSep) currentSyncLang = "German Dub";
+    updateSyncLanguageDropdown(isLangSep, currentSyncLang);
+    if (syncProviderSelect && data.sync_provider) syncProviderSelect.value = data.sync_provider;
+    if (syncPathUnavailableSelect && data.sync_path_unavailable_action) syncPathUnavailableSelect.value = data.sync_path_unavailable_action;
+    const defaultThemeMode = document.getElementById("defaultThemeMode");
+    if (defaultThemeMode && data.default_theme_mode) {
+      defaultThemeMode.value = data.default_theme_mode === "light" ? "light" : "dark";
+    }
+    if (data.default_ui_language) markDefaultLanguage(data.default_ui_language);
+    // null means "never configured" -- the boxes stay unticked, which is what
+    // the effective behaviour is until an admin saves them once.
+    loadDefaultUiToggles(data.default_ui_toggles);
+    const defaultAccentHex = document.getElementById("defaultAccentHex");
+    if (defaultAccentHex && data.default_accent !== undefined) {
+      defaultAccentHex.value = data.default_accent || "";
+      const picker = document.getElementById("defaultAccentPicker");
+      // "" means "built-in colour", and an <input type=color> has no empty
+      // state -- left unset it renders black, which reads as a real (wrong)
+      // choice. Fall back to the built-in accent instead.
+      if (picker) picker.value = data.default_accent || MF_BUILTIN_ACCENT;
+      // Build here too: this response can land before DOMContentLoaded, and
+      // marking a row that does not exist yet silently loses the active dot.
+      buildDefaultAccentPresets();
+      markDefaultAccentPreset(data.default_accent || "");
+    }
+    if (data.sync_default_custom_path !== undefined) {
+      _syncDefaultPathWanted = String(data.sync_default_custom_path || "");
+      renderSyncDefaultPathOptions();
+    }
+    const syncErrorRetriesEl = document.getElementById("syncErrorRetries");
+    if (syncErrorRetriesEl && data.sync_error_retries !== undefined) syncErrorRetriesEl.value = data.sync_error_retries;
+    const syncErrorRetryTimeEl = document.getElementById("syncErrorRetryTime");
+    if (syncErrorRetryTimeEl && data.sync_error_retry_time) syncErrorRetryTimeEl.value = data.sync_error_retry_time;
+    const syncAdaptiveEnabledEl = document.getElementById("syncAdaptiveEnabled");
+    if (syncAdaptiveEnabledEl) syncAdaptiveEnabledEl.checked = data.sync_adaptive_enabled === "1";
+    const syncAdaptivePauseEl = document.getElementById("syncAdaptivePauseAfter");
+    if (syncAdaptivePauseEl && data.sync_adaptive_pause_after) syncAdaptivePauseEl.value = data.sync_adaptive_pause_after;
+    const syncAdaptiveRetryValueEl = document.getElementById("syncAdaptiveRetryValue");
+    if (syncAdaptiveRetryValueEl && data.sync_adaptive_retry_value !== undefined) syncAdaptiveRetryValueEl.value = data.sync_adaptive_retry_value;
+    const syncAdaptiveRetryUnitEl = document.getElementById("syncAdaptiveRetryUnit");
+    if (syncAdaptiveRetryUnitEl && data.sync_adaptive_retry_unit) syncAdaptiveRetryUnitEl.value = data.sync_adaptive_retry_unit;
+    updateAdaptiveSyncDisabledState();
+
+    // Netzwerk tab
+    const dnsModeEl = document.getElementById("dnsMode");
+    const dnsServerEl = document.getElementById("dnsServer");
+    if (dnsModeEl) { dnsModeEl.value = data.dns_mode || "system"; onDnsModeChange(); }
+    if (dnsServerEl) dnsServerEl.value = data.dns_server || "";
+
+    const _setCb = (id, on) => { const el = document.getElementById(id); if (el) el.checked = !!on; };
+    _setCb("browserPersistentProfile", data.browser_persistent_profile === "1");
+    _setCb("captchaAdblock",        (data.captcha_adblock ?? "1") === "1");
+    _setCb("captchaAdtabGuard",     (data.captcha_adtab_guard ?? "1") === "1");
+    _setCb("captchaOverlayRemoval", (data.captcha_overlay_removal ?? "1") === "1");
+    _setCb("captchaUaSync",         (data.captcha_ua_sync ?? "1") === "1");
+    _setCb("captchaWebglSpoof",     (data.captcha_webgl_spoof ?? "0") === "1");
+    _setCb("captchaManual",         (data.captcha_manual ?? "0") === "1");
+    _setCb("captchaVisible",        (data.captcha_visible ?? "0") === "1");
+    const captchaTimeoutEl = document.getElementById("captchaTimeout");
+    if (captchaTimeoutEl) captchaTimeoutEl.value = data.captcha_timeout || "";
+
+    const webBaseUrlEl = document.getElementById("webBaseUrl");
+    if (webBaseUrlEl) webBaseUrlEl.value = data.web_base_url || "";
+
+    const debugModeEl = document.getElementById("debugMode");
+    if (debugModeEl) {
+      const forced = data.debug_forced === "1";
+      debugModeEl.checked = data.debug_mode === "1" || forced;
+      // When started with --debug the toggle is locked on (greyed out).
+      debugModeEl.disabled = forced;
+      const forcedHint = document.getElementById("debugForcedHint");
+      if (forcedHint) forcedHint.style.display = forced ? "block" : "none";
+      const row = debugModeEl.closest(".settings-checkbox-row");
+      if (row) row.style.opacity = forced ? "0.6" : "";
+    }
+    const mediaStatsEl = document.getElementById("mediaStatsEnabled");
+    if (mediaStatsEl) mediaStatsEl.checked = data.media_stats_enabled === "1";
+    const newHomeEl = document.getElementById("newHomeEnabled");
+    if (newHomeEl) newHomeEl.checked = data.new_home_enabled === "1";
+    const dashModeDefaultEl = document.getElementById("dashModeDefault");
+    if (dashModeDefaultEl) {
+      const stored = String(data.home_dash_enabled_default || "");
+      dashModeDefaultEl.value = ["0", "all"].indexOf(stored) === -1 ? "" : stored;
+      syncStartTabDefaultRow();
+    }
+    const startTabDefaultEl = document.getElementById("startTabDefault");
+    if (startTabDefaultEl) {
+      startTabDefaultEl.value = String(data.home_tab_default || "") === "disc" ? "disc" : "";
+    }
+    const foryouHeroDefaultEl = document.getElementById("foryouHeroHiddenDefault");
+    if (foryouHeroDefaultEl) foryouHeroDefaultEl.checked = data.foryou_hero_hidden_default !== "1";
+    const foryouRailDefaultEl = document.getElementById("foryouRailHiddenDefault");
+    if (foryouRailDefaultEl) foryouRailDefaultEl.checked = data.foryou_hidden_default !== "1";
+    const rescanEl = document.getElementById("libraryRescanHours");
+    if (rescanEl && data.library_rescan_hours != null) rescanEl.value = String(data.library_rescan_hours);
+    const probeEl = document.getElementById("libraryProbeWorkers");
+    if (probeEl && data.library_probe_workers != null) probeEl.value = String(data.library_probe_workers);
+    // Comics. The fallbacks repeat the server's defaults on purpose: a
+    // response from an instance that predates these keys must render the same
+    // state the server would store, not an empty checkbox for a setting that
+    // is actually on.
+    const comicPrepareEl = document.getElementById("comicAutoPrepareAll");
+    if (comicPrepareEl) comicPrepareEl.checked = (data.comic_auto_prepare_all ?? "0") === "1";
+    const comicReplaceEl = document.getElementById("comicReplaceOriginal");
+    if (comicReplaceEl) comicReplaceEl.checked = (data.comic_replace_original ?? "0") === "1";
+    // Which libraries the DEFAULT download root feeds. Custom paths carry
+    // theirs in the paths table; the default root has no row there, so it is a
+    // plain setting (see routes/library.py's _LIB_DEFAULT_KINDS_SETTING).
+    const defaultKindBoxes = defaultPathKindBoxes();
+    if (defaultKindBoxes.length && data.default_path_media_kinds != null) {
+      const activeKinds = String(data.default_path_media_kinds).split(",").map((k) => k.trim());
+      defaultKindBoxes.forEach(function (box) {
+        box.checked = activeKinds.indexOf(box.dataset.mediaKind) !== -1;
+      });
+    }
+
+    const webConsoleEl = document.getElementById("webConsole");
+    if (webConsoleEl) {
+      const on = data.web_console === "1";
+      webConsoleEl.checked = on;
+      // If the Web Console was already enabled (e.g. during startup), show it immediately.
+      setWebConsoleVisible(on);
+      if (on) startWebConsole();
+    }
+
+
+    // Startup & Tray
+    const trayModeEl = document.getElementById("trayMode");
+    if (trayModeEl) trayModeEl.checked = data.tray_mode === "1";
+    const autostartEl = document.getElementById("autostartEnabled");
+    if (autostartEl) autostartEl.checked = data.autostart_enabled === "1";
+    const openBrowserEl = document.getElementById("openBrowserOnStartup");
+    if (openBrowserEl) openBrowserEl.checked = data.open_browser_on_startup !== "0"; // Default true
+    
+    if (data.is_docker) {
+      if (trayModeEl) trayModeEl.disabled = true;
+      if (autostartEl) autostartEl.disabled = true;
+      if (openBrowserEl) openBrowserEl.disabled = true;
+      const dhint = document.getElementById("dockerStartupHint");
+      if (dhint) dhint.style.display = "block";
+      const trayOpts = document.getElementById("startupTrayOptions");
+      if (trayOpts) trayOpts.style.opacity = "0.6";
+    }
+
+    // System: which display the browser stack runs on
+    _renderDisplayMode(data.display);
+
+    // Design tab - Extended Settings
+    _loadDesignCheckboxes();
+
+    // Sources: order, section order, enabled state, search scope
+    _loadSourceSettings(data.sources || {});
+
+    // Hoster order + automatic provider fallback
+    _loadProviderSettings(data.providers || {});
+
+    // Per-site domain fallback (mirrors)
+    _loadMirrorSettings(data.mirrors || {});
+
+  } catch (e) {
+    showToast(t("Einstellungen konnten nicht geladen werden: ",
+                "Could not load the settings: ") + e.message);
+  }
+  loadApiKey();
+  loadSsoSettings();
+}
+
+// ─── Display mode (General -> System) ───────────────────────────────────────
+
+/**
+ * Render the read-only display status from /api/settings' `display` block.
+ *
+ * Three states, because they need three different answers: a real screen (all
+ * good), a virtual framebuffer (works, costs RAM -- hence the extra hint), and
+ * no screen at all (captcha solving is dead until Xvfb is installed).
+ */
+function _renderDisplayMode(info) {
+  const box = document.getElementById("displayModeBox");
+  if (!box || !info) return;
+  const dot = box;
+  const title = document.getElementById("displayModeTitle");
+  const desc = document.getElementById("displayModeDesc");
+  const ram = document.getElementById("displayModeRamHint");
+  const fix = document.getElementById("displayModeFixHint");
+  const mode = info.mode || "unavailable";
+
+  dot.classList.remove("is-native", "is-virtual", "is-unavailable");
+  dot.classList.add("is-" + mode);
+  if (ram) ram.style.display = mode === "virtual" ? "" : "none";
+  if (fix) fix.style.display = "none";
+
+  const where = info.display ? " (DISPLAY=" + info.display + ")" : "";
+  if (mode === "native") {
+    title.textContent = t("Echter Bildschirm", "Real display");
+    desc.textContent = t(
+      "Ein Display-Server ist vorhanden — der Captcha-Browser läuft direkt darauf.",
+      "A display server is present — the captcha browser runs on it directly."
+    ) + where;
+  } else if (mode === "virtual") {
+    title.textContent = info.docker
+      ? t("Virtueller Bildschirm (Xvfb, Docker)", "Virtual display (Xvfb, Docker)")
+      : t("Virtueller Bildschirm (Xvfb)", "Virtual display (Xvfb)");
+    desc.textContent = (info.active
+      ? t("Läuft. Kein echter Bildschirm vorhanden, MediaForge nutzt ein virtuelles Framebuffer-Display 1920×1080.",
+          "Running. No real screen available, MediaForge uses a 1920×1080 virtual framebuffer.")
+      : t("Kein echter Bildschirm vorhanden. Xvfb ist installiert und wird beim ersten Bedarf automatisch gestartet.",
+          "No real screen available. Xvfb is installed and starts automatically when first needed.")) + where;
+  } else {
+    title.textContent = t("Kein Bildschirm — Funktionen eingeschränkt",
+                          "No display — limited functionality");
+    desc.textContent = t(
+      "Captcha-Lösung und Browser-basierte Anbieter können nicht laufen.",
+      "Captcha solving and browser-based providers cannot run."
+    );
+    if (fix) {
+      fix.style.display = "";
+      fix.textContent = t(
+        "Xvfb konnte nicht automatisch installiert werden. Bitte manuell installieren (Debian/Ubuntu: sudo apt install xvfb, Fedora: sudo dnf install xorg-x11-server-Xvfb, Arch: sudo pacman -S xorg-server-xvfb) und MediaForge neu starten.",
+        "Xvfb could not be installed automatically. Install it manually (Debian/Ubuntu: sudo apt install xvfb, Fedora: sudo dnf install xorg-x11-server-Xvfb, Arch: sudo pacman -S xorg-server-xvfb) and restart MediaForge."
+      ) + (info.error ? " [" + info.error + "]" : "");
+    }
+  }
+}
+
+// ─── Downloads tab ──────────────────────────────────────────────────────────
+
+async function saveLangSeparation() {
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        download_path: downloadPathInput ? downloadPathInput.value.trim() : undefined,
+        lang_separation: langSeparationCb ? langSeparationCb.checked : false,
+      }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+        showToast(langSeparationCb && langSeparationCb.checked
+      ? t("Sprachentrennung aktiviert", "Language separation activated")
+      : t("Sprachentrennung deaktiviert", "Language separation deactivated"));
+    // Switching it off breaks any job that uses a language fallback group — the
+    // backend counts them and says so instead of letting them fail silently.
+    if (data.warning) showToast(data.warning);
+    const isLangSep = langSeparationCb ? langSeparationCb.checked : false;
+    // Groups become (un)selectable with this setting, so every language
+    // dropdown on the page has to be rebuilt.
+    _applyLanguageGroupOptions();
+    let currentSyncLang = syncLanguageSelect ? syncLanguageSelect.value : null;
+    // Both "All Languages" and a fallback group stop being valid defaults
+    // without language separation — write a real language back instead of
+    // leaving a setting the next sync job would inherit and choke on.
+    const _syncLangDead = currentSyncLang === "All Languages"
+      || String(currentSyncLang || "").indexOf("group:") === 0;
+    if (!isLangSep && _syncLangDead) {
+      currentSyncLang = "German Dub";
+      updateSyncLanguageDropdown(false, currentSyncLang);
+      saveSyncDefaults();
+    } else {
+      updateSyncLanguageDropdown(isLangSep, currentSyncLang);
+    }
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+function updateSyncLanguageDropdown(isLangSep, currentValue) {
+  if (!syncLanguageSelect) return;
+  syncLanguageSelect.innerHTML = "";
+  if (isLangSep) {
+    const opt = document.createElement("option");
+    opt.value = "All Languages";
+    opt.textContent = t("Alle Sprachen","All Languages");
+    syncLanguageSelect.appendChild(opt);
+  }
+  ["German Dub", "English Sub", "German Sub", "English Dub", "English Dub (German Sub)"].forEach(function (l) {
+    const opt = document.createElement("option");
+    opt.value = l;
+    opt.textContent = l;
+    syncLanguageSelect.appendChild(opt);
+  });
+  appendLanguageGroupOptions(syncLanguageSelect);
+  if (currentValue) syncLanguageSelect.value = currentValue;
+}
+
+async function saveDisableEnglishSub() {
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ disable_english_sub: disableEnglishSubCb ? disableEnglishSubCb.checked : false }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Englische Untertitel-Downloads ", "English subtitle downloads ") +
+      (disableEnglishSubCb && disableEnglishSubCb.checked ? t("deaktiviert","deactivated") : t("aktiviert","activated")));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveMovieSubfolder() {
+  try {
+    const checked = filmpalastSubfolderCb ? filmpalastSubfolderCb.checked : false;
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filmpalast_movie_subfolder: checked,
+        movie_subfolder: checked
+      }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Film-Unterordner ", "Movie subfolder ") + (checked ? t("aktiviert","activated") : t("deaktiviert","deactivated")));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+window.saveFilmpalastSubfolder = saveMovieSubfolder;
+
+// ─── Duplicate handling ─────────────────────────────────────────────────────
+// Two independent checks that only run when an episode is already on disk:
+// a quality comparison (replace the file when the source now serves better)
+// and an audio-track merge (add a new language to the existing file).
+
+async function saveDlQualityUpgrade() {
+  const checked = dlQualityUpgradeCb ? dlQualityUpgradeCb.checked : false;
+  await _saveDupeSetting({ dl_quality_upgrade: checked },
+    checked ? t("Qualitätsprüfung aktiviert", "Quality check activated")
+            : t("Qualitätsprüfung deaktiviert", "Quality check deactivated"));
+}
+window.saveDlQualityUpgrade = saveDlQualityUpgrade;
+
+async function saveDlAudioTrackMerge() {
+  const checked = dlAudioTrackMergeCb ? dlAudioTrackMergeCb.checked : false;
+  await _saveDupeSetting({ dl_audio_track_merge: checked },
+    checked ? t("Tonspur-Zusammenführung aktiviert", "Audio track merging activated")
+            : t("Tonspur-Zusammenführung deaktiviert", "Audio track merging deactivated"));
+}
+window.saveDlAudioTrackMerge = saveDlAudioTrackMerge;
+
+async function saveDlSubtitles() {
+  const checked = dlSubtitlesCb ? dlSubtitlesCb.checked : false;
+  await _saveDupeSetting({ dl_subtitles: checked },
+    checked ? t("Untertitel-Download aktiviert", "Subtitle download activated")
+            : t("Untertitel-Download deaktiviert", "Subtitle download deactivated"));
+}
+window.saveDlSubtitles = saveDlSubtitles;
+
+// AniWorld absolute episode numbering. Shares the small PUT helper below; it is
+// a plain single-field save, not part of the duplicate handling.
+async function saveAniworldAbsoluteEpisodes() {
+  const checked = aniworldAbsoluteEpisodesCb ? aniworldAbsoluteEpisodesCb.checked : false;
+  await _saveDupeSetting({ aniworld_absolute_episodes: checked },
+    checked ? t("Absolute Episodennummern aktiviert", "Absolute episode numbers activated")
+            : t("Absolute Episodennummern deaktiviert", "Absolute episode numbers deactivated"));
+}
+window.saveAniworldAbsoluteEpisodes = saveAniworldAbsoluteEpisodes;
+
+async function _saveDupeSetting(payload, okMessage) {
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(okMessage);
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveDownloadPath() {
+  const download_path = downloadPathInput ? downloadPathInput.value.trim() : "";
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ download_path }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Download-Pfad gespeichert","Download path saved"));
+  } catch (e) {
+    showToast(t("Einstellungen konnten nicht gespeichert werden: ", "Settings could not be saved: ") + e.message);
+  }
+}
+
+async function saveDownloadLanguage() {
+  const el = document.getElementById("downloadLanguage");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ download_language: el.value }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Standardsprache gespeichert","Default language saved"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveDownloadProvider() {
+  const el = document.getElementById("downloadProvider");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ download_provider: el.value }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Standardanbieter gespeichert","Default provider saved"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveNamingTemplate() {
+  const el = document.getElementById("namingTemplate");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ naming_template: el.value.trim() }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Namens-Template gespeichert","Naming template saved"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+// The stock template, identical to config.NAMING_TEMPLATE. Kept as a constant
+// because both the Reset button and the "Set Defaults" preset restore it.
+//
+// Note the placeholders carry NO format spec: the backend hands .format() values
+// that are already zero-padded strings, so a "{season:02d}" here would raise
+// "Unknown format code 'd' for object of type 'str'" on every single download.
+const NAMING_TEMPLATE_DEFAULT =
+  "{title} ({year}) [imdbid-{imdbid}]/Season {season}/{title} S{season}E{episode}.mkv";
+
+function resetNamingTemplate() {
+  const el = document.getElementById("namingTemplate");
+  if (el) el.value = NAMING_TEMPLATE_DEFAULT;
+  saveNamingTemplate();
+}
+
+// ─── Download presets ───────────────────────────────────────────────────────
+// Two buttons, one field set. Both write exactly the same five settings, so
+// whichever was pressed last fully describes the state — a preset can never
+// leave a half-applied mix behind. Keep the lists in sync with the hint text
+// under the buttons in settings.html.
+const DOWNLOAD_PRESETS = {
+  // MediaForge out of the box.
+  default: {
+    naming_template: NAMING_TEMPLATE_DEFAULT,
+    aniworld_absolute_episodes: false,
+    lang_separation: false,
+    disable_english_sub: false,
+    movie_subfolder: false,
+  },
+  // Jellyfin: one folder per series rather than per-season subfolders,
+  // absolute episode numbers so the file carries the number the episode is
+  // known by outside AniWorld, no language folders (the language is in the file
+  // name instead, which keeps one series as one library entry), and each movie
+  // in its own folder, which is what Jellyfin's movie scanner expects.
+  //
+  // The "- ({language})" suffix is a deliberate trade-off: Jellyfin reads
+  // whatever follows the SxxExx marker as the episode title, so it shows
+  // "(German Dub)" there unless NFO generation fills the real one in. That is
+  // the accepted cost of telling two language versions apart by file name.
+  jellyfin: {
+    naming_template: "{title}/{title} - S{season}E{episode} - ({language}).mkv",
+    aniworld_absolute_episodes: true,
+    lang_separation: false,
+    disable_english_sub: false,
+    movie_subfolder: true,
+  },
+};
+
+// showConfirm() renders its message as HTML, and a naming template is free
+// text an admin typed — escape it. app.js's esc() is not loaded on the settings
+// page, so this is the local minimum.
+function _settingsEscHtml(value) {
+  return String(value === null || value === undefined ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function _applyDownloadPreset(name, title, okMessage) {
+  const preset = DOWNLOAD_PRESETS[name];
+  if (!preset) return;
+
+  const tplEl = document.getElementById("namingTemplate");
+  const currentTemplate = tplEl ? tplEl.value.trim() : "";
+  // The folder and file structure is the one preset field that is a matter of
+  // taste rather than of correctness: someone may want the Jellyfin numbering
+  // without giving up a layout they have built a library around. So it gets
+  // its own opt-out in the dialog instead of being changed in passing. When
+  // the current template already matches there is nothing to decide.
+  const templateDiffers = currentTemplate !== preset.naming_template;
+
+  const intro = t(
+    "Absolute Episodennummern, Sprachen-Trennung, englische Untertitel und Film-Unterordner werden überschrieben. Bereits heruntergeladene Dateien werden nicht umbenannt.",
+    "Absolute episode numbers, language separation, English subtitles and movie subfolders will be overwritten. Files already downloaded are not renamed.");
+
+  let body = "<p>" + _settingsEscHtml(intro) + "</p>";
+  if (templateDiffers) {
+    body +=
+      '<label class="settings-checkbox-row preset-modal-choice" for="presetApplyStructure">' +
+      '<input type="checkbox" class="chb-main" id="presetApplyStructure" checked />' +
+      "<span>" + _settingsEscHtml(t(
+        "Ordner- und Namensstruktur ebenfalls setzen",
+        "Set the folder and file structure as well")) + "</span></label>" +
+      '<div class="preset-modal-tpl"><span>' + _settingsEscHtml(t("Neu", "New")) +
+      "</span><code>" + _settingsEscHtml(preset.naming_template) + "</code></div>" +
+      '<div class="preset-modal-tpl"><span>' + _settingsEscHtml(t("Aktuell", "Current")) +
+      "</span><code>" + _settingsEscHtml(currentTemplate) + "</code></div>" +
+      '<div class="preset-modal-hint">' + _settingsEscHtml(t(
+        "Ohne Haken bleibt deine Namensvorlage unverändert, alles andere wird trotzdem gesetzt.",
+        "Unchecked, your naming template stays as it is and everything else is still applied.")) +
+      "</div>";
+  }
+
+  const okLabel = t("Übernehmen", "Apply");
+  let confirmed;
+  if (typeof showConfirm === "function") {
+    confirmed = await showConfirm(body, okLabel, title, "btn-primary");
+  } else {
+    // Plain-text fallback for a page without the shared modal. No checkbox is
+    // possible here, so it asks the structure question as its own prompt
+    // rather than deciding it silently.
+    confirmed = window.confirm(intro);
+  }
+  if (!confirmed) return;
+
+  // Read the checkbox, not a captured value: the dialog is the only place the
+  // user can change it, and it is still in the DOM once showConfirm resolves.
+  let applyStructure = true;
+  if (templateDiffers) {
+    const structureCb = document.getElementById("presetApplyStructure");
+    applyStructure = structureCb
+      ? structureCb.checked
+      : window.confirm(t("Auch die Ordner- und Namensstruktur setzen?",
+                         "Set the folder and file structure as well?"));
+  }
+
+  // filmpalast_movie_subfolder is the legacy twin of movie_subfolder and the
+  // backend keeps both in step — send both, exactly like saveMovieSubfolder().
+  const payload = { ...preset, filmpalast_movie_subfolder: preset.movie_subfolder };
+  // The backend only touches the fields it is sent, so leaving the template
+  // out is all that "keep my structure" needs.
+  if (!applyStructure) delete payload.naming_template;
+
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    // Language separation gates the fallback groups, so every language dropdown
+    // on the page can change with it. Re-reading the settings rebuilds all of
+    // them instead of patching five fields by hand and missing the sixth.
+    await loadSettings();
+    showToast(applyStructure
+      ? okMessage
+      : okMessage + t(" — Namensvorlage beibehalten", " — naming template kept"));
+    // Switching language separation off breaks any job that uses a fallback
+    // group; the backend counts them and says so.
+    if (data.warning) showToast(data.warning);
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function applyJellyfinDefaults() {
+  await _applyDownloadPreset(
+    "jellyfin",
+    t("Jellyfin-Standards übernehmen?", "Apply Jellyfin defaults?"),
+    t("Jellyfin-Standards gesetzt", "Jellyfin defaults applied"));
+}
+window.applyJellyfinDefaults = applyJellyfinDefaults;
+
+async function applyDownloadDefaults() {
+  await _applyDownloadPreset(
+    "default",
+    t("Standardwerte wiederherstellen?", "Restore defaults?"),
+    t("Standardwerte gesetzt", "Defaults applied"));
+}
+window.applyDownloadDefaults = applyDownloadDefaults;
+
+async function saveDownloadRateLimit() {
+  const el = document.getElementById("downloadRateLimit");
+  if (!el) return;
+  let val = parseInt(el.value, 10);
+  if (isNaN(val) || val < 0) val = 0;
+  el.value = val;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ download_rate_limit: val }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Bandbreiten-Limit gespeichert","Bandwidth limit saved"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+function updateDownloadWindowDisabledState() {
+  const enabledEl = document.getElementById("downloadWindowEnabled");
+  if (!enabledEl) return;
+  const off = !enabledEl.checked;
+  ["downloadWindowStart", "downloadWindowEnd"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.disabled = off;
+      if (el.customWrapper) {
+        el.customWrapper.querySelectorAll("select").forEach((sel) => {
+          sel.disabled = off;
+        });
+      }
+    }
+  });
+}
+
+async function saveDownloadWindow() {
+  const enabledEl = document.getElementById("downloadWindowEnabled");
+  const startEl = document.getElementById("downloadWindowStart");
+  const endEl = document.getElementById("downloadWindowEnd");
+  if (!enabledEl || !startEl || !endEl) return;
+  updateDownloadWindowDisabledState();
+  const payload = { download_window_enabled: enabledEl.checked };
+  if (startEl.value) payload.download_window_start = startEl.value;
+  if (endEl.value) payload.download_window_end = endEl.value;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Download-Zeitfenster gespeichert","Download time window saved"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+// ─── Auto-Sync tab ──────────────────────────────────────────────────────────
+
+async function saveSyncSchedule() {
+  if (!syncScheduleSelect) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sync_schedule: syncScheduleSelect.value }),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Auto-Sync-Zeitplan gespeichert","Auto-sync schedule saved"));
+    else showToast(t("Zeitplan konnte nicht gespeichert werden","Could not save schedule"));
+  } catch (e) {
+    showToast(t("Zeitplan konnte nicht gespeichert werden: ", "Could not save schedule: ") + e.message);
+  }
+}
+
+async function saveHistoryRetention() {
+  if (!historyRetentionSelect) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ history_retention_days: parseInt(historyRetentionSelect.value, 10) }),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Aufbewahrung gespeichert", "Retention saved"));
+    else showToast(data.error || t("Konnte nicht gespeichert werden", "Could not save"));
+  } catch (e) {
+    showToast(t("Konnte nicht gespeichert werden", "Could not save"));
+  }
+}
+
+// ─── Auto-Sync weekly schedule ───────────────────────────────────────────────
+function _weekdayLabels() {
+  return [
+    t("Mo", "Mon"), t("Di", "Tue"), t("Mi", "Wed"), t("Do", "Thu"),
+    t("Fr", "Fri"), t("Sa", "Sat"), t("So", "Sun"),
+  ];
+}
+
+function _renderSyncDays(csv) {
+  if (!syncDaysToggles) return;
+  const active = new Set(
+    String(csv || "").split(",").map((x) => parseInt(x.trim(), 10)).filter((x) => !isNaN(x)),
+  );
+  const labels = _weekdayLabels();
+  syncDaysToggles.innerHTML = "";
+  labels.forEach((lbl, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "weekday-toggle" + (active.has(i) ? " active" : "");
+    b.dataset.day = i;
+    b.textContent = lbl;
+    b.addEventListener("click", () => {
+      b.classList.toggle("active");
+      saveSyncWeekly();
+    });
+    syncDaysToggles.appendChild(b);
+  });
+}
+
+function _getSelectedDays() {
+  if (!syncDaysToggles) return "";
+  return Array.from(syncDaysToggles.querySelectorAll(".weekday-toggle.active"))
+    .map((b) => b.dataset.day)
+    .join(",");
+}
+
+function _addTimeRow(value) {
+  const row = document.createElement("div");
+  row.className = "sync-time-row";
+  const input = document.createElement("input");
+  input.type = "time";
+  input.value = value || "06:00";
+  input.addEventListener("change", saveSyncWeekly);
+  const rm = document.createElement("button");
+  rm.type = "button";
+  rm.className = "sync-time-remove";
+  rm.textContent = "✕";
+  rm.title = t("Entfernen", "Remove");
+  rm.addEventListener("click", () => {
+    row.remove();
+    if (syncTimesList && !syncTimesList.children.length) _addTimeRow("06:00");
+    saveSyncWeekly();
+  });
+  row.appendChild(input);
+  row.appendChild(rm);
+  syncTimesList.appendChild(row);
+  if (typeof createCustomTimePicker === "function") {
+    createCustomTimePicker(input);
+  }
+}
+
+function _renderSyncTimes(csv) {
+  if (!syncTimesList) return;
+  syncTimesList.innerHTML = "";
+  const times = String(csv || "").split(",").map((x) => x.trim()).filter(Boolean);
+  if (!times.length) times.push("06:00");
+  times.forEach((tm) => _addTimeRow(tm));
+}
+
+function addSyncTime() {
+  _addTimeRow("12:00");
+  saveSyncWeekly();
+}
+
+function _getTimes() {
+  if (!syncTimesList) return "";
+  return Array.from(syncTimesList.querySelectorAll("input[type=time]"))
+    .map((i) => i.value)
+    .filter(Boolean)
+    .join(",");
+}
+
+function _applySyncModeUI() {
+  const weekly = syncModeSelect && syncModeSelect.value === "weekly";
+  if (syncIntervalField) syncIntervalField.style.display = weekly ? "none" : "";
+  if (syncWeeklyBlock) syncWeeklyBlock.style.display = weekly ? "" : "none";
+}
+
+async function onSyncModeChange() {
+  _applySyncModeUI();
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sync_mode: syncModeSelect.value }),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Modus gespeichert", "Mode saved"));
+    else showToast(data.error || t("Konnte nicht gespeichert werden", "Could not save"));
+  } catch (e) {
+    showToast(t("Konnte nicht gespeichert werden", "Could not save"));
+  }
+}
+
+async function saveSyncWeekly() {
+  const days = _getSelectedDays();
+  const times = _getTimes();
+  if (!days) { showToast(t("Mindestens einen Wochentag wählen", "Select at least one weekday")); return; }
+  if (!times) { showToast(t("Mindestens eine Uhrzeit angeben", "Provide at least one time")); return; }
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sync_days: days, sync_times: times }),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Wochenplan gespeichert", "Weekly schedule saved"));
+    else showToast(data.error || t("Konnte nicht gespeichert werden", "Could not save"));
+  } catch (e) {
+    showToast(t("Konnte nicht gespeichert werden", "Could not save"));
+  }
+}
+
+async function saveSyncDefaults() {
+  const body = {};
+  if (syncLanguageSelect) body.sync_language = syncLanguageSelect.value;
+  if (syncProviderSelect) body.sync_provider = syncProviderSelect.value;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Auto-Sync-Standards gespeichert","Auto-sync defaults saved"));
+    else showToast(t("Standards konnten nicht gespeichert werden","Could not save defaults"));
+  } catch (e) {
+    showToast(t("Standards konnten nicht gespeichert werden: ", "Could not save defaults: ") + e.message);
+  }
+}
+
+// The Auto-Sync "Default Path" dropdown. Its first entry is the global
+// download folder -- the reason this is a setting of its own rather than a
+// mark on one of the custom paths, which could never express "no custom path".
+function renderSyncDefaultPathOptions() {
+  if (!syncDefaultPathSelect) return;
+  while (syncDefaultPathSelect.options.length > 1) syncDefaultPathSelect.remove(1);
+  (customPathsCache || []).forEach(function (p) {
+    const opt = document.createElement("option");
+    opt.value = String(p.id);
+    opt.textContent = p.name + " (" + p.path + ")";
+    syncDefaultPathSelect.appendChild(opt);
+  });
+  // A path that was deleted since the setting was stored falls back to the
+  // global folder instead of leaving the select on a value it cannot show.
+  const wanted = _syncDefaultPathWanted || "";
+  const exists = !wanted || (customPathsCache || []).some((p) => String(p.id) === wanted);
+  syncDefaultPathSelect.value = exists ? wanted : "";
+}
+
+async function saveSyncDefaultPath() {
+  if (!syncDefaultPathSelect) return;
+  const value = syncDefaultPathSelect.value || "";
+  const previous = _syncDefaultPathWanted;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sync_default_custom_path: value }),
+    });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "");
+    _syncDefaultPathWanted = value;
+    showToast(t("Standard-Pfad gespeichert", "Default path saved"));
+  } catch (e) {
+    _syncDefaultPathWanted = previous;
+    renderSyncDefaultPathOptions();
+    showToast(t("Standard-Pfad konnte nicht gespeichert werden", "Default path could not be saved"), "error");
+  }
+}
+
+async function saveSyncPathAction() {
+  if (!syncPathUnavailableSelect) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sync_path_unavailable_action: syncPathUnavailableSelect.value }),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Pfad-offline-Verhalten gespeichert","Path-offline-behavior saved"));
+    else showToast(data.error || t("Konnte nicht gespeichert werden","Could not save"));
+  } catch (e) {
+    showToast(t("Konnte nicht gespeichert werden: ", "Could not save: ") + e.message);
+  }
+}
+
+async function saveSyncErrorRetries() {
+  const el = document.getElementById("syncErrorRetries");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sync_error_retries: parseInt(el.value, 10) }),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Fehler-Wiederholungen gespeichert","Error retries saved"));
+    else showToast(data.error || t("Konnte nicht gespeichert werden","Could not save"));
+  } catch (e) {
+    showToast(t("Konnte nicht gespeichert werden: ", "Could not save: ") + e.message);
+  }
+}
+
+async function saveSyncErrorRetryTime() {
+  const el = document.getElementById("syncErrorRetryTime");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sync_error_retry_time: el.value }),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Wiederholungs-Zeit gespeichert","Retry time saved"));
+    else showToast(data.error || t("Konnte nicht gespeichert werden","Could not save"));
+  } catch (e) {
+    showToast(t("Konnte nicht gespeichert werden: ", "Could not save: ") + e.message);
+  }
+}
+
+function updateAdaptiveSyncDisabledState() {
+  const enabledEl = document.getElementById("syncAdaptiveEnabled");
+  if (!enabledEl) return;
+  const off = !enabledEl.checked;
+  ["syncAdaptivePauseAfter", "syncAdaptiveRetryValue", "syncAdaptiveRetryUnit"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = off;
+  });
+}
+
+async function saveSyncAdaptiveEnabled() {
+  const el = document.getElementById("syncAdaptiveEnabled");
+  if (!el) return;
+  updateAdaptiveSyncDisabledState();
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sync_adaptive_enabled: el.checked }),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Adaptive Auto-Sync gespeichert","Adaptive Auto-Sync saved"));
+    else showToast(data.error || t("Konnte nicht gespeichert werden","Could not save"));
+  } catch (e) {
+    showToast(t("Konnte nicht gespeichert werden: ", "Could not save: ") + e.message);
+  }
+}
+
+async function saveSyncAdaptivePauseAfter() {
+  const el = document.getElementById("syncAdaptivePauseAfter");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sync_adaptive_pause_after: el.value }),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Pause-Intervall gespeichert","Pause interval saved"));
+    else showToast(data.error || t("Konnte nicht gespeichert werden","Could not save"));
+  } catch (e) {
+    showToast(t("Konnte nicht gespeichert werden: ", "Could not save: ") + e.message);
+  }
+}
+
+async function saveSyncAdaptiveRetry() {
+  const valEl = document.getElementById("syncAdaptiveRetryValue");
+  const unitEl = document.getElementById("syncAdaptiveRetryUnit");
+  if (!valEl || !unitEl) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sync_adaptive_retry_value: parseInt(valEl.value, 10),
+        sync_adaptive_retry_unit: unitEl.value,
+      }),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Wiederholungs-Intervall gespeichert","Retry interval saved"));
+    else showToast(data.error || t("Konnte nicht gespeichert werden","Could not save"));
+  } catch (e) {
+    showToast(t("Konnte nicht gespeichert werden: ", "Could not save: ") + e.message);
+  }
+}
+
+// ─── Netzwerk tab ───────────────────────────────────────────────────────────
+
+async function saveWebBaseUrl() {
+  const el = document.getElementById("webBaseUrl");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ web_base_url: el.value.trim() }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Basis-URL gespeichert — Neustart erforderlich","Base URL saved — restart required"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveLibraryRescanHours() {
+  const el = document.getElementById("libraryRescanHours");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ library_rescan_hours: el.value }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    const label = el.options[el.selectedIndex].textContent.trim();
+    showToast(el.value === "0"
+      ? t("Automatischer Neu-Scan deaktiviert", "Automatic rescan disabled")
+      : t("Automatischer Neu-Scan: ", "Automatic rescan: ") + label);
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveLibraryProbeWorkers() {
+  const el = document.getElementById("libraryProbeWorkers");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ library_probe_workers: el.value }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(el.value === "0"
+      ? t("Scan-Intensität: automatisch", "Scan intensity: automatic")
+      : t("Scan-Intensität: ", "Scan intensity: ") + el.value);
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+// ─── Comics (Library tab) ───────────────────────────────────────────────────
+// The three switches ride on the ordinary settings mechanism (PUT
+// /api/settings, validated there); the two cache buttons and the extractor
+// diagnostics have their own admin-only endpoints in routes/comics.py.
+
+async function _saveComicToggle(key, on) {
+  const payload = {};
+  payload[key] = on ? "1" : "0";
+  const resp = await fetch("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error);
+}
+
+async function saveComicAutoPrepareAll() {
+  const el = document.getElementById("comicAutoPrepareAll");
+  if (!el) return;
+  try {
+    await _saveComicToggle("comic_auto_prepare_all", el.checked);
+    showToast(el.checked
+      ? t("Alle Ausgaben werden im Hintergrund vorbereitet", "Every issue is prepared in the background")
+      : t("Ausgaben werden erst beim Öffnen vorbereitet", "Issues are prepared when they are opened"), "success");
+  } catch (e) {
+    el.checked = !el.checked;
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message, "error");
+  }
+}
+
+// The one switch here that destroys something the user owns. Switching it ON
+// therefore costs a deliberate confirmation (the project's showConfirm(), same
+// as clearBrowserProfile/deleteEnvFile) and the box springs back if the answer
+// is no. Switching it OFF is never guarded -- stopping a destructive setting
+// must always be one click.
+async function saveComicReplaceOriginal(el) {
+  el = el || document.getElementById("comicReplaceOriginal");
+  if (!el) return;
+  const enabling = el.checked;
+  if (enabling) {
+    const message = t(
+      "Nach jeder erfolgreichen Umwandlung wird die Originaldatei (CBR/CBA) durch die neue CBZ ersetzt. Die Originaldatei ist danach weg — MediaForge kann sie nicht wiederherstellen, und es gibt keinen Papierkorb.",
+      "After every successful conversion the original file (CBR/CBA) is replaced by the new CBZ. The original file is gone afterwards — MediaForge cannot restore it, and there is no recycle bin.");
+    const ok = (typeof showConfirm === "function")
+      ? await showConfirm(message,
+          t("Originale ersetzen", "Replace originals"),
+          t("Originaldateien wirklich ersetzen?", "Really replace original files?"),
+          "btn-danger")
+      : window.confirm(message);
+    if (!ok) { el.checked = false; return; }
+  }
+  try {
+    await _saveComicToggle("comic_replace_original", enabling);
+    showToast(enabling
+      ? t("Originale werden nach der Umwandlung ersetzt", "Originals are replaced after conversion")
+      : t("Originale bleiben unangetastet", "Originals are left untouched"), enabling ? "warning" : "success");
+  } catch (e) {
+    el.checked = !enabling;
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message, "error");
+  }
+}
+
+function _comicFormatBytes(bytes) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Number(bytes) || 0;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return (unit === 0 ? String(Math.round(value)) : value.toFixed(value < 10 ? 1 : 0)) + " " + units[unit];
+}
+
+function _comicCacheLine(stats) {
+  // "We could not measure it" and "there is nothing in it" are different
+  // answers and must not share a word: "empty" next to a Clear button reads as
+  // a fact about the cache, and it was being printed for a request that never
+  // returned a number at all.
+  if (!stats) return t("unbekannt", "unknown");
+  const files = stats.files || 0;
+  if (!files) return t("leer", "empty");
+  const label = files === 1 ? t("Datei", "file") : t("Dateien", "files");
+  return files + " " + label + " · " + _comicFormatBytes(stats.bytes);
+}
+
+function _comicApplyCacheData(data) {
+  const coverEl = document.getElementById("comicCoverCacheSize");
+  const convertEl = document.getElementById("comicConvertCacheSize");
+  if (coverEl) coverEl.textContent = _comicCacheLine(data.covers);
+  if (convertEl) convertEl.textContent = _comicCacheLine(data.converted);
+
+  const extractors = data.extractors || {};
+  const missing = t("nicht gefunden", "not found");
+  const rarEl = document.getElementById("comicExtractorRar");
+  const aceEl = document.getElementById("comicExtractorAce");
+  if (rarEl) rarEl.textContent = extractors.rar || missing;
+  if (aceEl) aceEl.textContent = extractors.ace || missing;
+  const hint = document.getElementById("comicExtractorHint");
+  if (hint) {
+    const anyFound = Object.keys(extractors).some(function (k) { return !!extractors[k]; });
+    hint.style.display = anyFound ? "none" : "";
+  }
+}
+
+// ── eBook caches ─────────────────────────────────────────────────────────
+// Same two questions as the comic block right below ("what does this cost"
+// and "get rid of it"), against the BOOK caches -- separate directories,
+// separate endpoint, separate button. They share an implementation on the
+// server (web/covercache.py) and nothing else; clearing one must not throw
+// away the other's work. The formatting helpers are reused as they are.
+
+async function loadBookCacheStats() {
+  if (!document.getElementById("bookCoverCacheSize")) return;
+  try {
+    const resp = await fetch("/api/library/book/cache");
+    // 401/403 for a non-admin account is a normal answer here, not an error
+    // worth a toast -- the panel simply keeps its placeholders.
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const coverEl = document.getElementById("bookCoverCacheSize");
+    const convertEl = document.getElementById("bookConvertCacheSize");
+    if (coverEl) coverEl.textContent = _comicCacheLine(data.covers);
+    if (convertEl) convertEl.textContent = _comicCacheLine(data.converted);
+  } catch (e) { /* offline or mid-restart: leave the placeholders alone */ }
+}
+
+async function clearBookCache(which) {
+  const label = which === "covers"
+    ? t("Cover-Cache", "cover cache")
+    : t("umgewandelte Bücher", "converted books");
+  const message = which === "covers"
+    ? t("Alle zwischengespeicherten Buchcover werden gelöscht. Sie werden beim nächsten Öffnen der eBook-Bibliothek neu erzeugt. Deine Buchdateien bleiben unangetastet.",
+        "Every cached book cover is deleted. They are created again the next time the eBook library is opened. Your book files are left untouched.")
+    : t("Alle umgewandelten Bücher werden gelöscht. Ein MOBI/AZW3 wird beim nächsten Öffnen erneut umgewandelt. Deine Buchdateien bleiben unangetastet.",
+        "Every converted book is deleted. A MOBI/AZW3 is converted again the next time it is opened. Your book files are left untouched.");
+  const ok = (typeof showConfirm === "function")
+    ? await showConfirm(message, t("Leeren", "Clear"),
+        t("Cache leeren?", "Clear cache?"), "btn-danger")
+    : window.confirm(message);
+  if (!ok) return;
+  try {
+    const resp = await fetch("/api/library/book/cache/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cache: which }),
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      showToast(data.error || t("Fehler beim Leeren", "Error while clearing"), "error");
+      return;
+    }
+    showToast(label + ": " + data.removed + " " + t("Einträge entfernt", "entries removed"), "success");
+    loadBookCacheStats();
+  } catch (e) {
+    showToast(t("Fehler: ", "Error: ") + e.message, "error");
+  }
+}
+
+async function loadComicCacheStats() {
+  if (!document.getElementById("comicCoverCacheSize")) return;
+  try {
+    const resp = await fetch("/api/library/comic/cache");
+    // 401/403 for a non-admin account is a normal answer here, not an error
+    // worth a toast -- the panel simply keeps its placeholders.
+    if (!resp.ok) return;
+    _comicApplyCacheData(await resp.json());
+  } catch (e) { /* offline or mid-restart: leave the placeholders alone */ }
+}
+
+async function clearComicCache(which) {
+  const label = which === "covers"
+    ? t("Cover-Cache", "cover cache")
+    : t("umgewandelte Archive", "converted archives");
+  const message = which === "covers"
+    ? t("Alle zwischengespeicherten Cover werden gelöscht. Sie werden beim nächsten Öffnen der Comic-Bibliothek neu erzeugt. Deine Comic-Dateien bleiben unangetastet.",
+        "Every cached cover is deleted. They are created again the next time the comic library is opened. Your comic files are left untouched.")
+    : t("Alle umgewandelten Archive werden gelöscht. Eine CBR/CBA-Ausgabe wird beim nächsten Öffnen erneut umgewandelt. Deine Comic-Dateien bleiben unangetastet.",
+        "Every converted archive is deleted. A CBR/CBA issue is converted again the next time it is opened. Your comic files are left untouched.");
+  const ok = (typeof showConfirm === "function")
+    ? await showConfirm(message, t("Leeren", "Clear"),
+        t("Cache leeren?", "Clear cache?"), "btn-danger")
+    : window.confirm(message);
+  if (!ok) return;
+  try {
+    const resp = await fetch("/api/library/comic/cache/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cache: which }),
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      showToast(data.error || t("Fehler beim Leeren", "Error while clearing"), "error");
+      return;
+    }
+    showToast(label + ": " + data.removed + " " + t("Einträge entfernt", "entries removed"), "success");
+    loadComicCacheStats();
+  } catch (e) {
+    showToast(t("Fehler: ", "Error: ") + e.message, "error");
+  }
+}
+
+function defaultPathKindBoxes() {
+  return Array.prototype.slice.call(
+    document.querySelectorAll("#defaultPathKinds input[data-media-kind]")
+  );
+}
+
+async function saveDefaultPathMediaKinds(changed) {
+  const boxes = defaultPathKindBoxes();
+  if (!boxes.length) return;
+  const kinds = boxes.filter((box) => box.checked).map((box) => box.dataset.mediaKind);
+  if (!kinds.length) {
+    // The server falls back to its default kind on an empty list, so an empty
+    // selection would leave the page showing something other than what is
+    // stored. Put the box back instead of saving a value nobody asked for.
+    if (changed) changed.checked = true;
+    showToast(t("Mindestens eine Media-Art muss ausgewählt bleiben",
+                "At least one media type must stay selected"), "error");
+    return;
+  }
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ default_path_media_kinds: kinds }),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      if (changed) changed.checked = !changed.checked;
+      showToast(data.error, "error");
+      return;
+    }
+    showToast(t("Media-Arten des Standardpfads gespeichert", "Media types of the default path saved"));
+  } catch (e) {
+    if (changed) changed.checked = !changed.checked;
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveNewHomeEnabled() {
+  const el = document.getElementById("newHomeEnabled");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_home_enabled: el.checked }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(el.checked
+      ? t("Neue Startseite aktiviert — Startseite neu laden", "New home page enabled — reload the home page")
+      : t("Klassische Startseite aktiviert — Startseite neu laden", "Classic home page enabled — reload the home page"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+// "Start on" only means anything with two SEPARATE tabs to pick a first one
+// from -- same reasoning as static/start_page.js's per-account copy.
+function syncStartTabDefaultRow() {
+  const mode = document.getElementById("dashModeDefault");
+  const row = document.getElementById("startTabDefaultRow");
+  if (row) row.style.display = (mode && mode.value !== "") ? "none" : "";
+}
+
+async function saveDashModeDefault() {
+  const el = document.getElementById("dashModeDefault");
+  if (!el) return;
+  const value = ["", "0", "all"].indexOf(el.value) === -1 ? "" : el.value;
+  syncStartTabDefaultRow();
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ home_dash_enabled_default: value }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Gespeichert", "Saved"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveStartTabDefault() {
+  const el = document.getElementById("startTabDefault");
+  if (!el) return;
+  const value = ["", "disc"].indexOf(el.value) === -1 ? "" : el.value;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ home_tab_default: value }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Gespeichert", "Saved"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveForyouHeroHiddenDefault() {
+  const el = document.getElementById("foryouHeroHiddenDefault");
+  if (!el) return;
+  const value = el.checked ? "0" : "1";
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ foryou_hero_hidden_default: value }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Gespeichert", "Saved"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveForyouRailHiddenDefault() {
+  const el = document.getElementById("foryouRailHiddenDefault");
+  if (!el) return;
+  const value = el.checked ? "0" : "1";
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ foryou_hidden_default: value }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Gespeichert", "Saved"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveMediaStatsEnabled() {
+  const el = document.getElementById("mediaStatsEnabled");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ media_stats_enabled: el.checked }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Medien-Statistik " + (el.checked ? "aktiviert" : "deaktiviert"), "Media statistics " + (el.checked ? "enabled" : "disabled")));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveDebugMode() {
+  const el = document.getElementById("debugMode");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ debug_mode: el.checked }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Debug-Modus " + (el.checked ? "aktiviert" : "deaktiviert"), "Debug mode " + (el.checked ? "enabled" : "disabled")));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveWebConsole() {
+  const el = document.getElementById("webConsole");
+  if (!el) return;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ web_console: el.checked }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    setWebConsoleVisible(el.checked);
+    if (el.checked) startWebConsole();
+    else stopWebConsole();
+    showToast(t("Web-Konsole " + (el.checked ? "aktiviert" : "deaktiviert"), "Web-Console " + (el.checked ? "enabled" : "disabled")));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+async function saveStartupSettings() {
+  const trayModeEl = document.getElementById("trayMode");
+  const autostartEl = document.getElementById("autostartEnabled");
+  const openBrowserEl = document.getElementById("openBrowserOnStartup");
+  
+  const payload = {};
+  if (trayModeEl) payload.tray_mode = trayModeEl.checked;
+  if (autostartEl) payload.autostart_enabled = autostartEl.checked;
+  if (openBrowserEl) payload.open_browser_on_startup = openBrowserEl.checked;
+  
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Startup-Einstellungen gespeichert", "Startup settings saved"));
+  } catch (e) {
+    showToast(t("Einstellung konnte nicht gespeichert werden: ", "Setting could not be saved: ") + e.message);
+  }
+}
+
+
+// ─── Web Console (read-only live console mirror) ──────────────────────────────
+
+let _webConsoleTimer = null;
+let _webConsoleSeq = 0;
+let _webConsolePolling = false;
+
+function setWebConsoleVisible(visible) {
+  const wrap = document.getElementById("webConsoleWrap");
+  if (wrap) wrap.style.display = visible ? "block" : "none";
+}
+
+// Escape HTML so console text can never inject markup.
+function _wcEscape(s) {
+  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+// Convert a single line containing ANSI SGR escape codes to safe HTML.
+function _wcAnsiToHtml(line) {
+  // Strip non-color escape sequences (cursor moves etc.), keep SGR (m).
+  let out = "";
+  let open = 0;
+  const classes = [];
+  const re = /\x1b\[([0-9;]*)m/g;
+  let last = 0;
+  let m;
+  const applyText = (txt) => {
+    if (!txt) return;
+    out += _wcEscape(txt);
+  };
+  const closeSpans = () => { while (open > 0) { out += "</span>"; open--; } };
+  while ((m = re.exec(line)) !== null) {
+    applyText(line.slice(last, m.index));
+    last = re.lastIndex;
+    const codes = m[1].split(";").filter((x) => x !== "");
+    if (codes.length === 0 || codes.includes("0")) {
+      closeSpans();
+      continue;
+    }
+    const cls = [];
+    for (const code of codes) {
+      if (code === "1") cls.push("ansi-bold");
+      else if (code === "41") cls.push("ansi-bg-41");
+      else if (/^(3[0-7]|9[0-7])$/.test(code)) cls.push("ansi-" + code);
+    }
+    if (cls.length) { out += '<span class="' + cls.join(" ") + '">'; open++; }
+  }
+  applyText(line.slice(last));
+  closeSpans();
+  // Remove any remaining/unsupported escape sequences.
+  return out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+}
+
+function _wcRenderLine(text) {
+  const div = document.createElement("div");
+  div.className = "web-console-line";
+  div.innerHTML = _wcAnsiToHtml(text) || "&nbsp;";
+  return div;
+}
+
+function _wcAtBottom(el) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+}
+
+async function _webConsolePoll() {
+  const out = document.getElementById("webConsoleOutput");
+  const statusEl = document.getElementById("webConsoleStatus");
+  if (!out) return;
+  try {
+    const resp = await fetch("/api/console?after=" + _webConsoleSeq);
+    const data = await resp.json();
+    if (data.enabled === false) { stopWebConsole(); setWebConsoleVisible(false); return; }
+
+    // Detect a server-side buffer reset/restart (our cursor is ahead of buffer).
+    if (typeof data.first_seq === "number" && _webConsoleSeq > data.seq) {
+      out.innerHTML = "";
+      _webConsoleSeq = 0;
+    }
+
+    const autoEl = document.getElementById("webConsoleAutoscroll");
+    const autoscroll = !autoEl || autoEl.checked;
+    const stick = autoscroll && _wcAtBottom(out);
+
+    // Remove any previously rendered partial (transient) line.
+    const oldPartial = out.querySelector(".web-console-partial");
+    if (oldPartial) oldPartial.remove();
+
+    if (Array.isArray(data.lines) && data.lines.length) {
+      const frag = document.createDocumentFragment();
+      for (const ln of data.lines) {
+        frag.appendChild(_wcRenderLine(ln.text));
+        if (typeof ln.seq === "number") _webConsoleSeq = ln.seq;
+      }
+      out.appendChild(frag);
+    }
+    if (data.partial) {
+      const p = _wcRenderLine(data.partial);
+      p.classList.add("web-console-partial");
+      out.appendChild(p);
+    }
+    if (stick || autoscroll) out.scrollTop = out.scrollHeight;
+    if (statusEl) statusEl.textContent = "";
+  } catch (e) {
+    if (statusEl) statusEl.textContent = t("Verbindung verloren …", "Connection lost …");
+  }
+}
+
+function startWebConsole() {
+  if (_webConsolePolling) return;
+  _webConsolePolling = true;
+  const out = document.getElementById("webConsoleOutput");
+  if (out) { out.innerHTML = ""; }
+  _webConsoleSeq = 0;
+  _webConsolePoll();
+  _webConsoleTimer = window.mfPoll(_webConsolePoll, 1500);
+}
+
+function stopWebConsole() {
+  _webConsolePolling = false;
+  if (_webConsoleTimer) { window.mfPollStop(_webConsoleTimer); _webConsoleTimer = null; }
+}
+
+// ─── DNS ────────────────────────────────────────────────────────────────────
+
+function dnsTestAppendErrorBtn(container, errorText) {
+  const btn = document.createElement("button");
+  btn.className = "dns-test-err-btn";
+  btn.textContent = t("Fehler anzeigen","Show error");
+  btn.onclick = function () {
+    const existing = container.querySelector(".dns-test-err-detail");
+    if (existing) {
+      existing.remove();
+      btn.textContent = t("Fehler anzeigen","Show error");
+    } else {
+      const detail = document.createElement("div");
+      detail.className = "dns-test-err-detail";
+      detail.textContent = errorText;
+      container.appendChild(detail);
+      btn.textContent = t("Fehler ausblenden","Hide error");
+    }
+  };
+  container.appendChild(btn);
+}
+
+function toggleDnsTestPanel() {
+  const panel = document.getElementById("dnsTestPanel");
+  if (!panel) return;
+  const opening = panel.style.display === "none";
+  panel.style.display = opening ? "block" : "none";
+  if (opening) runDnsTest();
+}
+
+// Fixed rows for the built-in sites, already in settings.html with a
+// stable id each. Anything /api/settings/dns/test reports that ISN'T one of
+// these labels is a third-party module's site (register_monitor_site() --
+// see web/uptime_monitor.py's module docstring: one call feeds both the
+// UpTime dashboard and this test) and gets its row created on the fly by
+// _dnsSiteRow() below, inside the same #dnsTestSiteRows container.
+// Keys are the LABELS from web/uptime_monitor.py's _MONITOR_SITES (the DNS
+// test keys its results by label, see routes/settings.py) -- not the source
+// ids. A label changed there without changing it here simply falls through
+// to the generated row below, so this can never break the page.
+const DNS_TEST_BUILTIN_SITES = {
+  AniWorld: "dnsTestRowAniWorld", SerienStream: "dnsTestRowSTO",
+  FilmPalast: "dnsTestRowFilmpalast", MegaKino: "dnsTestRowMegaKino",
+  "filmo.to": "dnsTestRowFilmo", "9anime": "dnsTestRowNineanime",
+  Aniwaves: "dnsTestRowAniwaves", hanime: "dnsTestRowHanime",
+};
+
+/** Find (or, for a third-party label, create) the row for one DNS-test site. */
+function _dnsSiteRow(label) {
+  const fixedId = DNS_TEST_BUILTIN_SITES[label];
+  if (fixedId) return document.getElementById(fixedId);
+
+  const container = document.getElementById("dnsTestSiteRows");
+  if (!container) return null;
+  let row = container.querySelector('.dns-test-site-row[data-dns-label="' + CSS.escape(label) + '"]');
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "dns-test-site-row";
+    row.dataset.dnsLabel = label;
+    const nameEl = document.createElement("span");
+    nameEl.className = "dns-test-site-name";
+    nameEl.textContent = label;
+    const resEl = document.createElement("span");
+    resEl.className = "dns-test-site-result dns-test-idle";
+    resEl.textContent = "—";
+    row.appendChild(nameEl);
+    row.appendChild(resEl);
+    container.appendChild(row);
+  }
+  return row;
+}
+
+/** Render one site's probe result into its `.dns-test-site-result` element. */
+function _dnsRenderSiteResult(resEl, site) {
+  if (!site) { resEl.className = "dns-test-site-result dns-test-warn"; resEl.textContent = t("— Keine Daten","— No data"); return; }
+  const ip = site.ip ? " (" + site.ip + (site.ip_provider ? " · " + site.ip_provider : "") + ")" : "";
+  resEl.innerHTML = "";
+  const txt = document.createElement("span");
+  resEl.appendChild(txt);
+  if (site.http_ok && site.site_verified) {
+    resEl.className = "dns-test-site-result dns-test-ok";
+    txt.textContent = t("✓ Erreichbar & verifiziert","✓ Reachable & verified") + ip;
+  } else if (site.http_ok && site.blocked) {
+    resEl.className = "dns-test-site-result dns-test-fail";
+    txt.textContent = t("✗ Sperr-/Blockseite erkannt — nicht die echte Seite","✗ Block/ISP page detected — not the real site") + ip;
+  } else if (site.http_ok && !site.site_verified) {
+    resEl.className = "dns-test-site-result dns-test-warn";
+    txt.textContent = t("⚠ Erreichbar","⚠ Reachable") + ip + t(", aber echte Seite nicht bestätigt (evtl. Schutz-/Challenge-Seite)"," , but real site not confirmed (possibly protection/challenge page)");
+  } else if (site.socket_ok) {
+    resEl.className = "dns-test-site-result dns-test-warn";
+    txt.textContent = t("⚠ DNS aufgelöst","⚠ DNS resolved") + ip + t(", aber HTTP fehlgeschlagen"," , but HTTP failed");
+    if (site.http_error) dnsTestAppendErrorBtn(resEl, site.http_error);
+  } else {
+    resEl.className = "dns-test-site-result dns-test-fail";
+    txt.textContent = t("✗ Nicht erreichbar","✗ Not reachable");
+    const errMsg = site.socket_error || site.http_error;
+    if (errMsg) dnsTestAppendErrorBtn(resEl, errMsg);
+  }
+}
+
+async function runDnsTest() {
+  const btn = document.getElementById("dnsTestRunBtn");
+  const statusEl = document.getElementById("dnsTestStatus");
+  if (btn) { btn.disabled = true; btn.textContent = t("⏳ Teste…","⏳ Testing..."); }
+  if (statusEl) statusEl.innerHTML = t('<span class="dns-test-loading">⏳ Lädt…</span>','<span class="dns-test-loading">⏳ Loading...</span>');
+  // Reset every row currently in the container to "loading" -- the five
+  // fixed rows plus any third-party rows a previous run already created.
+  const rowsContainer = document.getElementById("dnsTestSiteRows");
+  if (rowsContainer) {
+    for (const row of rowsContainer.querySelectorAll(".dns-test-site-row")) {
+      const res = row.querySelector(".dns-test-site-result");
+      if (res) { res.className = "dns-test-site-result dns-test-loading"; res.textContent = t("⏳ Teste…","⏳ Testing..."); }
+    }
+  }
+  try {
+    const resp = await fetch("/api/settings/dns/test");
+    const data = await resp.json();
+    if (statusEl) {
+      const mode = data.dns_mode || "system";
+      const active = data.dns_active_server;
+      const modeLabel = { system: "System-DNS", cloudflare: "Cloudflare (1.1.1.1)", google: "Google (8.8.8.8)", quad9: "Quad9 (9.9.9.9)", custom: t("Benutzerdefiniert","Custom") }[mode] || mode;
+      if (mode === "system") {
+        statusEl.innerHTML = t('<span class="dns-test-ok">✓ System-DNS aktiv (kein eigener DNS konfiguriert)</span>','<span class="dns-test-ok">✓ System DNS active (no own DNS configured)</span>');
+      } else if (active) {
+        statusEl.innerHTML = t('<span class="dns-test-ok">✓ ' + modeLabel + ' aktiv — Server: ' + active + '</span>','<span class="dns-test-ok">✓ ' + modeLabel + ' active — Server: ' + active + '</span>');
+      } else {
+        statusEl.innerHTML = t('<span class="dns-test-warn">⚠ Gespeicherter Modus: ' + modeLabel + ' — aber kein Server aktiv. Einstellungen erneut speichern?</span>','<span class="dns-test-warn">⚠ Saved mode: ' + modeLabel + ' — but no server active. Save settings again?</span>');
+      }
+      // A broken ssl.SSLContext in this Python installation is neither a DNS
+      // nor a network fault, but it looks exactly like one from the outside
+      // ("store unreachable"), so it is reported right here.
+      if (data.trust_store_warning) {
+        statusEl.innerHTML +=
+          '<div class="dns-test-warn" style="margin-top:8px">⚠ ' +
+          t("Zertifikatsspeicher des Betriebssystems nicht nutzbar — es wird der mitgelieferte Speicher verwendet. Die Zertifikatsprüfung bleibt aktiv.",
+            "The operating system certificate store is unusable — the bundled store is used instead. Certificate verification stays enabled.") +
+          '<br><code style="font-size:.85em;opacity:.8">' + window.mfEscape(data.trust_store_warning) + '</code></div>';
+      }
+    }
+    // Every label /api/settings/dns/test returned -- the five built-in sites
+    // plus whatever third-party modules added via register_monitor_site().
+    // _dnsSiteRow() resolves a built-in label to its fixed row, or creates a
+    // row on the fly for anything else, so a module's site shows up here with
+    // no template change needed on its part.
+    for (const [label, site] of Object.entries(data.sites || {})) {
+      const row = _dnsSiteRow(label);
+      if (!row) continue;
+      // Keep the row's domain honest: a source whose domain rotates was
+      // probed against the currently resolved one, not the one hardcoded in
+      // settings.html. textContent, so a domain that came from the remote
+      // feed can never be interpreted as markup.
+      const nameEl = row.querySelector(".dns-test-site-name");
+      if (nameEl && site && site.domain) nameEl.textContent = site.domain;
+      const resEl = row.querySelector(".dns-test-site-result");
+      if (!resEl) continue;
+      _dnsRenderSiteResult(resEl, site);
+    }
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = t('<span class="dns-test-fail">✗ Fehler: ' + e.message + '</span>','<span class="dns-test-fail">✗ Error: ' + e.message + '</span>');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = t("↺ Erneut testen","↺ Test again"); }
+  }
+}
+
+function onDnsModeChange() {
+  const mode = document.getElementById("dnsMode")?.value;
+  const field = document.getElementById("dnsCustomField");
+  const statusEl = document.getElementById("dnsStatus");
+  if (field) field.style.display = mode === "custom" ? "" : "none";
+  if (statusEl) statusEl.style.display = "none";
+}
+
+async function saveDnsSettings() {
+  const mode = document.getElementById("dnsMode")?.value || "system";
+  const server = (document.getElementById("dnsServer")?.value || "").trim();
+  if (mode === "custom" && !server) { showToast(t("Bitte einen DNS-Server eingeben", "Please enter a DNS server"), "warning"); return; }
+  try {
+    const resp = await fetch("/api/settings/dns", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dns_mode: mode, dns_server: server }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      const modeLabel = { system: "System-DNS", cloudflare: "Cloudflare (1.1.1.1)", google: "Google (8.8.8.8)", quad9: "Quad9 (9.9.9.9)", custom: "Benutzerdefiniert" }[mode] || mode;
+      showToast(mode === "system" ? t("DNS zurückgesetzt — System-DNS aktiv","DNS reset — System DNS active") : t("DNS gespeichert — ", "DNS saved — ") + modeLabel + " aktiv", "success");
+    } else {
+      showToast(data.error || t("Fehler beim Speichern","Error saving"), "error");
+    }
+  } catch (e) {
+    showToast(t("Fehler: ", "Error: ") + e.message, "error");
+  }
+}
+
+// ─── Captcha / Browser tab ──────────────────────────────────────────────────
+
+async function saveCaptchaSettings() {
+  const g = (id) => document.getElementById(id);
+  const cb = (id) => !!(g(id) && g(id).checked);
+  const payload = {
+    persistent_profile: cb("browserPersistentProfile"),
+    manual:             cb("captchaManual"),
+    visible:            cb("captchaVisible"),
+    adblock:            cb("captchaAdblock"),
+    adtab_guard:        cb("captchaAdtabGuard"),
+    overlay_removal:    cb("captchaOverlayRemoval"),
+    ua_sync:            cb("captchaUaSync"),
+    webgl_spoof:        cb("captchaWebglSpoof"),
+    timeout:            ((g("captchaTimeout") && g("captchaTimeout").value) || "").trim(),
+  };
+  try {
+    const resp = await fetch("/api/settings/browser", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      showToast(t("Captcha-Einstellungen gespeichert — greifen beim nächsten Captcha", "Captcha settings saved — apply on the next captcha"), "success");
+    } else {
+      showToast(data.error || t("Fehler beim Speichern", "Error saving"), "error");
+    }
+  } catch (e) {
+    showToast(t("Fehler: ", "Error: ") + e.message, "error");
+  }
+}
+
+async function clearBrowserProfile() {
+  const ok = (typeof showConfirm === "function")
+    ? await showConfirm(
+        t("Das gespeicherte Browser-Profil (Cookies, cf_clearance, Fingerprint) wird gelöscht. Beim nächsten Captcha wird es neu angelegt.",
+          "The saved browser profile (cookies, cf_clearance, fingerprint) will be deleted. It is recreated on the next captcha."),
+        t("Profil löschen", "Delete profile"),
+        t("Browser-Profil löschen?", "Delete browser profile?"),
+        "btn-danger")
+    : window.confirm(t("Browser-Profil löschen?", "Delete browser profile?"));
+  if (!ok) return;
+  try {
+    const resp = await fetch("/api/browser/profile/clear", { method: "POST" });
+    const data = await resp.json();
+    if (data.ok) {
+      showToast(t("Browser-Profil gelöscht", "Browser profile deleted"), "success");
+    } else if (data.error === "captcha_running") {
+      showToast(t("Gerade läuft ein Captcha — bitte später erneut versuchen", "A captcha is running — please try again later"), "warning");
+    } else {
+      showToast(data.error || t("Fehler", "Error"), "error");
+    }
+  } catch (e) {
+    showToast(t("Fehler: ", "Error: ") + e.message, "error");
+  }
+}
+
+async function restartApp() {
+  const ok = (typeof showConfirm === "function")
+    ? await showConfirm(
+        t("Die App wird mit denselben Startargumenten neu gestartet (ohne Update). Laufende Downloads werden pausiert und danach fortgesetzt.",
+          "The app restarts with the same startup arguments (no update). Running downloads pause and resume afterwards."),
+        t("Neu starten", "Restart"),
+        t("App neu starten?", "Restart app?"),
+        "btn-primary")
+    : window.confirm(t("App neu starten?", "Restart app?"));
+  if (!ok) return;
+  if (window.AniUpdate && window.AniUpdate.startRestart) {
+    window.AniUpdate.startRestart();
+  } else {
+    try {
+      await fetch("/api/restart", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      showToast(t("Neustart gestartet…", "Restart started…"), "success");
+    } catch (e) {
+      showToast(t("Fehler: ", "Error: ") + e.message, "error");
+    }
+  }
+}
+
+// ─── SSO / Authentifizierung tab ────────────────────────────────────────────
+
+async function loadSsoSettings() {
+  try {
+    const resp = await fetch("/api/settings/sso");
+    if (!resp.ok) return;
+    const data = await resp.json();
+
+    const ssoEl = document.getElementById("ssoEnabled");
+    const forceSsoEl = document.getElementById("forceSso");
+    const issuerEl = document.getElementById("oidcIssuerUrl");
+    const clientIdEl = document.getElementById("oidcClientId");
+    const secretEl = document.getElementById("oidcClientSecret");
+    const displayEl = document.getElementById("oidcDisplayName");
+    const adminUsEl = document.getElementById("oidcAdminUser");
+    const adminSubEl = document.getElementById("oidcAdminSubject");
+
+    if (ssoEl) ssoEl.checked = data.sso_enabled === true || data.sso_enabled === "1";
+    if (forceSsoEl) forceSsoEl.checked = data.force_sso === true || data.force_sso === "1";
+    if (issuerEl) issuerEl.value = data.oidc_issuer_url || "";
+    if (clientIdEl) clientIdEl.value = data.oidc_client_id || "";
+    if (secretEl) secretEl.value = data.oidc_client_secret || "";
+    if (displayEl) displayEl.value = data.oidc_display_name || "";
+    if (adminUsEl) adminUsEl.value = data.oidc_admin_user || "";
+    if (adminSubEl) adminSubEl.value = data.oidc_admin_subject || "";
+
+    onSsoToggle();
+  } catch (e) {
+    // non-critical, SSO may not be configured
+  }
+}
+
+function onSsoToggle() {
+  const ssoEl = document.getElementById("ssoEnabled");
+  const ssoFields = document.getElementById("ssoFields");
+  if (!ssoFields) return;
+  ssoFields.style.display = (ssoEl && ssoEl.checked) ? "" : "none";
+}
+
+async function saveSsoSettings() {
+  const ssoEl = document.getElementById("ssoEnabled");
+  const forceSsoEl = document.getElementById("forceSso");
+  const issuerEl = document.getElementById("oidcIssuerUrl");
+  const clientIdEl = document.getElementById("oidcClientId");
+  const secretEl = document.getElementById("oidcClientSecret");
+  const displayEl = document.getElementById("oidcDisplayName");
+  const adminUsEl = document.getElementById("oidcAdminUser");
+  const adminSubEl = document.getElementById("oidcAdminSubject");
+
+  const body = {
+    sso_enabled: ssoEl ? ssoEl.checked : false,
+    force_sso: forceSsoEl ? forceSsoEl.checked : false,
+    oidc_issuer_url: issuerEl ? issuerEl.value.trim() : "",
+    oidc_client_id: clientIdEl ? clientIdEl.value.trim() : "",
+    oidc_display_name: displayEl ? displayEl.value.trim() : "",
+    oidc_admin_user: adminUsEl ? adminUsEl.value.trim() : "",
+    oidc_admin_subject: adminSubEl ? adminSubEl.value.trim() : "",
+  };
+  // Only include secret if user actually typed something (not the masked placeholder)
+  if (secretEl && secretEl.value && secretEl.value !== "***") {
+    body.oidc_client_secret = secretEl.value;
+  }
+
+  try {
+    const resp = await fetch("/api/settings/sso", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error, "error"); return; }
+    showToast(t("SSO-Einstellungen gespeichert — Neustart erforderlich", "SSO settings saved — restart required"), "success");
+  } catch (e) {
+    showToast(t("SSO-Einstellungen konnten nicht gespeichert werden: " + e.message, "SSO settings could not be saved: " + e.message), "error");
+  }
+}
+
+// ─── Custom paths ────────────────────────────────────────────────────────────
+
+const customPathsBody = document.getElementById("customPathsBody");
+const customPathsTable = document.getElementById("customPathsTable");
+let customPathsCache = [];
+let customPathSiteOptions = [];
+// The media kinds a path may be assigned to. Server-filtered to the ones that
+// actually have a scanner (see web/media_kinds.py), so the list here is
+// whatever the backend can index today -- never hard-coded.
+let customPathKindOptions = [];
+
+if (customPathsBody) loadCustomPaths();
+
+async function loadCustomPaths() {
+  if (!customPathsBody) return;
+  try {
+    const resp = await fetch("/api/custom-paths");
+    const data = await resp.json();
+    customPathsCache = data.paths || [];
+    customPathSiteOptions = data.site_options || [];
+    customPathKindOptions = data.media_kind_options || [];
+    renderCustomPaths(customPathsCache);
+    renderNewPathKindSelect();
+    // Adding or deleting a path has to be reflected in the Auto-Sync default
+    // dropdown immediately -- it is fed from this same list.
+    renderSyncDefaultPathOptions();
+  } catch (e) {
+    showToast(t("Benutzerdefinierte Pfade konnten nicht geladen werden: " + e.message, "Custom paths could not be loaded: " + e.message));
+  }
+}
+
+function customPathsCanEdit() {
+  return typeof settingsCanEdit === "undefined" || settingsCanEdit;
+}
+
+// Splits either of the row's CSV columns (default_sites, media_kinds) into a
+// list. Both are stored the same way, so one splitter serves both.
+function parsePathSites(value) {
+  return String(value || "").split(",").map((site) => site.trim()).filter(Boolean);
+}
+
+// The registry only carries an English fallback label -- translations live in
+// the templates, which this file is not (see the docstring of
+// web/media_kinds.py). A slug this map does not know still renders, with the
+// English label the server sent.
+const PATH_KIND_LABELS = {
+  video: ["Filme & Serien", "Movies & Series"],
+  book: ["eBooks", "eBooks"],
+};
+
+function pathKindLabel(kind) {
+  const pair = PATH_KIND_LABELS[kind.slug];
+  return pair ? t(pair[0], pair[1]) : kind.label_en || kind.slug;
+}
+
+// The "default for sites" column used to be a row of loose checkboxes, one per
+// site. mirrors.SITE_LABELS is a registry third-party modules add to, so that
+// row grew without bound and wrapped into a wall of text on a phone. It is a
+// single .mf-multiselect dropdown now (shared behaviour in
+// static/mf_multiselect.js), which stays one line tall no matter how many
+// sites are registered.
+function renderPathSiteSelect(p) {
+  const active = parsePathSites(p.default_sites);
+  const disabled = customPathsCanEdit() ? "" : "disabled";
+  const items = customPathSiteOptions.length
+    ? customPathSiteOptions.map(function ({ key, label }) {
+        return '<label class="mf-multiselect-item"><input type="checkbox" class="chb-main" value="' +
+          esc(key) + '"' + (active.includes(key) ? " checked" : "") + " " + disabled +
+          "><span>" + esc(label) + "</span></label>";
+      }).join("")
+    : '<div class="mf-multiselect-empty">' + esc(t("Keine Seiten verfügbar", "No sites available")) + "</div>";
+  return '<div class="mf-multiselect path-site-select" data-mf-multiselect' +
+    ' data-custom-path-id="' + p.id + '"' +
+    ' data-none-label="' + esc(t("Keine Seite", "No site")) + '"' +
+    ' data-many-label="' + esc(t("Seiten", "sites")) + '">' +
+    '<button type="button" class="mf-multiselect-trigger" aria-haspopup="true" aria-expanded="false"' +
+      ' aria-label="' + esc(t("Standardseiten für ", "Default sites for ") + p.name) + '" ' + disabled + ">" +
+      '<span class="mf-multiselect-label"></span>' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>' +
+    "</button>" +
+    '<div class="mf-multiselect-dropdown">' + items + "</div>" +
+  "</div>";
+}
+
+// Which libraries this folder feeds. Same component as the site column above:
+// the registry grows (manga, comics, music are already listed as planned), and
+// a row of loose checkboxes would push the table wider with every one of them.
+function renderPathKindSelect(p, extraClass) {
+  const active = parsePathSites(p.media_kinds);
+  const disabled = customPathsCanEdit() ? "" : "disabled";
+  const items = customPathKindOptions.length
+    ? customPathKindOptions.map(function (kind) {
+        return '<label class="mf-multiselect-item"><input type="checkbox" class="chb-main" value="' +
+          esc(kind.slug) + '"' + (active.includes(kind.slug) ? " checked" : "") + " " + disabled +
+          "><span>" + esc(pathKindLabel(kind)) + "</span></label>";
+      }).join("")
+    : '<div class="mf-multiselect-empty">' + esc(t("Keine Media-Arten verfügbar", "No media types available")) + "</div>";
+  return '<div class="mf-multiselect path-kind-select' + (extraClass ? " " + extraClass : "") + '" data-mf-multiselect' +
+    ' data-custom-path-id="' + esc(String(p.id)) + '"' +
+    ' data-none-label="' + esc(t("Keine Media-Art", "No media type")) + '"' +
+    ' data-many-label="' + esc(t("Media-Arten", "media types")) + '">' +
+    '<button type="button" class="mf-multiselect-trigger" aria-haspopup="true" aria-expanded="false"' +
+      ' aria-label="' + esc(t("Media-Arten für ", "Media types for ") + p.name) + '" ' + disabled + ">" +
+      '<span class="mf-multiselect-label"></span>' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>' +
+    "</button>" +
+    '<div class="mf-multiselect-dropdown">' + items + "</div>" +
+  "</div>";
+}
+
+// Re-tick the boxes of one dropdown from a list of values without re-rendering
+// the table, which would close the dropdown the user is still working in.
+function restorePathSelection(root, values) {
+  root.querySelectorAll('.mf-multiselect-dropdown input[type="checkbox"]').forEach(function (box) {
+    box.checked = values.indexOf(box.value) !== -1;
+  });
+  if (window.mfMultiSelect) window.mfMultiSelect.refresh(root);
+}
+
+/* The Auto-Sync default path is set on the Auto-Sync tab (a single dropdown,
+   see renderSyncDefaultPathOptions / saveSyncDefaultPath). It used to have a
+   second control here -- a radio per row in the Downloads path table -- which
+   made one setting writable from two places that then had to re-render each
+   other. The dropdown is the only control now; setSyncDefaultPath is gone. */
+
+function renderCustomPaths(paths) {
+  customPathsBody.innerHTML = "";
+  if (!paths.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = t('<td colspan="5" style="color:#6b7280;text-align:center">Keine benutzerdefinierten Pfade</td>','<td colspan="5" style="color:#6b7280;text-align:center">No custom paths</td>');
+    customPathsBody.appendChild(tr);
+    return;
+  }
+  paths.forEach(function (p) {
+    const tr = document.createElement("tr");
+    const delCell = customPathsCanEdit()
+      ? '<td><button class="btn-del" onclick="deleteCustomPath(' + p.id + ')">'+t("Löschen","Delete")+'</button></td>'
+      : '<td></td>';
+    tr.innerHTML =
+      "<td>" + esc(p.name) + "</td>" +
+      "<td style=\"font-family:'SF Mono','Fira Code',monospace;font-size:.82rem\">" + esc(p.path) + "</td>" +
+      '<td class="path-site-cell">' + renderPathSiteSelect(p) + "</td>" +
+      '<td class="path-kind-cell">' + renderPathKindSelect(p) + "</td>" +
+      delCell;
+    customPathsBody.appendChild(tr);
+  });
+  // The trigger label is derived from the checked boxes, so it is filled in
+  // after the rows are in the DOM rather than duplicated into the markup.
+  customPathsBody.querySelectorAll(".path-site-select, .path-kind-select").forEach(function (root) {
+    window.mfMultiSelect.refresh(root);
+  });
+}
+
+// The kind dropdown of the "Add Path" form. Rendered from JS like the table
+// cells so both use the same markup and the same translated labels; an
+// installation whose registry only knows one kind simply gets one entry.
+function renderNewPathKindSelect() {
+  const host = document.getElementById("newPathKinds");
+  if (!host) return;
+  const preset = customPathKindOptions.length ? customPathKindOptions[0].slug : "";
+  host.innerHTML = renderPathKindSelect(
+    { id: "new", name: t("neuer Pfad", "new path"), media_kinds: preset },
+    "new-path-kind-select"
+  );
+  const root = host.querySelector(".path-kind-select");
+  if (root) window.mfMultiSelect.refresh(root);
+}
+
+function newPathKindValues() {
+  const root = document.querySelector("#newPathKinds .path-kind-select");
+  if (!root || !window.mfMultiSelect) return null;
+  const values = window.mfMultiSelect.values(root);
+  return values.length ? values : null;
+}
+
+// Ticking three boxes used to fire three PUTs. Collapse a burst of changes
+// into one request, and flush immediately when the dropdown closes so a
+// selection is never left unsaved for longer than the debounce.
+const customPathSaveTimers = new Map();
+const customPathSaveInflight = new Set();
+const PATH_SITES_SAVE_DELAY = 400;
+
+// Both editable columns of the table are .mf-multiselect dropdowns that PUT a
+// single field of the row. Everything but the field name, the CSS hook and the
+// wording of the failure differs, so the debounce/rollback machinery below is
+// driven by this table instead of existing once per column.
+const PATH_MULTISELECT_COLUMNS = [
+  {
+    field: "default_sites",
+    selectClass: "path-site-select",
+    // A path may legitimately be the default for no site at all.
+    requireOne: false,
+    saveError: function (message) {
+      return t("Standardseiten konnten nicht aktualisiert werden: " + message,
+               "Default sites could not be updated: " + message);
+    },
+  },
+  {
+    field: "media_kinds",
+    selectClass: "path-kind-select",
+    // An empty list makes the server fall back to its default kind, so the
+    // table would end up showing something other than what is stored.
+    requireOne: true,
+    requireOneError: function () {
+      return t("Mindestens eine Media-Art muss ausgewählt bleiben",
+               "At least one media type must stay selected");
+    },
+    saveError: function (message) {
+      return t("Media-Arten konnten nicht aktualisiert werden: " + message,
+               "Media types could not be updated: " + message);
+    },
+  },
+];
+
+function pathColumnFor(root) {
+  if (!root || !root.classList) return null;
+  return PATH_MULTISELECT_COLUMNS.find(function (col) {
+    return root.classList.contains(col.selectClass);
+  }) || null;
+}
+
+function pathSaveKey(col, pathId) {
+  return col.field + ":" + pathId;
+}
+
+if (customPathsBody) {
+  customPathsBody.addEventListener("mf-multiselect-change", function (ev) {
+    const root = ev.target;
+    const col = pathColumnFor(root);
+    if (!col) return;
+    const pathId = Number(root.dataset.customPathId);
+    if (col.requireOne && !ev.detail.values.length) {
+      const path = customPathsCache.find((item) => item.id === pathId);
+      restorePathSelection(root, parsePathSites(path ? path[col.field] : ""));
+      showToast(col.requireOneError(), "error");
+      return;
+    }
+    queuePathFieldSave(col, pathId, ev.detail.values);
+  });
+  customPathsBody.addEventListener("mf-multiselect-close", function (ev) {
+    const col = pathColumnFor(ev.target);
+    if (!col) return;
+    flushPathFieldSave(col, Number(ev.target.dataset.customPathId));
+  });
+}
+
+function queuePathFieldSave(col, pathId, values) {
+  const path = customPathsCache.find((item) => item.id === pathId);
+  if (!path) return;
+  // Remembered per field: the value to go back to if the PUT fails.
+  if (!path._saved) path._saved = {};
+  if (path._saved[col.field] === undefined) path._saved[col.field] = path[col.field] || "";
+  path[col.field] = values.join(",");
+  const key = pathSaveKey(col, pathId);
+  clearTimeout(customPathSaveTimers.get(key));
+  customPathSaveTimers.set(key, setTimeout(function () {
+    customPathSaveTimers.delete(key);
+    savePathField(col, pathId);
+  }, PATH_SITES_SAVE_DELAY));
+}
+
+function flushPathFieldSave(col, pathId) {
+  const key = pathSaveKey(col, pathId);
+  if (!customPathSaveTimers.has(key)) return;
+  clearTimeout(customPathSaveTimers.get(key));
+  customPathSaveTimers.delete(key);
+  savePathField(col, pathId);
+}
+
+async function savePathField(col, pathId) {
+  const path = customPathsCache.find((item) => item.id === pathId);
+  if (!path) return;
+  const key = pathSaveKey(col, pathId);
+  // Never let two PUTs for the same field of the same path overlap: they both
+  // send the full list, so an out-of-order response would resurrect a stale
+  // selection. Re-queue instead and let the debounce fire again once this one
+  // is done. Keyed per field, so the two columns do not block each other.
+  if (customPathSaveInflight.has(key)) {
+    queuePathFieldSave(col, pathId, parsePathSites(path[col.field]));
+    return;
+  }
+  customPathSaveInflight.add(key);
+  const previous = (path._saved && path._saved[col.field]) || "";
+  const values = parsePathSites(path[col.field]);
+  const body = {};
+  body[col.field] = values;
+
+  try {
+    const save = await fetch("/api/custom-paths/" + pathId, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const result = await save.json();
+    if (result.error) {
+      path[col.field] = previous;
+      if (path._saved) delete path._saved[col.field];
+      renderCustomPaths(customPathsCache);
+      showToast(result.error, "error");
+      return;
+    }
+    path._saved[col.field] = path[col.field];
+  } catch (e) {
+    path[col.field] = previous;
+    if (path._saved) delete path._saved[col.field];
+    renderCustomPaths(customPathsCache);
+    showToast(col.saveError(e.message), "error");
+  } finally {
+    customPathSaveInflight.delete(key);
+  }
+}
+
+// The "Add Path" dropdown saves nothing on its own — it is read once when the
+// row is submitted — but the same "at least one" rule applies to it.
+const newPathKindsHost = document.getElementById("newPathKinds");
+if (newPathKindsHost) {
+  newPathKindsHost.addEventListener("mf-multiselect-change", function (ev) {
+    if (ev.detail.values.length || !customPathKindOptions.length) return;
+    restorePathSelection(ev.target, [customPathKindOptions[0].slug]);
+    showToast(t("Mindestens eine Media-Art muss ausgewählt bleiben",
+                "At least one media type must stay selected"), "error");
+  });
+}
+
+async function addCustomPath() {
+  const name = document.getElementById("newPathName").value.trim();
+  const path = document.getElementById("newPathValue").value.trim();
+  if (!name || !path) { showToast(t("Name und Pfad sind erforderlich", "Name and path required")); return; }
+  try {
+    // Omitted entirely when the form has no dropdown (or nothing is ticked),
+    // so the server's column default applies instead of a guess made here.
+    const kinds = newPathKindValues();
+    const resp = await fetch("/api/custom-paths", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(kinds ? { name, path, media_kinds: kinds } : { name, path }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    document.getElementById("newPathName").value = "";
+    document.getElementById("newPathValue").value = "";
+    showToast(t("Benutzerdefinierter Pfad hinzugefügt","Custom path added"));
+    loadCustomPaths();
+  } catch (e) {
+    showToast(t("Benutzerdefinierter Pfad konnte nicht hinzugefügt werden: " + e.message, "Custom path could not be added: " + e.message));
+  }
+}
+
+async function deleteCustomPath(id) {
+  if (!await showConfirm(t("Diesen benutzerdefinierten Pfad löschen?","Delete this custom path?"))) return;
+  try {
+    const resp = await fetch("/api/custom-paths/" + id, { method: "DELETE" });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Benutzerdefinierter Pfad gelöscht","Custom path deleted"));
+    loadCustomPaths();
+  } catch (e) {
+    showToast(t("Benutzerdefinierter Pfad konnte nicht gelöscht werden: " + e.message, "Custom path could not be deleted: " + e.message));
+  }
+}
+
+// ─── Language fallback groups ────────────────────────────────────────────────
+//
+// A group is a named, ordered list of languages that can be picked instead of
+// a single language (see web/language_groups.py). The order is the whole
+// point, so the editor numbers every entry and moves it with buttons.
+
+const languageGroupsBody = document.getElementById("languageGroupsBody");
+let languageGroupsCache = [];
+let languageGroupLanguages = [
+  "German Dub", "English Sub", "German Sub", "English Dub", "English Dub (German Sub)",
+];
+// Chain of the "Add Group" form and of the row currently being edited.
+let newLangGroupChain = [];
+let editingLangGroupId = null;
+let editingLangGroupChain = [];
+
+if (languageGroupsBody) loadLanguageGroups();
+
+async function loadLanguageGroups() {
+  if (!languageGroupsBody) return;
+  try {
+    const resp = await fetch("/api/language-groups");
+    const data = await resp.json();
+    languageGroupsCache = data.groups || [];
+    if (data.languages && data.languages.length) languageGroupLanguages = data.languages;
+    renderLanguageGroups();
+    _applyLanguageGroupOptions();
+  } catch (e) {
+    showToast(t("Sprachgruppen konnten nicht geladen werden: ", "Language groups could not be loaded: ") + e.message);
+  }
+}
+
+// Groups only work with per-language folders — see language_groups.py; the
+// backend rejects them otherwise, so they must not be offered either.
+function languageGroupsUsable() {
+  return !!(langSeparationCb && langSeparationCb.checked);
+}
+
+// Add every group as an option to a language dropdown, so a group can be
+// chosen wherever a single language can. Called after the groups change and
+// after the plain options of a dropdown have been (re)built.
+function appendLanguageGroupOptions(select) {
+  if (!select || !languageGroupsCache.length || !languageGroupsUsable()) return;
+  const grp = document.createElement("optgroup");
+  grp.label = t("Sprachgruppen", "Language groups");
+  languageGroupsCache.forEach(function (g) {
+    const opt = document.createElement("option");
+    opt.value = "group:" + g.id;
+    opt.textContent = g.name;
+    opt.title = (g.languages || []).join(" → ");
+    grp.appendChild(opt);
+  });
+  select.appendChild(grp);
+}
+
+function _applyLanguageGroupOptions() {
+  const notice = document.getElementById("langGroupsDisabledNotice");
+  if (notice) notice.style.display = languageGroupsUsable() ? "none" : "";
+  const dlLangEl = document.getElementById("downloadLanguage");
+  if (dlLangEl) {
+    const prev = dlLangEl.value;
+    const stale = dlLangEl.querySelector("optgroup");
+    if (stale) stale.remove();
+    appendLanguageGroupOptions(dlLangEl);
+    if (Array.from(dlLangEl.options).some(function (o) { return o.value === prev; })) {
+      dlLangEl.value = prev;
+    }
+  }
+  if (syncLanguageSelect) {
+    updateSyncLanguageDropdown(
+      langSeparationCb ? langSeparationCb.checked : false,
+      syncLanguageSelect.value,
+    );
+  }
+}
+
+function _langChainState(scope) {
+  return scope === "new" ? newLangGroupChain : editingLangGroupChain;
+}
+
+function _setLangChainState(scope, chain) {
+  if (scope === "new") newLangGroupChain = chain;
+  else editingLangGroupChain = chain;
+}
+
+function renderLangChainEditor(scope) {
+  const host = document.getElementById(
+    scope === "new" ? "newLangGroupEditor" : "editLangGroupEditor",
+  );
+  if (!host) return;
+  const chain = _langChainState(scope);
+  const items = chain.map(function (lang, i) {
+    return '<span class="lang-chain-item">' +
+      '<span class="lang-chain-pos">' + (i + 1) + "</span>" +
+      "<span>" + esc(lang) + "</span>" +
+      '<button type="button" class="lang-chain-btn" title="' + esc(t("Nach oben", "Move up")) + '"' +
+        (i === 0 ? " disabled" : "") + " onclick=\"moveLangChainEntry('" + scope + "'," + i + ",-1)\">&#9650;</button>" +
+      '<button type="button" class="lang-chain-btn" title="' + esc(t("Nach unten", "Move down")) + '"' +
+        (i === chain.length - 1 ? " disabled" : "") + " onclick=\"moveLangChainEntry('" + scope + "'," + i + ",1)\">&#9660;</button>" +
+      '<button type="button" class="lang-chain-btn lang-chain-del" title="' + esc(t("Entfernen", "Remove")) + '"' +
+        " onclick=\"removeLangChainEntry('" + scope + "'," + i + ")\">&times;</button>" +
+      "</span>";
+  }).join("");
+  const remaining = languageGroupLanguages.filter(function (l) { return chain.indexOf(l) === -1; });
+  const adder = remaining.length
+    ? '<span class="lang-chain-add">' +
+        '<select class="sync-select" id="langChainAdd-' + scope + '">' +
+          remaining.map(function (l) { return '<option value="' + esc(l) + '">' + esc(l) + "</option>"; }).join("") +
+        "</select>" +
+        "<button type=\"button\" class=\"btn btn-ghost\" onclick=\"addLangChainEntry('" + scope + "')\">" +
+          esc(t("Sprache hinzufügen", "Add language")) + "</button>" +
+      "</span>"
+    : "";
+  const empty = chain.length
+    ? ""
+    : '<span class="settings-hint" style="margin:0">' +
+      esc(t("Noch keine Sprache gewählt — die erste ist die bevorzugte.",
+            "No language picked yet — the first one is the preferred one.")) + "</span>";
+  host.innerHTML = empty + items + adder;
+}
+
+function addLangChainEntry(scope) {
+  const select = document.getElementById("langChainAdd-" + scope);
+  if (!select || !select.value) return;
+  const chain = _langChainState(scope).slice();
+  chain.push(select.value);
+  _setLangChainState(scope, chain);
+  renderLangChainEditor(scope);
+}
+
+function removeLangChainEntry(scope, index) {
+  const chain = _langChainState(scope).slice();
+  chain.splice(index, 1);
+  _setLangChainState(scope, chain);
+  renderLangChainEditor(scope);
+}
+
+function moveLangChainEntry(scope, index, delta) {
+  const chain = _langChainState(scope).slice();
+  const target = index + delta;
+  if (target < 0 || target >= chain.length) return;
+  const moved = chain.splice(index, 1)[0];
+  chain.splice(target, 0, moved);
+  _setLangChainState(scope, chain);
+  renderLangChainEditor(scope);
+}
+
+function renderLanguageGroups() {
+  if (!languageGroupsBody) return;
+  renderLangChainEditor("new");
+  languageGroupsBody.innerHTML = "";
+  if (!languageGroupsCache.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = '<td colspan="4" style="color:#6b7280;text-align:center">' +
+      esc(t("Keine Sprachgruppen", "No language groups")) + "</td>";
+    languageGroupsBody.appendChild(tr);
+    return;
+  }
+  const canEdit = typeof settingsCanEdit === "undefined" || settingsCanEdit;
+  languageGroupsCache.forEach(function (g) {
+    const tr = document.createElement("tr");
+    if (g.id === editingLangGroupId) {
+      tr.innerHTML =
+        '<td><input type="text" id="editLangGroupName" value="' + esc(g.name) + '"></td>' +
+        '<td><div class="lang-group-editor" id="editLangGroupEditor"></div></td>' +
+        '<td><label class="path-site-chip"><input type="checkbox" class="chb-main" id="editLangGroupDelete"' +
+          (g.delete_replaced ? " checked" : "") + "> " +
+          esc(t("Alte Datei löschen", "Delete old file")) + "</label></td>" +
+        "<td>" +
+          '<button onclick="saveLanguageGroup(' + g.id + ')">' + esc(t("Speichern", "Save")) + "</button> " +
+          '<button class="btn btn-ghost" onclick="cancelLanguageGroupEdit()">' + esc(t("Abbrechen", "Cancel")) + "</button>" +
+        "</td>";
+      languageGroupsBody.appendChild(tr);
+      renderLangChainEditor("edit");
+      return;
+    }
+    const order = (g.languages || []).map(function (lang, i) {
+      return (i ? '<span class="lang-group-arrow">→</span>' : "") + "<span>" + esc(lang) + "</span>";
+    }).join(" ");
+    const upgradeCell = g.delete_replaced
+      ? '<span class="lang-group-flag lang-group-flag-on">' + esc(t("Ja", "Yes")) + "</span>"
+      : '<span class="lang-group-flag">' + esc(t("Nein — beide behalten", "No — keep both")) + "</span>";
+    const actions = canEdit
+      ? '<button class="btn btn-ghost" onclick="startLanguageGroupEdit(' + g.id + ')">' + esc(t("Bearbeiten", "Edit")) + "</button> " +
+        '<button class="btn-del" onclick="deleteLanguageGroup(' + g.id + ')">' + esc(t("Löschen", "Delete")) + "</button>"
+      : "";
+    tr.innerHTML =
+      "<td>" + esc(g.name) + "</td>" +
+      '<td><div class="lang-group-order">' + order + "</div></td>" +
+      "<td>" + upgradeCell + "</td>" +
+      "<td>" + actions + "</td>";
+    languageGroupsBody.appendChild(tr);
+  });
+}
+
+function startLanguageGroupEdit(id) {
+  const group = languageGroupsCache.find(function (g) { return g.id === id; });
+  if (!group) return;
+  editingLangGroupId = id;
+  editingLangGroupChain = (group.languages || []).slice();
+  renderLanguageGroups();
+}
+
+function cancelLanguageGroupEdit() {
+  editingLangGroupId = null;
+  editingLangGroupChain = [];
+  renderLanguageGroups();
+}
+
+async function addLanguageGroup() {
+  const nameEl = document.getElementById("newLangGroupName");
+  const name = nameEl ? nameEl.value.trim() : "";
+  if (!name) { showToast(t("Name ist erforderlich", "Name is required")); return; }
+  if (newLangGroupChain.length < 2) {
+    showToast(t("Mindestens zwei Sprachen auswählen", "Pick at least two languages"));
+    return;
+  }
+  const deleteEl = document.getElementById("newLangGroupDelete");
+  try {
+    const resp = await fetch("/api/language-groups", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: name,
+        languages: newLangGroupChain,
+        delete_replaced: deleteEl ? deleteEl.checked : true,
+      }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    if (nameEl) nameEl.value = "";
+    if (deleteEl) deleteEl.checked = true;
+    newLangGroupChain = [];
+    showToast(t("Sprachgruppe hinzugefügt", "Language group added"));
+    loadLanguageGroups();
+  } catch (e) {
+    showToast(t("Sprachgruppe konnte nicht hinzugefügt werden: ", "Language group could not be added: ") + e.message);
+  }
+}
+
+async function saveLanguageGroup(id) {
+  const nameEl = document.getElementById("editLangGroupName");
+  const name = nameEl ? nameEl.value.trim() : "";
+  if (!name) { showToast(t("Name ist erforderlich", "Name is required")); return; }
+  if (editingLangGroupChain.length < 2) {
+    showToast(t("Mindestens zwei Sprachen auswählen", "Pick at least two languages"));
+    return;
+  }
+  const deleteEl = document.getElementById("editLangGroupDelete");
+  try {
+    const resp = await fetch("/api/language-groups/" + id, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: name,
+        languages: editingLangGroupChain,
+        delete_replaced: deleteEl ? deleteEl.checked : true,
+      }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    editingLangGroupId = null;
+    editingLangGroupChain = [];
+    showToast(t("Sprachgruppe gespeichert", "Language group saved"));
+    loadLanguageGroups();
+  } catch (e) {
+    showToast(t("Sprachgruppe konnte nicht gespeichert werden: ", "Language group could not be saved: ") + e.message);
+  }
+}
+
+async function deleteLanguageGroup(id) {
+  if (!await showConfirm(t("Diese Sprachgruppe löschen?", "Delete this language group?"))) return;
+  try {
+    const resp = await fetch("/api/language-groups/" + id, { method: "DELETE" });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    if (editingLangGroupId === id) cancelLanguageGroupEdit();
+    showToast(t("Sprachgruppe gelöscht", "Language group deleted"));
+    loadLanguageGroups();
+  } catch (e) {
+    showToast(t("Sprachgruppe konnte nicht gelöscht werden: ", "Language group could not be deleted: ") + e.message);
+  }
+}
+
+// ─── User management ─────────────────────────────────────────────────────────
+
+const userTableBody = document.getElementById("userTableBody");
+if (userTableBody) loadUsers();
+
+async function loadUsers() {
+  if (!userTableBody) return;
+  try {
+    const resp = await fetch("/admin/api/users");
+    const data = await resp.json();
+    renderUsers(data.users || []);
+  } catch (e) {
+    showToast(t("Benutzer konnten nicht geladen werden: " + e.message, "Users could not be loaded: " + e.message));
+  }
+}
+
+function renderUsers(users) {
+  const adminCount = users.filter(function (u) { return u.role === "admin"; }).length;
+  userTableBody.innerHTML = "";
+  users.forEach(function (u) {
+    const isLastAdmin = u.role === "admin" && adminCount <= 1;
+    const tr = document.createElement("tr");
+    const authMethod = u.auth_method || "local";
+    const authBadge = authMethod === "oidc"
+      ? '<span class="auth-badge auth-sso">SSO</span>'
+      : '<span class="auth-badge auth-local">'+t("Lokal","Local")+'</span>';
+    tr.innerHTML =
+      "<td>" + u.id + "</td>" +
+      "<td>" + esc(u.username) + "</td>" +
+      "<td><select onchange=\"changeRole(" + u.id + ", this.value)\" " + (isLastAdmin ? "disabled" : "") + ">" +
+      "<option value=\"user\" " + (u.role === "user" ? "selected" : "") + ">" + t("Benutzer","User") + "</option>" +
+      "<option value=\"admin\" " + (u.role === "admin" ? "selected" : "") + ">" + t("Administrator","Administrator") + "</option>" +
+      // A restriction, not a rank: a kids account sees an age-limited app
+      // and cannot download, install modules or change settings. There is no
+      // PIN for it -- the role IS the answer, so there is nothing to leave.
+      "<option value=\"kids\" " + (u.role === "kids" ? "selected" : "") + ">" + t("Kind","Kids") + "</option>" +
+      "</select></td>" +
+      "<td>" + authBadge + "</td>" +
+      "<td>" + esc(u.created_at) + "</td>" +
+      "<td>" + (isLastAdmin
+        ? '<span style="color:#555">'+t("geschützt","protected")+'</span>'
+        : '<button class="btn-del" onclick="deleteUser(' + u.id + ')">'+t("Löschen","Delete")+'</button>') + "</td>";
+    userTableBody.appendChild(tr);
+  });
+}
+
+async function addUser() {
+  const username = document.getElementById("newUsername").value.trim();
+  const password = document.getElementById("newPassword").value;
+  const role = document.getElementById("newRole").value;
+  if (!username || !password) { showToast(t("Benutzername und Passwort sind erforderlich", "Username and password required")); return; }
+  try {
+    const resp = await fetch("/admin/api/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, role }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    document.getElementById("newUsername").value = "";
+    document.getElementById("newPassword").value = "";
+    showToast(t("Benutzer erstellt","User created"));
+    loadUsers();
+  } catch (e) {
+    showToast(t("Benutzer konnte nicht erstellt werden: " + e.message, "User could not be created: " + e.message));
+  }
+}
+
+async function deleteUser(id) {
+  if (!await showConfirm(t("Diesen Benutzer löschen?", "Delete this user?"))) return;
+  try {
+    const resp = await fetch("/admin/api/users/" + id, { method: "DELETE" });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return; }
+    showToast(t("Benutzer gelöscht","User deleted"));
+    loadUsers();
+  } catch (e) {
+    showToast(t("Benutzer konnte nicht gelöscht werden: " + e.message, "User could not be deleted: " + e.message));
+  }
+}
+
+async function changeRole(id, newRole) {
+  try {
+    const resp = await fetch("/admin/api/users/" + id + "/role", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: newRole }),
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); loadUsers(); return; }
+    showToast(t("Rolle aktualisiert", "Role updated"));
+    loadUsers();
+  } catch (e) {
+    showToast(t("Rolle konnte nicht aktualisiert werden: " + e.message, "Role could not be updated: " + e.message));
+  }
+}
+
+// ─── External API key ─────────────────────────────────────────────────────────
+
+async function loadApiKey() {
+  try {
+    const resp = await fetch("/api/settings/api-key");
+    const data = await resp.json();
+    const el = document.getElementById("externalApiKeyDisplay");
+    if (el) el.value = data.key || "";
+    const baseUrl = window.location.origin;
+    const baseEl = document.getElementById("apiBaseUrlDisplay");
+    const exEl = document.getElementById("apiExampleUrl");
+    if (baseEl) baseEl.textContent = baseUrl;
+    if (exEl) exEl.textContent = baseUrl + "/api/v1/status?apikey=****";
+  } catch (e) { /* non-critical */ }
+}
+
+function toggleApiKeyVisibility() {
+  const el = document.getElementById("externalApiKeyDisplay");
+  const btn = document.getElementById("apiKeyToggleBtn");
+  if (!el) return;
+  const visible = el.type === "text";
+  el.type = visible ? "password" : "text";
+  btn.textContent = visible ? t("Anzeigen","Show") : t("Verbergen","Hide");
+}
+
+async function copyApiKey() {
+  const el = document.getElementById("externalApiKeyDisplay");
+  if (!el || !el.value) return;
+  try {
+    await navigator.clipboard.writeText(el.value);
+    showToast(t("API-Key kopiert","API key copied"), "success");
+  } catch (e) {
+    showToast(t("Kopieren fehlgeschlagen: " + e.message, "Copying failed: " + e.message), "error");
+  }
+}
+
+async function regenerateApiKey() {
+  if (!await showConfirm(t("API-Key neu generieren? Der alte Key wird sofort ungültig.","Regenerate API key? The old key will become invalid immediately."))) return;
+  try {
+    const resp = await fetch("/api/settings/api-key/regenerate", { method: "POST" });
+    const data = await resp.json();
+    if (data.ok) {
+      const el = document.getElementById("externalApiKeyDisplay");
+      if (el) el.value = data.key;
+      const exEl = document.getElementById("apiExampleUrl");
+      if (exEl) exEl.textContent = window.location.origin + "/api/v1/status?apikey=****";
+      showToast(t("Neuer API-Key generiert","New API key generated"), "success");
+    } else {
+      showToast(t("Fehler beim Generieren","Error generating"), "error");
+    }
+  } catch (e) {
+    showToast(t("Fehler: " + e.message, "Error: " + e.message), "error");
+  }
+}
+
+// ─── Update checker ───────────────────────────────────────────────────────────
+
+function _applyUpdateData(data) {
+  const latestEl        = document.getElementById("latestVersion");
+  const banner          = document.getElementById("updateBanner");
+  const bannerText      = document.getElementById("updateBannerText");
+  const changelog       = document.getElementById("updateChangelog");
+  const releaseLink     = document.getElementById("updateReleaseLink");
+  const status          = document.getElementById("updateStatus");
+  const pipCmd          = document.getElementById("updatePipCmd");
+  const devHint         = document.getElementById("devChannelHint");
+
+  const isDevInstall = !!data.is_dev_install;
+  const canSelfUpdate = !!data.can_self_update;
+  _selfUpdateCanUpdate = canSelfUpdate;
+  if (data.channel) _selfUpdateChannel = data.channel;
+
+  // "Verfügbar" field
+  if (latestEl) latestEl.textContent = data.latest_version || "—";
+
+  // Channel switch (pip/pipx only)
+  const channelRow = document.getElementById("updateChannelRow");
+  if (channelRow) channelRow.style.display = canSelfUpdate ? "" : "none";
+  _renderChannelSwitch(_selfUpdateChannel);
+
+  // Auto-update section only makes sense when we can self-update
+  const autoSec = document.getElementById("autoUpdateSection");
+  if (autoSec) autoSec.style.display = canSelfUpdate ? "" : "none";
+
+  // Manual pip command + dev copy-hint only when we cannot self-update
+  const pipEl = document.getElementById("updatePipCmd");
+  const pipBlock = (pipEl && pipEl.closest("div")) ? pipEl.closest("div").parentElement : null;
+  if (pipBlock) pipBlock.style.display = canSelfUpdate ? "none" : "";
+  if (devHint) devHint.style.display = (!canSelfUpdate && !isDevInstall) ? "" : "none";
+
+  if (data.error) {
+    if (status) status.textContent = "⚠️ " + data.error;
+    if (banner) banner.style.display = "none";
+  } else if (data.update_available) {
+    if (status) status.textContent = "";
+    if (banner) banner.style.display = "";
+
+    if (isDevInstall) {
+      // Dev install: neuere Commits auf models branch
+      if (bannerText) bannerText.textContent =
+        t("Neuere Commits verfügbar (aktueller Commit: " + data.latest_version + ")","Newer commits available (current commit: " + data.latest_version + ")");
+      if (releaseLink && data.release_url) {
+        releaseLink.href = data.release_url;
+        releaseLink.textContent = t("Commits ansehen","View commits");
+      }
+      if (changelog) changelog.style.display = "none";
+      if (pipCmd) pipCmd.textContent =
+        'pip install --upgrade "git+https://github.com/PD-Codes/MediaForge.git@main"';
+    } else {
+      // Release install: neue Version verfügbar
+      if (bannerText) bannerText.textContent =t("Version " + data.latest_version + " verfügbar (installiert: " + data.local_version + ")","Version " + data.latest_version + " available (installed: " + data.local_version + ")");
+      if (releaseLink && data.release_url) {
+        releaseLink.href = data.release_url;
+        releaseLink.textContent = t("Release öffnen","Open Release");
+      }
+      if (changelog) {
+        changelog.style.display = "";
+        changelog.textContent = data.release_notes || "";
+      }
+      if (pipCmd) pipCmd.textContent =
+        'pip install --upgrade mediaforge';
+    }
+  } else {
+    if (status) status.textContent = t("✓ Bereits aktuell.","✓ Already up to date.");
+    if (banner) banner.style.display = "none";
+  }
+
+  const installRow = document.getElementById("updateInstallRow");
+  if (installRow) installRow.style.display = (canSelfUpdate && data.update_available) ? "" : "none";
+}
+
+let _selfUpdateChannel = null;
+let _selfUpdateCanUpdate = false;
+
+function _renderChannelSwitch(channel) {
+  const sw = document.getElementById("updateChannelSwitch");
+  if (!sw) return;
+  sw.querySelectorAll(".update-channel-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.channel === channel);
+  });
+}
+
+function installUpdateNow() {
+  if (window.AniUpdate) window.AniUpdate.startInstall();
+}
+
+async function switchChannel(target) {
+  if (!target || target === _selfUpdateChannel) return;
+  const msg = target === "dev"
+    ? t("Die neueste (evtl. instabile) Version aus dem models-Branch wird jetzt installiert.",
+        "The latest (possibly unstable) version from the models branch will be installed now.")
+    : t("Die stabile Version wird jetzt installiert.",
+        "The stable release will be installed now.");
+  const title = target === "dev"
+    ? t("Zum Dev-Channel wechseln?", "Switch to the dev channel?")
+    : t("Zur stabilen Version wechseln?", "Switch to stable?");
+  const okLabel = t("Wechseln & installieren", "Switch & install");
+  let confirmed = false;
+  if (typeof showConfirm === "function") {
+    confirmed = await showConfirm(msg, okLabel, title, "btn-primary");
+  } else {
+    confirmed = window.confirm(msg);
+  }
+  if (!confirmed) return;
+  if (window.AniUpdate) window.AniUpdate.startInstall(target);
+}
+
+function _renderAutoUpdateDays(csv) {
+  const cont = document.getElementById("autoUpdateDays");
+  if (!cont) return;
+  const active = new Set(
+    String(csv || "").split(",").map((x) => parseInt(x.trim(), 10)).filter((x) => !isNaN(x)),
+  );
+  const labels = (typeof _weekdayLabels === "function")
+    ? _weekdayLabels()
+    : ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+  cont.innerHTML = "";
+  labels.forEach((lbl, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "weekday-toggle" + (active.has(i) ? " active" : "");
+    b.dataset.day = i;
+    b.textContent = lbl;
+    b.addEventListener("click", () => { b.classList.toggle("active"); saveAutoUpdate(); });
+    cont.appendChild(b);
+  });
+}
+
+function _getAutoUpdateDays() {
+  const cont = document.getElementById("autoUpdateDays");
+  if (!cont) return "";
+  return Array.from(cont.querySelectorAll(".weekday-toggle.active"))
+    .map((b) => b.dataset.day).join(",");
+}
+
+async function saveAutoUpdate() {
+  const enabled = document.getElementById("autoUpdateEnabled");
+  const timeEl = document.getElementById("autoUpdateTime");
+  const block = document.getElementById("autoUpdateBlock");
+  const isOn = !!(enabled && enabled.checked);
+  if (block) block.style.display = isOn ? "" : "none";
+  const days = _getAutoUpdateDays() || "0,1,2,3,4,5,6";
+  const payload = {
+    auto_update_enabled: isOn,
+    auto_update_days: days,
+    auto_update_time: (timeEl && timeEl.value) ? timeEl.value : "03:00",
+  };
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (data.ok) showToast(t("Gespeichert", "Saved"), "success");
+    else showToast(data.error || t("Konnte nicht gespeichert werden", "Could not save"), "error");
+  } catch (e) {
+    showToast(t("Konnte nicht gespeichert werden", "Could not save"), "error");
+  }
+}
+
+async function copyUpdateCmd() {
+  const el = document.getElementById("updatePipCmd");
+  if (!el) return;
+  try {
+    await navigator.clipboard.writeText(el.textContent.trim());
+    showToast("Befehl kopiert", "success");
+  } catch (e) {
+    showToast(t("Kopieren fehlgeschlagen","failed to copy"), "error");
+  }
+}
+
+async function copyDevChannelCmd() {
+  const el = document.getElementById("devChannelCmd");
+  if (!el) return;
+  try {
+    await navigator.clipboard.writeText(el.textContent.trim());
+    showToast(t("Befehl kopiert", "Command Copied"), "success");
+  } catch (e) {
+    showToast(t("Kopieren fehlgeschlagen", "failed to copy"), "error");
+  }
+}
+
+async function checkForUpdates(force = false) {
+  const btn = document.getElementById("updateCheckBtn");
+  const status = document.getElementById("updateStatus");
+  if (btn) { btn.disabled = true; btn.textContent = t("Prüfe…", "Checking…"); }
+  if (status) status.textContent = "";
+  try {
+    const resp = await fetch("/api/update-check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force }),
+    });
+    _applyUpdateData(await resp.json());
+  } catch (e) {
+    if (status) status.textContent = t("⚠️ Fehler: ", "⚠️ Error:") + e.message;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = t("Jetzt prüfen", "check now"); }
+  }
+}
+
+(function initUpdateSection() {
+  fetch("/api/update-check", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force: false }),
+  }).then(function (r) { return r.json(); }).then(_applyUpdateData).catch(function () { });
+})();
+
+// ─── Toast / helpers ──────────────────────────────────────────────────────────
+
+function showToast(msg, type) {
+  const t = document.getElementById("toast");
+  if (!t) return;
+  t.textContent = msg;
+  t.className = "toast" + (type ? " toast-" + type : "");
+  t.style.display = "";
+  t.classList.remove("show");
+  void t.offsetWidth;
+  t.classList.add("show");
+  clearTimeout(t._hideTimer);
+  t._hideTimer = setTimeout(function () { t.classList.remove("show"); }, 4000);
+}
+
+// Shared escaper (static/mf_escape.js) -- quote-safe, and it no longer turns
+// 0/false into an empty string the way the old `s || ""` did.
+const esc = window.mfEscape;
+
+// ─── Kick off ─────────────────────────────────────────────────────────────────
+loadSettings();
+// Cache sizes and extractor diagnostics for the Comics and eBooks blocks on
+// the Library tab. Their own requests: /api/settings carries settings, not
+// measurements, and the two libraries have separate caches.
+loadComicCacheStats();
+loadBookCacheStats();
+
+// ─── .env migration banner ───────────────────────────────────────────────────
+
+(function checkEnvFileBanner() {
+  var banner = document.getElementById("envFileBanner");
+  if (!banner) return;
+  fetch("/api/settings/env-file")
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.exists && data.migrated) {
+        banner.style.display = "flex";
+      }
+    })
+    .catch(function () { });
+})();
+
+async function deleteEnvFile() {
+  const banner = document.getElementById("envFileBanner");
+  if (!await showConfirm(t("~/.mediaforge/.env jetzt löschen? Diese Aktion kann nicht rückgängig gemacht werden.","Delete ~/.mediaforge/.env now? This action cannot be undone."))) return;
+  try {
+    const resp = await fetch("/api/settings/env-file", { method: "DELETE" });
+    const data = await resp.json();
+    if (data.ok) {
+      if (banner) banner.style.display = "none";
+      showToast(t(".env erfolgreich gelöscht", "env deleted successfully"), "success");
+    } else {
+      showToast(data.error || t("Fehler beim Löschen", "Error deleting env"), "error");
+    }
+  } catch (e) {
+    showToast(t("Fehler: ", "Error: ") + e.message, "error");
+  }
+}
+
+// ─── Design / Appearance ───────────────────────────────────────────────────
+
+function _loadDesignCheckboxes() {
+  const settings = [
+    { id: 'glowEffect', key: 'aw-glow-effect' },
+    { id: 'headerColor', key: 'aw-header-color' },
+    { id: 'skeletonLoader', key: 'aw-skeleton-loader' },
+    { id: 'chooseBorder', key: 'aw-choose-border' },
+    { id: 'activeDownloadGlow', key: 'aw-active-download-glow' },
+    { id: 'clickEffect', key: 'aw-click-effect' },
+    { id: 'iconMove', key: 'aw-icon-move' }
+  ];
+  settings.forEach(s => {
+    const el = document.getElementById(s.id);
+    if (el) el.checked = localStorage.getItem(s.key) === 'true';
+  });
+  _loadThemePackSelect();
+}
+
+// ─── Theme packs (web/themes.py) ────────────────────────────────────────────
+// The personal choice is stored on the ACCOUNT (window._USER_PREFS.theme_pack,
+// served from db.user_ui_prefs) and mirrored into localStorage 'aw-themepack'
+// for logged-out/offline pages; applyThemePack() in base.html swaps the
+// stylesheet live and writes both. The instance default is a server setting
+// (admin only).
+
+function _loadThemePackSelect() {
+  const el = document.getElementById('themePackSelect');
+  if (!el) return;
+  let choice = '';
+  const prefs = window._USER_PREFS || {};
+  if (typeof prefs.theme_pack === 'string') {
+    choice = prefs.theme_pack;
+  } else {
+    try { choice = localStorage.getItem('aw-themepack') || ''; } catch (e) { }
+  }
+  // A stale override (theme uninstalled since) falls back to instance default.
+  if (choice && ![...el.options].some(o => o.value === choice)) choice = '';
+  el.value = choice;
+}
+
+function saveThemePackChoice() {
+  const el = document.getElementById('themePackSelect');
+  if (!el) return;
+  applyThemePack(el.value);   // applies live AND saves to the account
+  showToast(t('Theme für dein Konto gespeichert', 'Theme saved to your account'));
+}
+
+function saveThemePackDefault() {
+  const el = document.getElementById('themePackDefaultSelect');
+  if (!el) return;
+  const folder = el.value === 'default' ? '' : el.value;
+  fetch('/api/themes/active', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folder })
+  }).then(r => r.json()).then(d => {
+    if (d && d.ok) {
+      showToast(t('Standard-Theme gespeichert', 'Default theme saved'));
+      // If this user follows the instance default, apply it right away.
+      // persist=false: this admin didn't change their *personal* choice.
+      let choice = (window._USER_PREFS || {}).theme_pack;
+      if (typeof choice !== 'string') {
+        try { choice = localStorage.getItem('aw-themepack') || ''; } catch (e) { choice = ''; }
+      }
+      if (!choice) {
+        window._THEME_DEFAULT = folder;
+        applyThemePack('', false);
+      }
+    } else {
+      showToast((d && d.error) || t('Speichern fehlgeschlagen', 'Save failed'));
+    }
+  }).catch(() => showToast(t('Speichern fehlgeschlagen', 'Save failed')));
+}
+
+// ── Instance default appearance (Settings → Design, admin only) ────────────
+// What an account that has never picked a look is shown. Its own setting keys
+// (default_theme_mode / default_accent), NOT the per-account theme_mode and
+// accent -- those are on the profile page, and an admin changing them there
+// changes only their own view, which is exactly the confusion this splits up.
+// The built-in accent, kept in sync with _DEFAULT_ACCENT in base.html.
+const MF_BUILTIN_ACCENT = "#7c3aed";
+
+// Preset swatches for the instance default, mirroring the account-level row
+// on the profile page. Read from base.html's _ACCENT_PRESETS when available
+// so there is one list of colours, not two that drift apart.
+function _defaultAccentPresets() {
+  return (typeof _ACCENT_PRESETS !== "undefined" && _ACCENT_PRESETS.length)
+    ? _ACCENT_PRESETS
+    : [
+      { color: "#7c3aed", name: "Purple" }, { color: "#3b82f6", name: "Blue" },
+      { color: "#06b6d4", name: "Cyan" }, { color: "#22c55e", name: "Green" },
+      { color: "#f97316", name: "Orange" }, { color: "#ec4899", name: "Pink" },
+      { color: "#ef4444", name: "Red" }, { color: "#eab308", name: "Yellow" },
+    ];
+}
+
+function markDefaultAccentPreset(hex) {
+  const want = String(hex || "").toLowerCase();
+  document.querySelectorAll(".accent-preset-default").forEach(function (el) {
+    el.classList.toggle("active", el.dataset.color === want);
+  });
+}
+
+function buildDefaultAccentPresets() {
+  const box = document.getElementById("defaultAccentPresets");
+  if (!box || box.childElementCount) return;
+  _defaultAccentPresets().forEach(function (p) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "accent-preset-default";
+    btn.title = p.name;
+    btn.dataset.color = p.color;
+    btn.style.background = p.color;
+    btn.addEventListener("click", function () {
+      const hex = document.getElementById("defaultAccentHex");
+      if (hex) hex.value = p.color;
+      markDefaultAccentPreset(p.color);
+      saveAppearanceDefaults(p.color);
+    });
+    box.appendChild(btn);
+  });
+}
+
+function saveAppearanceDefaults(pickedColour) {
+  const mode = document.getElementById("defaultThemeMode");
+  const hex = document.getElementById("defaultAccentHex");
+  const picker = document.getElementById("defaultAccentPicker");
+  if (!mode || !hex) return;
+
+  if (pickedColour) hex.value = pickedColour;
+  const accent = (hex.value || "").trim();
+  if (accent && !/^#[0-9a-fA-F]{6}$/.test(accent)) {
+    showToast(t("Ungültige Farbe (z. B. #7c3aed)", "Invalid colour (e.g. #7c3aed)"), "error");
+    return;
+  }
+  if (picker) picker.value = accent || MF_BUILTIN_ACCENT;
+  markDefaultAccentPreset(accent);
+
+  fetch("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ default_theme_mode: mode.value, default_accent: accent }),
+  }).then(async function (resp) {
+    const body = await resp.json().catch(function () { return {}; });
+    if (!resp.ok) throw new Error(body.error || String(resp.status));
+    showToast(t("Standard gespeichert", "Default saved"));
+  }).catch(function (err) {
+    showToast(t("Konnte nicht gespeichert werden", "Could not be saved") + ": " + err.message);
+  });
+}
+
+// ── Instance default UI language (Settings → Design, admin only) ──────────
+// Which language a freshly created account starts in. Purely an instance
+// default: it never touches accounts that already exist, and every account
+// can still switch on its profile page.
+function markDefaultLanguage(lang) {
+  document.querySelectorAll("[data-default-lang]").forEach(function (btn) {
+    btn.classList.toggle("active", btn.dataset.defaultLang === lang);
+  });
+}
+
+function saveDefaultLanguage(lang) {
+  fetch("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ default_ui_language: lang }),
+  }).then(async function (resp) {
+    const body = await resp.json().catch(function () { return {}; });
+    if (!resp.ok) throw new Error(body.error || String(resp.status));
+    markDefaultLanguage(lang);
+    showToast(t("Standard gespeichert", "Default saved"));
+  }).catch(function (err) {
+    showToast(t("Konnte nicht gespeichert werden", "Could not be saved") + ": " + err.message);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+  buildDefaultAccentPresets();
+  document.querySelectorAll("[data-default-lang]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      saveDefaultLanguage(btn.dataset.defaultLang);
+    });
+  });
+});
+
+function clearAppearanceDefaultAccent() {
+  const hex = document.getElementById("defaultAccentHex");
+  if (hex) hex.value = "";
+  saveAppearanceDefaults();
+}
+
+// ── Instance default for the extra design toggles (Design tab, admin only) ──
+// The eight ui_* toggles from the profile page, as a default for accounts that
+// have never touched them. Sent as one comma-separated list rather than eight
+// booleans on purpose: "" is then a real, storable answer ("an admin
+// deliberately turned all eight off") and is what tells base.html to stop
+// falling back to the per-browser localStorage mirror. Eight separate keys
+// could not express that -- eight zeroes and "never configured" would look
+// identical.
+function loadDefaultUiToggles(raw) {
+  const picked = {};
+  String(raw == null ? "" : raw).split(",").forEach(function (k) {
+    const key = k.trim();
+    if (key) picked[key] = true;
+  });
+  document.querySelectorAll("[data-default-ui]").forEach(function (box) {
+    box.checked = !!picked[box.dataset.defaultUi];
+  });
+}
+
+function saveDefaultUiToggles() {
+  const picked = [];
+  document.querySelectorAll("[data-default-ui]").forEach(function (box) {
+    if (box.checked) picked.push(box.dataset.defaultUi);
+  });
+  fetch("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ default_ui_toggles: picked.join(",") }),
+  }).then(async function (resp) {
+    const body = await resp.json().catch(function () { return {}; });
+    if (!resp.ok) throw new Error(body.error || String(resp.status));
+    showToast(t("Standard gespeichert", "Default saved"));
+  }).catch(function (err) {
+    showToast(t("Konnte nicht gespeichert werden", "Could not be saved") + ": " + err.message);
+  });
+}
+
+/* The eight "Advanced appearance" handlers (saveGlowEffect, saveHeaderColor,
+   saveHeaderColorHelp, saveSkeletonLoader, saveBorder, saveActiveDownloadGlow,
+   saveClickEffect, saveIconMove) and their shared _toggleDesignSetting() used
+   to live here. They wrote localStorage ONLY, which made every one of those
+   toggles per BROWSER rather than per account.
+
+   The toggles moved to the profile page and are account preferences now
+   (ui_* in db.USER_UI_PREF_KEYS, written through base.html's mfSetUiToggle).
+   The functions here were left behind with no caller in any template -- dead,
+   but dead code that still looked like the place to wire a new toggle up, and
+   would have quietly reintroduced the per-browser behaviour. Removed rather
+   than kept: base.html's window._MF_UI_TOGGLES is the single list now. */
+
+// ─── Drag to Scroll for Settings Tabs ─────────────────────────────────────────
+
+document.addEventListener("DOMContentLoaded", () => {
+  const tabs = document.getElementById("settingsTabs");
+  if (!tabs) return;
+
+  let isDown = false;
+  let startX;
+  let scrollLeft;
+  let dragged = false;
+
+  tabs.addEventListener("mousedown", (e) => {
+    isDown = true;
+    dragged = false;
+    tabs.style.cursor = "grabbing";
+    startX = e.pageX - tabs.offsetLeft;
+    scrollLeft = tabs.scrollLeft;
+  });
+
+  tabs.addEventListener("mouseleave", () => {
+    isDown = false;
+    tabs.style.cursor = "grab";
+  });
+
+  tabs.addEventListener("mouseup", () => {
+    isDown = false;
+    tabs.style.cursor = "grab";
+  });
+
+  tabs.addEventListener("mousemove", (e) => {
+    if (!isDown) return;
+    const x = e.pageX - tabs.offsetLeft;
+    const walk = (x - startX) * 1.5; // scroll speed multiplier
+    if (Math.abs(walk) > 5) {
+      dragged = true;
+    }
+    tabs.scrollLeft = scrollLeft - walk;
+  });
+
+  // Intercept click event in capture phase to prevent switching tab when dragging
+  tabs.addEventListener("click", (e) => {
+    if (dragged) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, true);
+});
+
+// ─── Custom Time Picker ──────────────────────────────────────────────────────
+
+function createCustomTimePicker(inputEl) {
+  if (inputEl.customPickerCreated) return;
+  inputEl.customPickerCreated = true;
+
+  inputEl.style.display = "none";
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "asf-custom-time-picker";
+  wrapper.style.display = "inline-flex";
+  wrapper.style.alignItems = "center";
+  wrapper.style.gap = "4px";
+
+  const selectHour = document.createElement("select");
+  selectHour.style.minWidth = "55px";
+  const selectHourWrap = document.createElement("div");
+  selectHourWrap.className = "asf-select-wrap";
+  selectHourWrap.appendChild(selectHour);
+  
+  const separator = document.createElement("span");
+  separator.textContent = ":";
+  separator.style.fontWeight = "bold";
+  separator.style.color = "var(--text-secondary)";
+
+  const selectMinute = document.createElement("select");
+  selectMinute.style.minWidth = "55px";
+  const selectMinuteWrap = document.createElement("div");
+  selectMinuteWrap.className = "asf-select-wrap";
+  selectMinuteWrap.appendChild(selectMinute);
+
+  const selectAmpm = document.createElement("select");
+  selectAmpm.style.minWidth = "60px";
+  const optAm = document.createElement("option");
+  optAm.value = "AM"; optAm.textContent = "AM";
+  const optPm = document.createElement("option");
+  optPm.value = "PM"; optPm.textContent = "PM";
+  selectAmpm.appendChild(optAm);
+  selectAmpm.appendChild(optPm);
+  const selectAmpmWrap = document.createElement("div");
+  selectAmpmWrap.className = "asf-select-wrap";
+  selectAmpmWrap.appendChild(selectAmpm);
+
+  inputEl.parentNode.insertBefore(wrapper, inputEl.nextSibling);
+  inputEl.customWrapper = wrapper;
+
+  function populateHours(is12h) {
+    const prevVal = selectHour.value;
+    selectHour.innerHTML = "";
+    if (is12h) {
+      for (let h = 1; h <= 12; h++) {
+        const opt = document.createElement("option");
+        opt.value = String(h).padStart(2, "0");
+        opt.textContent = String(h).padStart(2, "0");
+        selectHour.appendChild(opt);
+      }
+    } else {
+      for (let h = 0; h < 24; h++) {
+        const opt = document.createElement("option");
+        opt.value = String(h).padStart(2, "0");
+        opt.textContent = String(h).padStart(2, "0");
+        selectHour.appendChild(opt);
+      }
+    }
+    if (prevVal) {
+      selectHour.value = prevVal;
+    }
+  }
+
+  for (let m = 0; m < 60; m++) {
+    const opt = document.createElement("option");
+    opt.value = String(m).padStart(2, "0");
+    opt.textContent = String(m).padStart(2, "0");
+    selectMinute.appendChild(opt);
+  }
+
+  function syncPickerUI() {
+    const format = localStorage.getItem("timeFormatSetting") || "24h";
+    const is12h = format === "12h";
+
+    populateHours(is12h);
+
+    let [hh, mm] = (inputEl.value || "06:00").split(":");
+    let hVal = parseInt(hh, 10);
+    let mVal = parseInt(mm, 10);
+    if (isNaN(hVal)) hVal = 6;
+    if (isNaN(mVal)) mVal = 0;
+
+    if (is12h) {
+      let ampm = "AM";
+      if (hVal >= 12) {
+        ampm = "PM";
+        if (hVal > 12) hVal -= 12;
+      } else if (hVal === 0) {
+        hVal = 12;
+      }
+      selectHour.value = String(hVal).padStart(2, "0");
+      selectAmpm.value = ampm;
+      if (!selectAmpmWrap.parentNode) {
+        wrapper.appendChild(selectAmpmWrap);
+      }
+    } else {
+      selectHour.value = String(hVal).padStart(2, "0");
+      if (selectAmpmWrap.parentNode) {
+        wrapper.removeChild(selectAmpmWrap);
+      }
+    }
+    selectMinute.value = String(mVal).padStart(2, "0");
+  }
+
+  wrapper.appendChild(selectHourWrap);
+  wrapper.appendChild(separator);
+  wrapper.appendChild(selectMinuteWrap);
+
+  function updateInputValue() {
+    const format = localStorage.getItem("timeFormatSetting") || "24h";
+    const is12h = format === "12h";
+
+    let hVal = parseInt(selectHour.value, 10);
+    let mVal = parseInt(selectMinute.value, 10);
+
+    if (is12h) {
+      const ampm = selectAmpm.value;
+      if (ampm === "PM" && hVal < 12) hVal += 12;
+      else if (ampm === "AM" && hVal === 12) hVal = 0;
+    }
+
+    const hh = String(hVal).padStart(2, "0");
+    const mm = String(mVal).padStart(2, "0");
+    const newVal = hh + ":" + mm;
+
+    if (inputEl.value !== newVal) {
+      inputEl.value = newVal;
+      inputEl.dispatchEvent(new Event("change"));
+    }
+  }
+
+  selectHour.addEventListener("change", updateInputValue);
+  selectMinute.addEventListener("change", updateInputValue);
+  selectAmpm.addEventListener("change", updateInputValue);
+
+  inputEl.syncCustomPicker = syncPickerUI;
+  syncPickerUI();
+}
+
+function changeTimeFormatSetting() {
+  const select = document.getElementById("timeFormatSetting");
+  if (!select) return;
+  const val = select.value;
+  localStorage.setItem("timeFormatSetting", val);
+  
+  document.querySelectorAll("#downloadWindowStart, #downloadWindowEnd, .sync-time-row input").forEach((input) => {
+    if (input.syncCustomPicker) {
+      input.syncCustomPicker();
+    }
+  });
+}
+
+
+// ─── Quellen / Sources: Reihenfolge & Aktivierung ───────────────────────────
+
+const SOURCE_META = {
+  aniworld:   { label: "AniWorld",   cls: "browse-provider-aniworld",   hasSections: true },
+  sto:        { label: "SerienStream", cls: "browse-provider-sto",       hasSections: true },
+  filmpalast: { label: "FilmPalast", cls: "browse-provider-filmpalast", hasSections: false },
+  filmo:      { label: "filmo.to",   cls: "browse-provider-filmo",      hasSections: true },
+  // englishOnly mirrors source_policy.ENGLISH_ONLY_SOURCE_IDS. Display only:
+  // it adds the "EN" badge below and explains why the source ships off; it is
+  // not an age gate and triggers no confirmation dialog.
+  nineanime:  { label: "9anime",     cls: "browse-provider-nineanime",  hasSections: true, englishOnly: true },
+  aniwaves:   { label: "Aniwaves",   cls: "browse-provider-aniwaves",   hasSections: true, englishOnly: true },
+  megakino:   { label: "MegaKino",   cls: "browse-provider-megakino",   hasSections: false, multiSections: [
+                  { key: "new_movies",     de: "Neue Filme",     en: "New Movies" },
+                  { key: "popular_movies", de: "Beliebte Filme", en: "Popular Movies" },
+                  { key: "new_series",     de: "Neue Serien",    en: "New Series" },
+                  { key: "popular_series", de: "Beliebte Serien", en: "Popular Series" },
+              ] },
+  hanime:     { label: "hanime 18+",  cls: "browse-provider-hanime",     hasSections: false, multiSections: [
+                  { key: "new",        de: "Neu",         en: "New" },
+                  { key: "trending",   de: "Trending",    en: "Trending" },
+                  // Content-type filters — applied per item within the New/
+                  // Trending lists above (not separate sections themselves).
+                  { key: "censored",   de: "Zensiert",    en: "Censored" },
+                  { key: "uncensored", de: "Unzensiert",  en: "Uncensored" },
+              ] }
+};
+
+// Pre-load placeholder only: _loadSourceSettings() replaces `order` and
+// `enabled` with whatever sources the server reports (see sources.available),
+// which is the list that includes module-registered ones.
+let _sourceState = {
+  order: [],
+  section_order: {
+    aniworld: ["new", "popular"], sto: ["new", "popular"],
+    filmo: ["new", "popular"], nineanime: ["new", "popular"], aniwaves: ["new", "popular"],
+    megakino: ["new_movies", "popular_movies", "new_series", "popular_series"], hanime: ["new", "trending"],
+  },
+  sections_visible: {
+    aniworld: { new: true, popular: true }, sto: { new: true, popular: true },
+    filmo: { new: true, popular: true }, nineanime: { new: true, popular: true }, aniwaves: { new: true, popular: true },
+    megakino: { new_movies: true, popular_movies: true, new_series: true, popular_series: true }, hanime: { new: true, trending: true, censored: true, uncensored: true },
+  },
+  enabled: { aniworld: true, sto: true, filmpalast: true, megakino: true, filmo: true, nineanime: false, aniwaves: false, hanime: false },
+  hide_in_search: false
+};
+
+function _splitOrder(str, fallback) {
+  const parts = String(str || "").split(",").map(p => p.trim().toLowerCase()).filter(Boolean);
+  return parts.length ? parts : fallback.slice();
+}
+
+// Sources an installed module registered, from GET /api/settings ->
+// sources.available. Kept so _commitSourceEnabled() can label its toast and
+// so the order list can show a row for them.
+let _thirdpartySources = [];
+
+/** Render one on/off row per module-registered source, using the same
+ *  .settings-checkbox-row / .chb-main pattern as the built-in rows above it.
+ *  Built with DOM calls rather than innerHTML: the id and label come from a
+ *  module, so they must never be parsed as markup. */
+function _renderThirdpartySourceToggles(list) {
+  const host = document.getElementById("thirdpartySourceToggles");
+  if (!host) return;
+  host.innerHTML = "";
+  (list || []).forEach(function (src) {
+    const row = document.createElement("label");
+    row.className = "settings-checkbox-row";
+    row.setAttribute("for", "sourceEnabled_" + src.id);
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "chb-main";
+    cb.id = "sourceEnabled_" + src.id;
+    cb.checked = _sourceState.enabled[src.id] !== false;
+    cb.addEventListener("change", function () { saveSourceEnabled(src.id); });
+    const span = document.createElement("span");
+    span.textContent = src.label || src.id;
+    if (src.adult) {
+      const badge = document.createElement("span");
+      badge.className = "browse-provider-18";
+      badge.textContent = "18+";
+      span.appendChild(document.createTextNode(" "));
+      span.appendChild(badge);
+    }
+    row.appendChild(cb);
+    row.appendChild(span);
+    host.appendChild(row);
+  });
+}
+
+function _loadSourceSettings(sources) {
+  sources = sources || {};
+  // Which sources exist is a runtime answer now (a module can register one),
+  // so the id list comes from the server instead of being repeated here. The
+  // five built-ins stay as the fallback for an older/failed response.
+  const available = Array.isArray(sources.available) && sources.available.length
+    ? sources.available
+    : ["aniworld", "sto", "filmpalast", "megakino", "filmo", "nineanime", "aniwaves", "hanime"].map(function (id) {
+        return { id: id, label: (SOURCE_META[id] || {}).label || id, adult: id === "hanime", thirdparty: false };
+      });
+  _thirdpartySources = available.filter(function (s) { return s.thirdparty; });
+  const validProv = available.map(function (s) { return s.id; });
+  let order = _splitOrder(sources.order, validProv).filter(p => validProv.indexOf(p) !== -1);
+  // ensure every provider is present exactly once
+  validProv.forEach(p => { if (order.indexOf(p) === -1) order.push(p); });
+  _sourceState.order = order;
+
+  const so = sources.section_order || {};
+  _sourceState.section_order.aniworld  = _splitOrder(so.aniworld,  ["new", "popular"]);
+  _sourceState.section_order.sto       = _splitOrder(so.sto,       ["new", "popular"]);
+  _sourceState.section_order.filmo     = _splitOrder(so.filmo,     ["new", "popular"]);
+  _sourceState.section_order.nineanime = _splitOrder(so.nineanime, ["new", "popular"]);
+  _sourceState.section_order.aniwaves  = _splitOrder(so.aniwaves,  ["new", "popular"]);
+
+  const secVis = sources.sections || {};
+  ["aniworld", "sto", "filmo", "nineanime", "aniwaves"].forEach(p => {
+    const sp = secVis[p] || {};
+    _sourceState.sections_visible[p] = { new: sp.new !== "0", popular: sp.popular !== "0" };
+  });
+  // MegaKino: four independently toggleable sections
+  {
+    const mp = secVis.megakino || {};
+    _sourceState.sections_visible.megakino = {
+      new_movies:     mp.new_movies     !== "0",
+      popular_movies: mp.popular_movies !== "0",
+      new_series:     mp.new_series     !== "0",
+      popular_series: mp.popular_series !== "0",
+    };
+  }
+  // hanime: new + trending (sections) plus censored/uncensored (item filters)
+  {
+    const hn = secVis.hanime || {};
+    _sourceState.sections_visible.hanime = {
+      new: hn.new !== "0",
+      trending: hn.trending !== "0",
+      censored: hn.censored !== "0",
+      uncensored: hn.uncensored !== "0",
+    };
+  }
+
+  // Adult sources are opt-in ("1"), everything else opt-out ("0") -- asked
+  // per source's own adult flag rather than by naming hanime, so a module's
+  // 18+ source follows the same rule.
+  const en = sources.enabled || {};
+  available.forEach(function (src) {
+    _sourceState.enabled[src.id] = src.adult ? en[src.id] === "1" : en[src.id] !== "0";
+  });
+  _sourceState.hide_in_search = sources.hide_disabled_in_search === "1";
+
+  // Reflect enabled toggles (Quellen tab)
+  const cbSto = document.getElementById("sourceEnabledSto");
+  const cbAni = document.getElementById("sourceEnabledAniworld");
+  const cbFp  = document.getElementById("sourceEnabledFilmpalast");
+  const cbMk  = document.getElementById("sourceEnabledMegakino");
+  const cbFilmo = document.getElementById("sourceEnabledFilmo");
+  const cbNineanime = document.getElementById("sourceEnabledNineanime");
+  const cbAniwaves = document.getElementById("sourceEnabledAniwaves");
+  const cbHan = document.getElementById("sourceEnabledHanime");
+  if (cbSto) cbSto.checked = _sourceState.enabled.sto;
+  if (cbAni) cbAni.checked = _sourceState.enabled.aniworld;
+  if (cbFp)  cbFp.checked  = _sourceState.enabled.filmpalast;
+  if (cbMk)  cbMk.checked  = _sourceState.enabled.megakino;
+  if (cbFilmo) cbFilmo.checked = _sourceState.enabled.filmo;
+  if (cbNineanime) cbNineanime.checked = _sourceState.enabled.nineanime;
+  if (cbAniwaves) cbAniwaves.checked = _sourceState.enabled.aniwaves;
+  if (cbHan) cbHan.checked = _sourceState.enabled.hanime;
+  const cbHide = document.getElementById("sourcesHideInSearch");
+  if (cbHide) cbHide.checked = _sourceState.hide_in_search;
+
+  _renderThirdpartySourceToggles(_thirdpartySources);
+  _renderSourceOrder();
+}
+
+function _sectionLabel(prov) {
+  const first = (_sourceState.section_order[prov] || ["new", "popular"])[0];
+  return first === "new" ? t("Neu zuerst", "New first") : t("Beliebt zuerst", "Popular first");
+}
+
+function _renderSourceOrder() {
+  const list = document.getElementById("sourceOrderList");
+  if (!list) return;
+  list.innerHTML = "";
+  _sourceState.order.forEach((prov, idx) => {
+    // A module-registered source has no SOURCE_META entry (that table
+    // describes the built-in home-page sections). It still belongs in this
+    // list, because the order set here is also the order the search results
+    // are grouped in -- just without any section controls, and with its label
+    // escaped, since it comes from a module.
+    const meta = SOURCE_META[prov] || {
+      label: esc(_sourceLabel(prov)),
+      cls: "browse-provider-thirdparty",
+      hasSections: false,
+    };
+    const row = document.createElement("div");
+    row.className = "source-order-row";
+    row.setAttribute("draggable", "true");
+    row.dataset.provider = prov;
+
+    let sectionCtrls = "";
+    if (meta.hasSections) {
+      const vis = _sourceState.sections_visible[prov] || { new: true, popular: true };
+      const bothVisible = vis.new && vis.popular;
+      sectionCtrls =
+        '<label class="source-sec-check"><input type="checkbox" class="chb-main" ' + (vis.new ? "checked" : "") +
+          ' onchange="toggleSourceSectionVisible(\'' + prov + '\',\'new\')"> ' + t("Neu", "New") + '</label>' +
+        '<label class="source-sec-check"><input type="checkbox" class="chb-main" ' + (vis.popular ? "checked" : "") +
+          ' onchange="toggleSourceSectionVisible(\'' + prov + '\',\'popular\')"> ' + t("Beliebt", "Popular") + '</label>' +
+        '<button type="button" class="source-section-toggle" ' + (bothVisible ? "" : "disabled") +
+          ' title="' + t("Reihenfolge der Bereiche", "Order of the sections") + '"' +
+          ' onclick="toggleSourceSection(\'' + prov + '\')">' + _sectionLabel(prov) + '</button>';
+    } else if (meta.multiSections) {
+      const vis = _sourceState.sections_visible[prov] || {};
+      sectionCtrls = meta.multiSections.map(function (sec) {
+        return '<label class="source-sec-check"><input type="checkbox" class="chb-main" ' +
+          (vis[sec.key] !== false ? "checked" : "") +
+          ' onchange="toggleSourceSectionVisible(\'' + prov + '\',\'' + sec.key + '\')"> ' +
+          t(sec.de, sec.en) + '</label>';
+      }).join("");
+    }
+
+    row.innerHTML =
+      '<span class="source-drag-handle" title="' + t("Ziehen zum Sortieren", "Drag to reorder") + '" aria-hidden="true">' +
+        '<svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><circle cx="7" cy="5" r="1.5"/><circle cx="13" cy="5" r="1.5"/><circle cx="7" cy="10" r="1.5"/><circle cx="13" cy="10" r="1.5"/><circle cx="7" cy="15" r="1.5"/><circle cx="13" cy="15" r="1.5"/></svg>' +
+      '</span>' +
+      '<span class="source-badge ' + meta.cls + '">' + meta.label + '</span>' +
+      (meta.englishOnly
+        ? '<span class="source-badge-en" title="' + esc(t("Nur englischsprachige Quelle", "English-only source")) + '">EN</span>'
+        : "") +
+      '<div class="source-order-actions">' +
+        sectionCtrls +
+        '<button type="button" class="source-move-btn" title="' + t("Nach oben", "Move up") + '" ' + (idx === 0 ? "disabled" : "") + ' onclick="moveSource(\'' + prov + '\',-1)">' +
+          '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>' +
+        '</button>' +
+        '<button type="button" class="source-move-btn" title="' + t("Nach unten", "Move down") + '" ' + (idx === _sourceState.order.length - 1 ? "disabled" : "") + ' onclick="moveSource(\'' + prov + '\',1)">' +
+          '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>' +
+        '</button>' +
+      '</div>';
+
+    _attachSourceDnd(row);
+    list.appendChild(row);
+  });
+}
+let _dragProv = null;
+function _attachSourceDnd(row) {
+  row.addEventListener("dragstart", (e) => {
+    _dragProv = row.dataset.provider;
+    row.classList.add("dragging");
+    try { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", _dragProv); } catch (err) {}
+  });
+  row.addEventListener("dragend", () => {
+    _dragProv = null;
+    row.classList.remove("dragging");
+    document.querySelectorAll(".source-order-row.drag-over").forEach(r => r.classList.remove("drag-over"));
+  });
+  row.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = "move"; } catch (err) {}
+    if (row.dataset.provider !== _dragProv) row.classList.add("drag-over");
+  });
+  row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+  row.addEventListener("drop", (e) => {
+    e.preventDefault();
+    row.classList.remove("drag-over");
+    const target = row.dataset.provider;
+    if (!_dragProv || _dragProv === target) return;
+    const order = _sourceState.order;
+    const from = order.indexOf(_dragProv);
+    const to = order.indexOf(target);
+    if (from === -1 || to === -1) return;
+    order.splice(from, 1);
+    order.splice(to, 0, _dragProv);
+    _renderSourceOrder();
+    _saveSourceOrder();
+  });
+}
+
+function moveSource(prov, dir) {
+  const order = _sourceState.order;
+  const i = order.indexOf(prov);
+  const j = i + dir;
+  if (i === -1 || j < 0 || j >= order.length) return;
+  const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+  _renderSourceOrder();
+  _saveSourceOrder();
+}
+
+function toggleSourceSection(prov) {
+  const cur = _sourceState.section_order[prov] || ["new", "popular"];
+  _sourceState.section_order[prov] = [cur[1], cur[0]];
+  _renderSourceOrder();
+  _saveSectionOrder(prov);
+}
+
+function toggleSourceSectionVisible(prov, sec) {
+  const vis = _sourceState.sections_visible[prov] || {};
+  vis[sec] = !vis[sec];
+  _sourceState.sections_visible[prov] = vis;
+  _renderSourceOrder();
+  const payload = {};
+  payload["source_show_" + sec + "_" + prov] = vis[sec];
+  let secLabel;
+  const meta = SOURCE_META[prov];
+  if (meta && meta.multiSections) {
+    const ms = meta.multiSections.find(function (m) { return m.key === sec; });
+    secLabel = ms ? t(ms.de, ms.en) : sec;
+  } else {
+    secLabel = sec === "new" ? t("Neu", "New") : t("Beliebt", "Popular");
+  }
+  _putSettings(payload, secLabel + (vis[sec] ? t(" eingeblendet", " shown") : t(" ausgeblendet", " hidden")));
+}
+
+async function _putSettings(payload, okMsg) {
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if (data.error) { showToast(data.error); return false; }
+    if (okMsg) showToast(okMsg);
+    return true;
+  } catch (e) {
+    showToast(t("Konnte nicht gespeichert werden: ", "Could not be saved: ") + e.message);
+    return false;
+  }
+}
+
+function _saveSourceOrder() {
+  _putSettings({ home_source_order: _sourceState.order.join(",") }, t("Reihenfolge gespeichert", "Order saved"));
+}
+
+function _saveSectionOrder(prov) {
+  const payload = {};
+  payload["home_section_order_" + prov] = (_sourceState.section_order[prov] || ["new", "popular"]).join(",");
+  _putSettings(payload, t("Reihenfolge gespeichert", "Order saved"));
+}
+
+/** Display label of any source -- built-in (SOURCE_META) or module-registered
+ *  (the catalogue from /api/settings). Falls back to the raw id. */
+function _sourceLabel(prov) {
+  if (SOURCE_META[prov]) return SOURCE_META[prov].label;
+  const tp = _thirdpartySources.filter(function (s) { return s.id === prov; })[0];
+  return (tp && tp.label) || prov;
+}
+
+/** Is this an 18+ source? Built-in hanime or a module source that declared
+ *  itself adult (register_search_source(..., adult=True)). */
+function _sourceIsAdult(prov) {
+  if (prov === "hanime") return true;
+  const tp = _thirdpartySources.filter(function (s) { return s.id === prov; })[0];
+  return !!(tp && tp.adult);
+}
+
+function _commitSourceEnabled(prov, enabled) {
+  _sourceState.enabled[prov] = enabled;
+  const payload = {};
+  // The server maps source_enabled_<id> onto whatever key actually holds this
+  // source's state (a module may own its own), so the frontend always sends
+  // the canonical name.
+  payload["source_enabled_" + prov] = enabled;
+  _putSettings(payload, _sourceLabel(prov) + (enabled ? t(" aktiviert", " enabled") : t(" deaktiviert", " disabled")));
+}
+
+/** The checkbox element of a source's on/off row. Built-ins have hand-written
+ *  ids in settings.html; module sources get the generated
+ *  "sourceEnabled_<id>" row from _renderThirdpartySourceToggles(). */
+function _sourceEnabledCheckbox(prov) {
+  const map = {
+    sto: "sourceEnabledSto", aniworld: "sourceEnabledAniworld", filmpalast: "sourceEnabledFilmpalast",
+    megakino: "sourceEnabledMegakino", filmo: "sourceEnabledFilmo", nineanime: "sourceEnabledNineanime",
+    aniwaves: "sourceEnabledAniwaves", hanime: "sourceEnabledHanime",
+  };
+  return document.getElementById(map[prov] || ("sourceEnabled_" + prov));
+}
+
+function saveSourceEnabled(prov) {
+  const el = _sourceEnabledCheckbox(prov);
+  if (!el) return;
+  // An adult source turning ON requires an explicit 18+ confirmation.
+  if (_sourceIsAdult(prov) && el.checked) {
+    el.checked = false;              // stays off until the user confirms
+    _pendingAgeSource = prov;
+    _openHanimeAgeModal();
+    return;
+  }
+  _commitSourceEnabled(prov, el.checked);
+}
+
+// --- hanime 18+ age gate --------------------------------------------------
+// The "No" button is the highlighted one and "Yes" is de-emphasised on purpose,
+// so the user has to actually read the question instead of clicking the
+// prominent button by reflex.
+// True once the user clicked "Yes, I am under 18" and bailed out at least once.
+// The NEXT activation attempt then shows the sharper "should we really believe
+// you?" variant instead of the normal question.
+let _hanimeBailedOnce = false;
+// Which source the currently open age modal belongs to. The modal is shared:
+// hanime is the built-in case, but a module may register an 18+ source too,
+// and the same confirmation must gate it -- so the answer is applied to this
+// id rather than to a hardcoded "hanime".
+let _pendingAgeSource = "hanime";
+
+function _openHanimeAgeModal() {
+  const s1 = document.getElementById("hanimeAgeStep1"); // variant A (first try)
+  const s2 = document.getElementById("hanimeAgeStep2"); // variant B (retry after bailing)
+  if (s1) s1.style.display = _hanimeBailedOnce ? "none" : "";
+  if (s2) s2.style.display = _hanimeBailedOnce ? "" : "none";
+  const ov = document.getElementById("hanimeAgeOverlay");
+  if (ov) ov.classList.add("open");
+}
+function _closeHanimeAgeModal() {
+  const ov = document.getElementById("hanimeAgeOverlay");
+  if (ov) ov.classList.remove("open");
+}
+function _hanimeAgeClose() {
+  _closeHanimeAgeModal();
+  const el = _sourceEnabledCheckbox(_pendingAgeSource);
+  if (el) el.checked = false;
+}
+// Variant A, highlighted button "Yes, I am under 18": do NOT enable, and
+// remember it so the next attempt shows variant B.
+function hanimeAgeUnder18() {
+  _hanimeBailedOnce = true;
+  _hanimeAgeClose();
+}
+// Variant B, "No": just close (stays not enabled, stays "bailed").
+function hanimeAgeDecline() { _hanimeAgeClose(); }
+// Variant A "No, I am 18 or older"  AND  variant B "Yes": actually enable.
+function hanimeAgeConfirm() {
+  _closeHanimeAgeModal();
+  const el = _sourceEnabledCheckbox(_pendingAgeSource);
+  if (el) el.checked = true;
+  _commitSourceEnabled(_pendingAgeSource, true);
+}
+
+function saveSourcesHideInSearch() {
+  const el = document.getElementById("sourcesHideInSearch");
+  if (!el) return;
+  _sourceState.hide_in_search = el.checked;
+  _putSettings({ sources_hide_in_search: el.checked },
+    el.checked ? t("Deaktivierte Quellen aus Suche ausgeblendet", "Disabled sources hidden from search")
+               : t("Deaktivierte Quellen in Suche sichtbar", "Disabled sources shown in search"));
+}
+
+// ─── Provider order & fallback (Sources tab) ─────────────────────────────
+// The order the download queue walks when a hoster fails: the hoster picked
+// for the download is tried first (with its normal retries), then every other
+// hoster in this list, top to bottom — see web/queue_worker.py's
+// _build_attempt_plan() and runtime_state.get_provider_fallback_chain().
+// The list itself is whatever WORKING_PROVIDERS reports, so a newly enabled
+// hoster shows up here on its own.
+let _providerState = { available: [], order: [], fallback: true };
+
+function _loadProviderSettings(providers) {
+  _providerState.available = providers.available || [];
+  _providerState.order = (providers.order || []).slice();
+  _providerState.fallback = providers.fallback_enabled !== "0";
+
+  // Guard against a stale saved order: drop unknown names, append new hosters.
+  _providerState.order = _providerState.order.filter(p => _providerState.available.indexOf(p) !== -1);
+  _providerState.available.forEach(p => {
+    if (_providerState.order.indexOf(p) === -1) _providerState.order.push(p);
+  });
+
+  const cb = document.getElementById("providerFallbackEnabled");
+  if (cb) cb.checked = _providerState.fallback;
+  _renderProviderOrder();
+}
+
+function _renderProviderOrder() {
+  const list = document.getElementById("providerOrderList");
+  if (!list) return;
+  list.innerHTML = "";
+  _providerState.order.forEach((prov, idx) => {
+    const row = document.createElement("div");
+    row.className = "source-order-row";
+    row.setAttribute("draggable", "true");
+    row.dataset.provider = prov;
+    row.innerHTML =
+      '<span class="source-drag-handle" title="' + t("Ziehen zum Sortieren", "Drag to reorder") + '" aria-hidden="true">' +
+        '<svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><circle cx="7" cy="5" r="1.5"/><circle cx="13" cy="5" r="1.5"/><circle cx="7" cy="10" r="1.5"/><circle cx="13" cy="10" r="1.5"/><circle cx="7" cy="15" r="1.5"/><circle cx="13" cy="15" r="1.5"/></svg>' +
+      '</span>' +
+      '<span class="source-badge">' + (idx + 1) + '. ' + prov + '</span>' +
+      '<div class="source-order-actions">' +
+        '<button type="button" class="source-move-btn" title="' + t("Nach oben", "Move up") + '" ' + (idx === 0 ? "disabled" : "") + ' onclick="moveProvider(\'' + prov + '\',-1)">' +
+          '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>' +
+        '</button>' +
+        '<button type="button" class="source-move-btn" title="' + t("Nach unten", "Move down") + '" ' + (idx === _providerState.order.length - 1 ? "disabled" : "") + ' onclick="moveProvider(\'' + prov + '\',1)">' +
+          '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>' +
+        '</button>' +
+      '</div>';
+    _attachProviderDnd(row);
+    list.appendChild(row);
+  });
+}
+
+let _dragProvider = null;
+function _attachProviderDnd(row) {
+  row.addEventListener("dragstart", (e) => {
+    _dragProvider = row.dataset.provider;
+    row.classList.add("dragging");
+    try { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", _dragProvider); } catch (err) {}
+  });
+  row.addEventListener("dragend", () => {
+    _dragProvider = null;
+    row.classList.remove("dragging");
+    document.querySelectorAll("#providerOrderList .source-order-row.drag-over").forEach(r => r.classList.remove("drag-over"));
+  });
+  row.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = "move"; } catch (err) {}
+    if (row.dataset.provider !== _dragProvider) row.classList.add("drag-over");
+  });
+  row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+  row.addEventListener("drop", (e) => {
+    e.preventDefault();
+    row.classList.remove("drag-over");
+    const target = row.dataset.provider;
+    if (!_dragProvider || _dragProvider === target) return;
+    const order = _providerState.order;
+    const from = order.indexOf(_dragProvider);
+    const to = order.indexOf(target);
+    if (from === -1 || to === -1) return;
+    order.splice(from, 1);
+    order.splice(to, 0, _dragProvider);
+    _renderProviderOrder();
+    _saveProviderOrder();
+  });
+}
+
+function moveProvider(prov, dir) {
+  const order = _providerState.order;
+  const i = order.indexOf(prov);
+  const j = i + dir;
+  if (i === -1 || j < 0 || j >= order.length) return;
+  const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+  _renderProviderOrder();
+  _saveProviderOrder();
+}
+
+function _saveProviderOrder() {
+  _putSettings({ provider_order: _providerState.order.join(",") },
+    t("Provider-Reihenfolge gespeichert", "Provider order saved"));
+}
+
+function saveProviderFallbackEnabled() {
+  const el = document.getElementById("providerFallbackEnabled");
+  if (!el) return;
+  _providerState.fallback = el.checked;
+  _putSettings({ provider_fallback_enabled: el.checked },
+    el.checked ? t("Provider-Fallback aktiv", "Provider fallback enabled")
+               : t("Provider-Fallback deaktiviert", "Provider fallback disabled"));
+}
+
+// ─── Domain fallback / mirrors (Sources tab) ─────────────────────────────
+// One textarea per site: the ordered list of interchangeable domains for it
+// (see mediaforge/mirrors.py). The first line is the primary domain and is
+// rendered read-only — every URL inside MediaForge is written with it, only
+// the actual HTTP request is redirected to a healthy mirror.
+let _mirrorSites = [];
+
+function _loadMirrorSettings(mirrors) {
+  _mirrorSites = mirrors.sites || [];
+  const box = document.getElementById("domainResolverEnabled");
+  if (box) box.checked = (mirrors.resolver_enabled || "1") !== "0";
+  _renderMirrorSites();
+}
+
+// Escapes text that goes into the innerHTML below. Site labels and resolved
+// domains reach this from the settings API, and a domain ultimately comes from
+// a remote feed -- it is validated server-side (domain_resolver._valid_host),
+// but a value from off-box must never be concatenated into markup unescaped.
+function _mirrorEsc(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function _renderMirrorSites() {
+  const box = document.getElementById("mirrorSitesList");
+  if (!box) return;
+  box.innerHTML = "";
+  _mirrorSites.forEach(site => {
+    const wrap = document.createElement("div");
+    wrap.className = "mirror-site";
+    // hosts[0] is the primary shown in the head chip; the textarea holds the
+    // editable fallbacks. When a domain was resolved remotely it is hosts[0]
+    // AND the shipped domain sits right behind it -- that one is a fallback
+    // the user may edit, so it must stay in the textarea.
+    const shipped = site.shipped || site.canonical;
+    const fallbacks = (site.hosts || []).filter(h => h !== site.canonical);
+    const resolved = site.resolved || {};
+    const activeNote = site.active && site.active !== site.canonical
+      ? '<span class="mirror-active-badge">' + t("aktiv: ", "active: ") + _mirrorEsc(site.active) + '</span>'
+      : '';
+    // Only sites with a rotating domain carry a resolved block.
+    let resolvedNote = '';
+    if (resolved.host) {
+      const when = _mirrorResolvedWhen(resolved.last_check);
+      resolvedNote =
+        '<span class="mirror-resolved-badge" title="' +
+          _mirrorEsc(t("Automatisch ermittelt über ", "Resolved automatically via ") + (resolved.source || "")) + '">' +
+          t("automatisch", "auto-resolved") + (when ? " · " + _mirrorEsc(when) : "") +
+        '</span>';
+    }
+    wrap.innerHTML =
+      '<div class="mirror-site-head">' +
+        '<span class="mirror-site-label">' + _mirrorEsc(site.label) + '</span>' +
+        '<span class="mirror-site-primary">' + _mirrorEsc(site.canonical) + '</span>' +
+        resolvedNote +
+        activeNote +
+      '</div>' +
+      '<textarea class="mirror-hosts" id="mirrorHosts-' + site.id + '" rows="' + Math.max(2, fallbacks.length + 1) + '" ' +
+        'placeholder="' + t("z. B. serienstream.to", "e.g. serienstream.to") + '">' + _mirrorEsc(fallbacks.join("\n")) + '</textarea>' +
+      '<div class="mirror-site-actions">' +
+        '<button type="button" class="btn btn-secondary btn-sm" onclick="resetMirrorHosts(\'' + site.id + '\')">' + t("Standard", "Default") + '</button>' +
+        '<button type="button" class="btn btn-primary btn-sm" onclick="saveMirrorHosts(\'' + site.id + '\')">' + t("Speichern", "Save") + '</button>' +
+      '</div>';
+    // shipped is kept on the element so _mirrorPayload can anchor the saved
+    // list to it even after a re-render.
+    wrap.dataset.shipped = shipped;
+    box.appendChild(wrap);
+  });
+}
+
+// "2026-08-23T10:33:51.699325" -> date + time in the APP language, or "" if
+// unparsable. window.mfFormatDateTime (base.html) rather than a bare
+// toLocaleString: the whole UI must not mix the app language with whatever the
+// browser happens to be set to.
+function _mirrorResolvedWhen(iso) {
+  if (!iso) return "";
+  if (typeof window.mfFormatDateTime !== "function") return "";
+  return window.mfFormatDateTime(iso) || "";
+}
+
+function _mirrorPayload(siteId, fallbackLines) {
+  const site = _mirrorSites.find(s => s.id === siteId);
+  // Anchored to the SHIPPED domain, never to a remotely resolved one: saving
+  // "megakino16.com" into the user's list would freeze today's rotation into
+  // it and go stale the moment the site moves on.
+  const shipped = site.shipped || site.canonical;
+  const hosts = [shipped].concat(
+    fallbackLines.map(l => l.trim()).filter(Boolean)
+  ).filter((h, i, a) => h && a.indexOf(h) === i);
+  const payload = {};
+  payload["site_mirrors_" + siteId] = hosts.join(",");
+  return { payload: payload, hosts: hosts };
+}
+
+// Master switch for the remote domain lookup (mediaforge/domain_resolver.py).
+async function saveDomainResolver() {
+  const box = document.getElementById("domainResolverEnabled");
+  if (!box) return;
+  const ok = await _putSettings(
+    { domain_resolver_enabled: box.checked ? "1" : "0" },
+    t("Gespeichert", "Saved"),
+  );
+  if (!ok) { box.checked = !box.checked; return; }
+  // The primary domain of every resolvable site changes with this switch, so
+  // re-read rather than patching the cards locally. The lookup itself runs in
+  // the background, hence the short delay before refetching.
+  setTimeout(() => { if (typeof loadSettings === "function") loadSettings(); }, 1200);
+}
+
+async function saveMirrorHosts(siteId) {
+  const ta = document.getElementById("mirrorHosts-" + siteId);
+  if (!ta) return;
+  const { payload, hosts } = _mirrorPayload(siteId, ta.value.split("\n"));
+  const ok = await _putSettings(payload, t("Mirrors gespeichert", "Mirrors saved"));
+  if (ok) {
+    const site = _mirrorSites.find(s => s.id === siteId);
+    if (site) { site.hosts = hosts; site.active = site.canonical; }
+    _renderMirrorSites();
+  }
+}
+
+async function resetMirrorHosts(siteId) {
+  const site = _mirrorSites.find(s => s.id === siteId);
+  if (!site) return;
+  const { payload, hosts } = _mirrorPayload(siteId, (site.default || []).slice(1));
+  const ok = await _putSettings(payload, t("Standard wiederhergestellt", "Defaults restored"));
+  if (ok) {
+    site.hosts = hosts;
+    site.active = site.canonical;
+    _renderMirrorSites();
+  }
+}
+
+// ─── Full & Selective Backup (admin only) ─────────────────────────────────
+// Bilingual UI strings via the global t(de, en) helper from base.html.
+
+const BACKUP_CAT_LABELS = {
+  settings:       function () { return t("Einstellungen", "Settings"); },
+  favourites:     function () { return t("Favoriten & Bibliothek", "Favorites & library"); },
+  history:        function () { return t("Download-Verlauf", "Download history"); },
+  watch_progress: function () { return t("Wiedergabe-Fortschritt", "Watch progress"); },
+  custom_paths:   function () { return t("Eigene Pfade", "Custom paths"); },
+  language_groups: function () { return t("Sprachgruppen", "Language groups"); },
+  users:          function () { return t("Benutzerkonten", "User accounts"); },
+  queues:         function () { return t("Warteschlangen & Jobs", "Queues & jobs"); },
+  calendar:       function () { return t("Kalender", "Calendar"); },
+  push:           function () { return t("Push-Abos", "Push subscriptions"); },
+};
+
+function _backupCatLabel(id) {
+  return BACKUP_CAT_LABELS[id] ? BACKUP_CAT_LABELS[id]() : id;
+}
+
+function _backupRenderCats(container, cats) {
+  container.innerHTML = "";
+  cats.forEach(function (c) {
+    const wrap = document.createElement("label");
+    wrap.className = "settings-checkbox-row backup-cat";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = c.id;
+    cb.className = "chb-main backup-cat-cb";
+    cb.checked = !!c.default;
+    const span = document.createElement("span");
+    let label = _backupCatLabel(c.id);
+    if (typeof c.count === "number") label += " (" + c.count + ")";
+    span.textContent = label;
+    wrap.appendChild(cb);
+    wrap.appendChild(span);
+    container.appendChild(wrap);
+  });
+}
+
+function _backupSelectedCats(container) {
+  return Array.prototype.map.call(
+    container.querySelectorAll(".backup-cat-cb:checked"),
+    function (cb) { return cb.value; }
+  );
+}
+
+async function backupLoadCats() {
+  const box = document.getElementById("backupExportCats");
+  if (!box) return;
+  try {
+    const res = await fetch("/api/backup/categories");
+    const data = await res.json();
+    if (data.error) { box.innerHTML = ""; showToast(data.error); return; }
+    _backupRenderCats(box, data.categories || []);
+  } catch (e) {
+    box.innerHTML = "";
+    showToast(t("Backup-Kategorien konnten nicht geladen werden", "Could not load backup categories"));
+  }
+}
+
+function backupToggleNoPassword() {
+  // Disable/clear the password fields when "save without password" is on.
+  const on = (document.getElementById("backupNoPassword") || {}).checked;
+  const row = document.getElementById("backupPwRow");
+  if (row) row.style.display = on ? "none" : "";
+  ["backupExportPw", "backupExportPw2"].forEach(function (id) {
+    const el = document.getElementById(id);
+    if (el) { el.disabled = !!on; if (on) el.value = ""; }
+  });
+}
+
+async function backupExport() {
+  const noPw = (document.getElementById("backupNoPassword") || {}).checked;
+  const pw = (document.getElementById("backupExportPw") || {}).value || "";
+  const pw2 = (document.getElementById("backupExportPw2") || {}).value || "";
+  const msg = document.getElementById("backupExportMsg");
+  const cats = _backupSelectedCats(document.getElementById("backupExportCats"));
+  if (!cats.length) { showToast(t("Keine Kategorie ausgewählt", "No category selected")); return; }
+
+  if (!noPw) {
+    if (!pw) { showToast(t("Bitte ein Backup-Passwort setzen", "Please set a backup password")); return; }
+    if (pw !== pw2) { showToast(t("Passwörter stimmen nicht überein", "Passwords do not match")); return; }
+  } else {
+    // Danger confirmation: an unencrypted backup exposes all secrets.
+    const warn = t(
+      "Ohne Passwort wird das Backup UNVERSCHLÜSSELT gespeichert. Alle sensiblen Daten — API-Schlüssel, Zugangsdaten, Tokens und Passwörter — liegen dann im Klartext in der Datei. Jeder mit Zugriff auf die Datei kann sie lesen. Bewahre sie niemals ungeschützt (Cloud, E-Mail, geteilte Ordner) auf. Wirklich ohne Passwort fortfahren?",
+      "Without a password the backup is stored UNENCRYPTED. All sensitive data — API keys, credentials, tokens and passwords — will be in plain text in the file. Anyone with access to the file can read it. Never store it unprotected (cloud, email, shared folders). Really continue without a password?"
+    );
+    const ok = (typeof showConfirm === "function")
+      ? await showConfirm(warn, t("Ohne Passwort sichern", "Save without password"), t("Achtung", "Warning"), "btn-danger")
+      : confirm(warn);
+    if (!ok) return;
+  }
+
+  const btn = document.getElementById("backupExportBtn");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch("/api/backup/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ categories: cats, password: noPw ? "" : pw, no_password: !!noPw }),
+    });
+    if (!res.ok) {
+      let err = t("Export fehlgeschlagen", "Export failed");
+      try { const j = await res.json(); if (j.error) err = j.error; } catch (e) { }
+      showToast(err);
+      return;
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    let fname = "mediaforge-backup.mfbackup";
+    const m = /filename="?([^"]+)"?/.exec(cd);
+    if (m) fname = m[1];
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    if (msg) msg.textContent = t("Backup erstellt: ", "Backup created: ") + fname;
+  } catch (e) {
+    showToast(t("Export fehlgeschlagen: ", "Export failed: ") + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function backupOnFileChange() {
+  // Reflect the chosen filename in the styled picker and hide stale preview.
+  const input = document.getElementById("backupImportFile");
+  const label = document.getElementById("backupFileLabel");
+  if (label) {
+    const f = input && input.files && input.files[0];
+    label.textContent = f ? f.name : t("Datei wählen…", "Choose file…");
+  }
+  const box = document.getElementById("backupPreviewBox");
+  if (box) box.style.display = "none";
+}
+
+async function backupPreview() {
+  const fileInput = document.getElementById("backupImportFile");
+  const pw = (document.getElementById("backupImportPw") || {}).value || "";
+  const file = fileInput && fileInput.files && fileInput.files[0];
+  if (!file) { showToast(t("Bitte eine Backup-Datei wählen", "Please choose a backup file")); return; }
+  const btn = document.getElementById("backupPreviewBtn");
+  if (btn) btn.disabled = true;
+  try {
+    // Upload as a JSON body (the .mfbackup file is JSON text) — every /api/
+    // POST must be application/json; see backup.py route docstring.
+    const text = await file.text();
+    const res = await fetch("/api/backup/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: text, password: pw }),
+    });
+    const data = await res.json();
+    if (data.error) { showToast(data.error); return; }
+    const info = document.getElementById("backupPreviewInfo");
+    const created = data.created_utc || "?";
+    const ver = data.app_version || "?";
+    let pwNote = "";
+    if (data.encrypted === false) pwNote = " — " + t("⚠ Unverschlüsseltes Backup (kein Passwort nötig)", "⚠ unencrypted backup (no password needed)");
+    else if (data.password_ok === false) pwNote = " — " + t("⚠ Passwort falsch oder fehlt", "⚠ wrong or missing password");
+    else if (data.password_ok === true) pwNote = " — " + t("✓ Passwort ok", "✓ password ok");
+    info.textContent = t("Erstellt: ", "Created: ") + created + " · " + t("Version: ", "Version: ") + ver + pwNote;
+    const cats = (data.categories || []).map(function (id) {
+      return { id: id, count: (data.counts || {})[id], default: true };
+    });
+    _backupRenderCats(document.getElementById("backupImportCats"), cats);
+    document.getElementById("backupPreviewBox").style.display = "";
+  } catch (e) {
+    showToast(t("Backup konnte nicht gelesen werden: ", "Could not read backup: ") + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function backupImport() {
+  const fileInput = document.getElementById("backupImportFile");
+  const pw = (document.getElementById("backupImportPw") || {}).value || "";
+  const file = fileInput && fileInput.files && fileInput.files[0];
+  if (!file) { showToast(t("Bitte eine Backup-Datei wählen", "Please choose a backup file")); return; }
+  if (!pw) { showToast(t("Bitte das Backup-Passwort eingeben", "Please enter the backup password")); return; }
+  const cats = _backupSelectedCats(document.getElementById("backupImportCats"));
+  if (!cats.length) { showToast(t("Keine Kategorie ausgewählt", "No category selected")); return; }
+  const mode = (document.querySelector('input[name="backupMode"]:checked') || {}).value || "merge";
+  if (mode === "replace" &&
+      !confirm(t("„Ersetzen“ löscht die ausgewählten Daten vor dem Import unwiderruflich. Fortfahren?",
+                 "'Replace' will irreversibly clear the selected data before import. Continue?"))) {
+    return;
+  }
+  const btn = document.getElementById("backupImportBtn");
+  if (btn) btn.disabled = true;
+  try {
+    const text = await file.text();
+    const res = await fetch("/api/backup/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: text, password: pw, mode: mode, categories: cats }),
+    });
+    const data = await res.json();
+    if (data.error) { showToast(data.error); return; }
+    const msg = document.getElementById("backupImportMsg");
+    let total = 0;
+    Object.keys(data.imported || {}).forEach(function (k) { total += data.imported[k]; });
+    if (msg) msg.textContent = t("Wiederhergestellt: ", "Restored: ") + total + t(" Einträge", " entries");
+    showToast(t("Backup wiederhergestellt", "Backup restored"), "success");
+  } catch (e) {
+    showToast(t("Import fehlgeschlagen: ", "Import failed: ") + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+  if (document.getElementById("tab-backup")) backupLoadCats();
+});

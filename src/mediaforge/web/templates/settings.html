@@ -1,0 +1,2408 @@
+{% extends "base.html" %}
+{% block title %}{{ _('Settings') }} — MediaForge{% endblock %}
+{% import "_settings_card_macro.html" as ext %}
+{% import "_settings_menu.html" as menu %}
+{% import '_start_page_form.html' as startpage %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='settings_rows.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='settings.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='settings_schedule.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='sources.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='hanime.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='english_only.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='telemetry.css') }}">
+<!-- _settings_card_macro.html's card markup (.integ-card/.integ-collapsible-*/
+     .integ-subsection-*) lives in integrations.css -- needed here too since
+     this page can render that same macro for any thirdparty registered with
+     settings_host="settings" (see registry.py's _KNOWN_TABS). -->
+<link rel="stylesheet" href="{{ url_for('static', filename='integrations.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='ops.css') }}">{% endblock %}
+{% set is_admin = not auth_enabled or (current_user and current_user.role == 'admin') %}
+{% block content %}
+<div class="settings-container has-floating-menu">
+  <div class="page-header" style="margin-bottom:20px;">
+    <h1 class="page-title">{{ _('Settings') }}</h1>
+    <p class="page-subtitle">{{ _('Configuration & Management') }}</p>
+  </div>
+
+  <!-- .env migration banner — only shown if legacy .env still exists -->
+  {% if is_admin %}
+  <div id="envFileBanner"
+    style="display:none;margin-bottom:20px;padding:14px 18px;background:var(--bg-card);border:1px solid var(--border);border-left:4px solid var(--accent,#6366f1);border-radius:var(--radius-lg);align-items:center;gap:14px;flex-wrap:wrap;">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+      stroke-linejoin="round" style="width:20px;height:20px;flex-shrink:0;color:var(--accent,#6366f1)">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+    <div style="flex:1;min-width:200px;">
+      <strong style="font-size:0.9rem;">{{ _('Your .env has been imported') }}</strong>
+      <p style="margin:2px 0 0;font-size:0.82rem;color:var(--text-muted);">{{ _('All settings from') }} <code>~/.mediaforge/.env</code> {{ _('are now stored in the database. The file is no longer needed.') }}</p>
+    </div>
+    <button class="btn btn-primary" onclick="deleteEnvFile()" style="flex-shrink:0;">
+      {{ _('Delete .env now') }}
+    </button>
+    <button onclick="document.getElementById('envFileBanner').style.display='none'"
+      style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:1.2rem;line-height:1;padding:4px;"
+      title="{{ _('Close') }}">✕</button>
+  </div>
+  {% endif %}
+
+  {# In-page floating side menu (shared macro — single source of truth, also
+     used by encoding.html). switchTab() (settings.js) is unchanged. "Encoding"
+     links out to its own /encoding route (E2). Module-contributed settings
+     tabs live on the Module Settings page now (see resolve_module_settings). #}
+  {{ menu.settings_menu('tabs', is_admin=is_admin) }}
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Übersicht (Overview Dashboard)
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel active" id="tab-overview">
+    <div class="settings-overview-grid">
+      <div class="settings-overview-card" onclick="switchTab('general')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14a1 1 0 1 1 1-1 1 1 0 0 1-1 1zm1-4a1 1 0 0 0-.99 1V13h2v-1a1 1 0 0 0-1-1zm0-3a1 1 0 0 0-1 1v1h2V10a1 1 0 0 0-1-1z"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('General') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('General settings, language, system options and debug mode') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      {% if is_admin %}
+      <div class="settings-overview-card" onclick="switchTab('encoding')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Encoding') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Configure FFmpeg encoding, hardware acceleration and upscaling profiles') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+      {% endif %}
+
+      {# Start Page had a tab but no card here, so the overview claimed to be
+         a complete map of Settings while silently skipping one page. #}
+      <div class="settings-overview-card" onclick="switchTab('startpage')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M7 12h10"/><path d="M7 16h6"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Start Page') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Which rows the home page shows, in which order, how many cards each holds and the default filters') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchTab('library')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M2 4h7a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z"/><path d="M22 4h-7a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h8z"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Library') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Media library scanning schedule, scan performance and statistics visibility') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchTab('design')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Design') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Appearance themes, accent color, visual effects and layout options') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      {% if is_admin %}
+      <div class="settings-overview-card" onclick="switchTab('sources')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Sources') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Configure streaming providers, mirrors and search order') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+      {% endif %}
+
+      <div class="settings-overview-card" onclick="switchTab('downloads')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Downloads') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Download paths, naming template, language preferences and bandwidth limits') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchTab('autosync')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          </div>
+          <div class="settings-overview-title">Auto-Sync</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Automatic synchronization, schedules, weekly blocks and adaptive intervals') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchTab('network')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Network & Access') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('DNS server configuration, Captcha solver behavior and reverse proxy base URL') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      {% if is_admin %}
+      <div class="settings-overview-card" onclick="switchTab('auth')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Authentication') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('User management, roles, passwords and Single Sign-On (SSO/OIDC)') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchTab('api')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          </div>
+          <div class="settings-overview-title">API</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('External REST API key, endpoint reference and integration documentation') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchTab('privacy')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Privacy & Telemetry') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Crash reports, diagnostic telemetry and data privacy controls') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchTab('backup')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Backup') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Create, download and restore full system backups') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+      {% endif %}
+
+      <div class="settings-overview-card" onclick="switchTab('updates')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Updates') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Check for updates, switch release channels and configure automatic updates') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      {% if is_admin %}
+      <div class="settings-overview-card" onclick="switchTab('rules')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Rules & Languages') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Conditional handling per title, provider or language') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchTab('operations')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Operations') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Worker states, database snapshots, quiet hours and diagnostics') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+
+      <div class="settings-overview-card" onclick="switchTab('audit')">
+        <div class="settings-overview-card-header">
+          <div class="settings-overview-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          </div>
+          <div class="settings-overview-title">{{ _('Audit Log') }}</div>
+        </div>
+        <div class="settings-overview-desc">{{ _('Who changed what, and when') }}</div>
+        <div class="settings-overview-arrow"><span>{{ _('Configure') }}</span> &#8594;</div>
+      </div>
+      {% endif %}
+
+      {# Module-contributed settings tabs no longer appear on the Settings
+         overview -- they live on the Module Settings page now. #}
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Allgemein
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-general">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('General') }}</h1>
+      <p class="page-subtitle">{{ _('General settings, language, system options and debug mode') }}</p>
+    </div>
+    {# module cards moved to the Module Settings page #}
+    <div class="settings-section" id="legacyImportSection" style="display:none;">
+      <h2>{{ _('Data from previous installation') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('A previous AniWorld Downloader installation (~/.aniworld) was detected. Your settings, download history, users and profiles are imported automatically the first time MediaForge starts — so everything is usually already here. Use "Import remaining files" only if something appears to be missing; an existing database is never overwritten. You can hide this notice once you are done, or if you do not want to import.') }}
+      </div>
+      <div id="legacyImportImportedNote" class="settings-hint" style="display:none;margin-bottom:14px;color:var(--success,#3fb950);"></div>
+      <div style="padding:0 22px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <button class="btn btn-secondary" id="legacyImportBtn" type="button">{{ _('Import remaining files') }}</button>
+        <button class="btn btn-secondary" id="legacyImportHideBtn" type="button">{{ _('Hide') }}</button>
+        <span id="legacyImportStatus" style="font-size:0.82rem;color:var(--text-muted);"></span>
+      </div>
+    </div>
+    <script>
+    (function () {
+      var sec = document.getElementById('legacyImportSection');
+      var btn = document.getElementById('legacyImportBtn');
+      var hideBtn = document.getElementById('legacyImportHideBtn');
+      var note = document.getElementById('legacyImportImportedNote');
+      var status = document.getElementById('legacyImportStatus');
+      if (!sec || !btn) return;
+      var csrf = function () { return (window.CSRF_TOKEN || ''); };
+      fetch('/api/settings/legacy-import').then(function (r) { return r.json(); }).then(function (d) {
+        if (!d || !d.legacy_exists || d.dismissed) return;   // stay hidden
+        sec.style.display = '';
+        if (d.already_imported && note) {
+          note.style.display = '';
+          note.textContent = '{{ _('Your data was already imported automatically on first start.') }}';
+        }
+      }).catch(function () {});
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        status.textContent = '{{ _('Importing…') }}';
+        fetch('/api/settings/legacy-import', { method: 'POST', headers: { 'X-CSRFToken': csrf() } })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            btn.disabled = false;
+            if (d && d.ok) {
+              var n = (d.copied || []).length;
+              status.textContent = n === 0
+                ? '{{ _('Nothing left to import — everything is already here.') }}'
+                : n + ' {{ _('item(s) imported.') }}' + (d.restart_required_for_db ? ' {{ _('Restart to load an imported database.') }}' : '');
+            } else {
+              status.textContent = '{{ _('Nothing to import.') }}';
+            }
+          }).catch(function () { btn.disabled = false; status.textContent = '{{ _('Import failed.') }}'; });
+      });
+      if (hideBtn) hideBtn.addEventListener('click', function () {
+        hideBtn.disabled = true;
+        fetch('/api/settings/legacy-import/dismiss', { method: 'POST', headers: { 'X-CSRFToken': csrf() } })
+          .then(function () { sec.style.display = 'none'; })
+          .catch(function () { hideBtn.disabled = false; });
+      });
+    })();
+    </script>
+    <div class="settings-section">
+      <h2>{{ _('Project & Support') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('MediaForge is an open-source project. For questions, bugs, or feature ideas please visit our GitHub repository.') }}
+      </div>
+      <div style="display:flex; gap:12px; flex-wrap:wrap; padding: 0 22px 14px;">
+        <a href="https://github.com/PD-Codes/MediaForge" target="_blank" rel="noopener noreferrer"
+          class="btn btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:8px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" style="width:16px;height:16px">
+            <path
+              d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22">
+            </path>
+          </svg>
+          GitHub Repository
+        </a>
+        <a href="https://github.com/PD-Codes/MediaForge/issues" target="_blank" rel="noopener noreferrer"
+          class="btn btn-secondary" style="text-decoration:none;display:inline-flex;align-items:center;gap:8px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" style="width:16px;height:16px">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+            <line x1="12" y1="9" x2="12" y2="13"></line>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+          Issue Tracker
+        </a>
+      </div>
+    </div>
+
+
+
+    {# Language moved to the profile page (panel-language), where the rest of
+       the personal settings live. It is an ACCOUNT preference (users.language),
+       so an instance page is the wrong home for it -- and having it in two
+       places meant an admin changing "the language" here was only ever
+       changing their own, which reads as an instance setting and is not one.
+       The sidebar footer's flag dropdown reaches the same setting from every
+       page. #}
+
+
+    {% if is_admin %}
+    <div class="settings-section">
+      <h2>{{ _('Startup & Tray') }}</h2>
+      <div id="startupTrayOptions">
+        <div class="settings-row">
+          <label class="settings-checkbox-row" for="trayMode">
+            <input type="checkbox" class="chb-main" id="trayMode" onchange="saveStartupSettings()" />
+            <span>{{ _('Start in System Tray') }}</span>
+          </label>
+        </div>
+        <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Starts the application as an icon in the system tray instead of blocking a terminal window.') }}</div>
+        
+        <div class="settings-row">
+          <label class="settings-checkbox-row" for="autostartEnabled">
+            <input type="checkbox" class="chb-main" id="autostartEnabled" onchange="saveStartupSettings()" />
+            <span>{{ _('Autostart with PC') }}</span>
+          </label>
+        </div>
+        <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Automatically start MediaForge when you log in to your computer.') }}</div>
+        
+        <div class="settings-row">
+          <label class="settings-checkbox-row" for="openBrowserOnStartup">
+            <input type="checkbox" class="chb-main" id="openBrowserOnStartup" onchange="saveStartupSettings()" />
+            <span>{{ _('Open browser automatically on startup') }}</span>
+          </label>
+        </div>
+        <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Whether to open the Web UI in your default browser when MediaForge starts.') }}</div>
+      </div>
+      <div class="settings-hint" id="dockerStartupHint" style="display:none;padding:0 22px 14px;color:var(--accent,#4ea1ff);">{{ _('This feature is not available in Docker.') }}</div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('System') }}</h2>
+      <h3 class="settings-subtitle" style="padding:0 22px">{{ _('Debug Mode') }}</h3>
+      <div class="settings-row">
+        <label class="settings-checkbox-row" for="debugMode">
+          <input type="checkbox" class="chb-main" id="debugMode" onchange="saveDebugMode()" />
+          <span>{{ _('Enable debug logging') }}</span>
+        </label>
+      </div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Writes detailed logs. Takes effect immediately — no restart needed.') }}</div>
+      <div class="settings-hint" id="debugForcedHint" style="display:none;padding:0 22px 14px;color:var(--accent,#4ea1ff);">{{ _('The application was started with --debug. Debug mode is locked on and cannot be changed here.') }}</div>
+
+      {# Display mode: the captcha browser must run headed, so "is there a
+         screen" decides whether several providers work at all. Read-only --
+         the mode follows the host, there is nothing to configure here. #}
+      <h3 class="settings-subtitle" style="padding:0 22px">{{ _('Display mode') }}</h3>
+      <div class="settings-row" style="padding:0 22px;">
+        <div class="mf-display-mode" id="displayModeBox">
+          <span class="mf-display-dot" id="displayModeDot"></span>
+          <div>
+            <div class="mf-display-title" id="displayModeTitle">{{ _('Checking…') }}</div>
+            <div class="mf-display-desc" id="displayModeDesc"></div>
+          </div>
+        </div>
+      </div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('MediaForge needs a real screen for captcha solving and browser-based providers. Without one it starts a virtual display (Xvfb) automatically, exactly like the Docker image does.') }}</div>
+      <div class="settings-hint" id="displayModeRamHint" style="display:none;padding:0 22px 14px;">{{ _('A virtual display costs extra memory: plan for roughly 300–500 MB on top of the normal usage (X server plus the headed Chromium it hosts), and a little more CPU because rendering is done in software. On a 1 GB machine this is the first thing to run out.') }}</div>
+      <div class="settings-hint" id="displayModeFixHint" style="display:none;padding:0 22px 14px;color:var(--danger,#ff6b81);"></div>
+      {% if is_admin %}
+      <h3 class="settings-subtitle" style="padding:0 22px">{{ _('Restart') }}</h3>
+      <div class="settings-row" style="padding:0 22px;">
+        <button type="button" onclick="restartApp()">{{ _('Restart app now') }}</button>
+      </div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Restarts MediaForge with the same startup arguments — without installing an update. Running downloads pause and resume afterwards.') }}</div>
+      {% endif %}
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Web Console') }}</h2>
+      <div class="settings-row">
+        <label class="settings-checkbox-row" for="webConsole">
+          <input type="checkbox" class="chb-main" id="webConsole" onchange="saveWebConsole()" />
+          <span>{{ _('Enable Web Console') }}</span>
+        </label>
+      </div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Show the console output directly here in the Web UI') }}</div>
+      <div class="web-console-wrap" id="webConsoleWrap" style="display:none;">
+        <div class="web-console-toolbar">
+          <span class="web-console-dot"></span>
+          <span class="web-console-title">{{ _('Console') }}</span>
+          <span class="web-console-status" id="webConsoleStatus"></span>
+          <label class="web-console-autoscroll">
+            <input type="checkbox" class="chb-main" id="webConsoleAutoscroll" checked />
+            <span>{{ _('Auto-scroll') }}</span>
+          </label>
+        </div>
+        <pre class="web-console-output" id="webConsoleOutput" aria-live="polite" tabindex="0"></pre>
+      </div>
+    </div>
+
+    {% endif %}
+  </div><!-- /tab-general -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Bibliothek / Library
+  ══════════════════════════════════════════════════════ -->
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Start Page
+       ONE scope: what a fresh account starts with. The personal half moved
+       to /profile once that page existed -- it only ever lived here because
+       /settings was the sole place a form could go, and having both scopes
+       stacked meant two identical-looking forms writing to different places.
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-startpage">
+    {% if is_admin %}
+    {{ startpage.start_page_form('global', show_new_home_toggle=True,
+         heading=_('Default for new accounts'),
+         intro=_('What someone sees who has never opened these settings. Changing this does not overwrite what a user already chose for themselves.')) }}
+    {% endif %}
+  </div>
+
+  <div class="settings-tab-panel" id="tab-library">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Library and Statistics') }}</h1>
+      <p class="page-subtitle">{{ _('Media library scanning schedule, scan performance and statistics visibility') }}</p>
+    </div>
+    <div class="settings-section">
+      <h2>{{ _('Media Statistics') }}</h2>
+      <div class="settings-row">
+        <label class="settings-checkbox-row" for="mediaStatsEnabled">
+          <input type="checkbox" class="chb-main" id="mediaStatsEnabled" onchange="saveMediaStatsEnabled()" />
+          <span>{{ _('Show Media category on the statistics page') }}</span>
+        </label>
+      </div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Adds a Media category to the statistics page with movie, series and episode counts based on your media library.') }}</div>
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Automatic library rescan') }}</div>
+          <div class="settings-row-desc">{{ _('A location is rescanned once its cached scan is older than this.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <select id="libraryRescanHours" class="mf-token-input" onchange="saveLibraryRescanHours()">
+            <option value="0">{{ _('Off') }}</option>
+            <option value="6">{{ _('Every 6 hours') }}</option>
+            <option value="12">{{ _('Every 12 hours') }}</option>
+            <option value="24">{{ _('Every 24 hours') }}</option>
+            <option value="48">{{ _('Every 2 days') }}</option>
+            <option value="168">{{ _('Every 7 days') }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Scan intensity') }}</div>
+          <div class="settings-row-desc">{{ _('Parallel ffprobe workers used to read resolution and codec from files whose name does not reveal them.') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <select id="libraryProbeWorkers" class="mf-token-input" onchange="saveLibraryProbeWorkers()">
+            <option value="0">{{ _('Automatic (based on CPU cores)') }}</option>
+            <option value="2">2 — {{ _('gentle (network share)') }}</option>
+            <option value="4">4</option>
+            <option value="8">8</option>
+            <option value="12">12</option>
+            <option value="16">16</option>
+            <option value="24">24</option>
+            <option value="32">32 — {{ _('fast NVMe') }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('More workers finish a scan sooner on fast local storage and will push the drive hard while it runs; on a network share they mostly multiply the timeouts. A scan always stops after two minutes of probing regardless, and continues where it left off a few minutes later.') }}</div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('MediaForge no longer rescans everything on every start — on a large library that costs minutes for a result that is almost always identical. While it runs, the file watcher picks up changes live; this interval covers what the watcher cannot, such as files added while MediaForge was closed. Locations that have never been scanned are always read in, and the refresh button on the Library page rescans on demand.') }}</div>
+    </div>
+
+    <!-- eBooks.
+         Two caches, both derived data, both previously invisible: there was
+         no way to see what the MOBI conversions cost or to get rid of them.
+         Deliberately its own block next to the comic one and NOT merged with
+         it -- the two libraries have their own directories on disk and their
+         own sizes, and clearing one must not throw away the other's work. -->
+    <div class="settings-section">
+      <h2>{{ _('eBooks') }}</h2>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Covers are always prepared: MediaForge reads the cover out of each book in the background and keeps a small copy, so the shelf shows pictures instead of blank tiles. An EPUB carries its cover inside it; MOBI and AZW3 have to be converted first, which is what the second cache below holds.') }}</div>
+
+      <h3 class="settings-subtitle">{{ _('Cache') }}</h3>
+      <div class="settings-row comic-cache-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Cover cache') }}</div>
+          <div class="settings-row-desc" id="bookCoverCacheSize">…</div>
+        </div>
+        <div class="settings-row-right">
+          <button type="button" class="btn btn-secondary" onclick="clearBookCache('covers')">{{ _('Clear cover cache') }}</button>
+        </div>
+      </div>
+      <div class="settings-row comic-cache-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Converted books') }}</div>
+          <div class="settings-row-desc" id="bookConvertCacheSize">…</div>
+        </div>
+        <div class="settings-row-right">
+          <button type="button" class="btn btn-secondary" onclick="clearBookCache('converted')">{{ _('Clear converted books') }}</button>
+        </div>
+      </div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Both caches hold derived data only — your book files are never touched. A cover is read again the next time the shelf is drawn, and a converted book is rebuilt the next time it is opened. These are separate from the comic caches above.') }}</div>
+    </div>
+
+    <!-- Comics.
+         Three switches and the two caches behind them. The first two are
+         ordinary preferences; the third one replaces a file the user owns,
+         so it sits in its own block at the bottom behind a confirmation
+         (saveComicReplaceOriginal() in settings.js) rather than in the list
+         above, where a stray click would be enough. -->
+    <div class="settings-section">
+      <h2>{{ _('Comics') }}</h2>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Covers are always prepared: MediaForge reads the first page of each series in the background and keeps it, so the shelf shows pictures instead of blank tiles. Only CBR and CBA have to be unpacked for this, which is what the option below is about.') }}</div>
+      <div class="settings-row">
+        <label class="settings-checkbox-row" for="comicAutoPrepareAll">
+          <input type="checkbox" class="chb-main" id="comicAutoPrepareAll" onchange="saveComicAutoPrepareAll()" />
+          <span>{{ _('Prepare every issue in the background') }}</span>
+        </label>
+      </div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Converts every CBR and CBA file in the library instead of doing it the first time an issue is opened. This takes a noticeable amount of time and disk space — the cache ends up holding a second copy of every affected comic — so it is only worthwhile for small collections.') }}</div>
+
+      <h3 class="settings-subtitle">{{ _('Cache') }}</h3>
+      <div class="settings-row comic-cache-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Cover cache') }}</div>
+          <div class="settings-row-desc" id="comicCoverCacheSize">…</div>
+        </div>
+        <div class="settings-row-right">
+          <button type="button" class="btn btn-secondary" onclick="clearComicCache('covers')">{{ _('Clear cover cache') }}</button>
+        </div>
+      </div>
+      <div class="settings-row comic-cache-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Converted archives') }}</div>
+          <div class="settings-row-desc" id="comicConvertCacheSize">…</div>
+        </div>
+        <div class="settings-row-right">
+          <button type="button" class="btn btn-secondary" onclick="clearComicCache('converted')">{{ _('Clear converted archives') }}</button>
+        </div>
+      </div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Both caches hold derived data only — your comic files are never touched. A cover is read again the next time the shelf is drawn, and a converted archive is rebuilt the next time that issue is opened.') }}</div>
+
+      <h3 class="settings-subtitle">{{ _('Diagnostics') }}</h3>
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Unpacker for CBR (RAR)') }}</div>
+          <div class="settings-row-desc" id="comicExtractorRar">…</div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Unpacker for CBA (ACE)') }}</div>
+          <div class="settings-row-desc" id="comicExtractorAce">…</div>
+        </div>
+      </div>
+      <div class="settings-hint" id="comicExtractorHint" style="display:none;padding:0 22px 14px;">{{ _('No unpacker was found here, so CBR and CBA files cannot be opened on this machine. Every other comic format is unaffected.') }}</div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Windows 10 and newer as well as macOS already bring bsdtar along as “tar”, and the MediaForge Docker image contains libarchive-tools.') }}</div>
+
+      <h3 class="settings-subtitle">{{ _('Replacing originals') }}</h3>
+      <div class="integ-hint-box integ-warn-box comic-danger-box">{{ _('This option deletes data. Once an archive has been converted, the original CBR or CBA file is replaced by the new CBZ — the original is gone afterwards and MediaForge cannot bring it back. Leave this switched off unless you are certain you no longer need the original files.') }}</div>
+      <div class="settings-row">
+        <label class="settings-checkbox-row" for="comicReplaceOriginal">
+          <input type="checkbox" class="chb-main" id="comicReplaceOriginal" onchange="saveComicReplaceOriginal(this)" />
+          <span>{{ _('Replace the original with the CBZ after conversion') }}</span>
+        </label>
+      </div>
+    </div>
+  </div><!-- /tab-library -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Design
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel active" id="tab-design">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Design') }}</h1>
+      <p class="page-subtitle">{{ _('What a new account starts with, plus the visual effects of this browser. Your own theme, dark/light and accent colour are on your profile page.') }}</p>
+    </div>
+    {# module cards moved to the Module Settings page #}
+    {# The controls that used to sit here wrote to the ACCOUNT, so an admin
+       "setting up the instance" changed nothing for anybody else. They are on
+       the profile page now. What is left here are real instance defaults:
+       what an account that has never picked anything is shown. #}
+    {% if is_admin %}
+    <div class="settings-section">
+      <h2>{{ _('Default appearance for new accounts') }}</h2>
+      <div class="settings-hint">{{ _('What someone sees who has never chosen a look. Changing this does not touch accounts that already picked their own.') }}</div>
+      <h3 class="settings-subtitle">{{ _('Dark or light') }}</h3>
+      <div class="settings-row">
+        <select class="mf-token-input" id="defaultThemeMode" onchange="saveAppearanceDefaults()"
+                aria-label="{{ _('Dark or light') }}">
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+        </select>
+      </div>
+      {# Same shape as the accent block on the profile page: preset swatches
+         first, custom colour below. The presets carry their own class so
+         base.html's applyAccent() -- which marks every .accent-preset with
+         the ACCOUNT's colour -- leaves this row alone. #}
+      <h3 class="settings-subtitle">{{ _('Accent Color') }}</h3>
+      <div class="settings-row">
+        <div class="accent-presets" id="defaultAccentPresets"></div>
+      </div>
+      <h3 class="settings-subtitle">{{ _('Custom Color') }}</h3>
+      <div class="settings-row">
+        <input type="text" class="settings-input" id="defaultAccentHex" maxlength="7"
+               placeholder="#7c3aed" onchange="saveAppearanceDefaults()"
+               aria-label="{{ _('Accent Color') }}">
+        <div class="accent-color-swatch">
+          <input type="color" id="defaultAccentPicker" value="#7c3aed"
+                 onchange="saveAppearanceDefaults(this.value)">
+        </div>
+        <button class="btn btn-secondary appearance-reset" onclick="clearAppearanceDefaultAccent()">{{ _('Use the built-in colour') }}</button>
+      </div>
+      <h3 class="settings-subtitle">{{ _('Language') }}</h3>
+      <div class="settings-row">
+        <button type="button" class="appearance-theme-btn lang-btn" data-default-lang="en">
+          <img src="{{ url_for('static', filename='flags/english.svg') }}" class="lang-flag" alt="" aria-hidden="true" />
+          <span>English</span>
+        </button>
+        <button type="button" class="appearance-theme-btn lang-btn" data-default-lang="de">
+          <img src="{{ url_for('static', filename='flags/german.svg') }}" class="lang-flag" alt="" aria-hidden="true" />
+          <span>Deutsch</span>
+        </button>
+      </div>
+      <div class="settings-hint">{{ _('The interface language a newly created account starts with. Everyone can change it later on their profile page.') }}</div>
+
+      {# The eight "Advanced Settings" toggles from the profile page, as an
+         INSTANCE default. They had no instance level at all before: theme and
+         accent cascaded account -> instance -> built-in, these went straight
+         from the account to a per-browser localStorage mirror, so every new
+         account started with all of them off regardless of how the instance
+         was set up. Same checkbox style (chb-main) and the same labels as
+         profile.html, on purpose -- an admin should recognise what they are
+         setting a default for. #}
+      <h3 class="settings-subtitle">{{ _('Advanced Settings') }}</h3>
+      <div class="settings-hint">{{ _('These are the extra design options from the profile page. What is ticked here is what a newly created account starts with; everyone can change it later on their own profile.') }}</div>
+      <div id="defaultUiToggles">
+        <label class="settings-checkbox-row" for="defGlowEffect">
+          <input type="checkbox" class="chb-main" id="defGlowEffect" data-default-ui="ui_glow_effect" onchange="saveDefaultUiToggles()" />
+          <span>{{ _('Add glow effect') }}</span>
+        </label>
+        <label class="settings-checkbox-row" for="defHeaderColor">
+          <input type="checkbox" class="chb-main" id="defHeaderColor" data-default-ui="ui_header_color" onchange="saveDefaultUiToggles()" />
+          <span>{{ _('Change header color with accent color') }}</span>
+        </label>
+        <label class="settings-checkbox-row" for="defHeaderColorHelp">
+          <input type="checkbox" class="chb-main" id="defHeaderColorHelp" data-default-ui="ui_header_color_help" onchange="saveDefaultUiToggles()" />
+          <span>{{ _('Fade header color for easier readability') }}</span>
+        </label>
+        <label class="settings-checkbox-row" for="defSkeletonLoader">
+          <input type="checkbox" class="chb-main" id="defSkeletonLoader" data-default-ui="ui_skeleton_loader" onchange="saveDefaultUiToggles()" />
+          <span>{{ _('Skeleton Loader') }}</span>
+        </label>
+        <label class="settings-checkbox-row" for="defChooseBorder">
+          <input type="checkbox" class="chb-main" id="defChooseBorder" data-default-ui="ui_choose_border" onchange="saveDefaultUiToggles()" />
+          <span>{{ _('Color highlight for selection') }}</span>
+        </label>
+        <label class="settings-checkbox-row" for="defActiveDownloadGlow">
+          <input type="checkbox" class="chb-main" id="defActiveDownloadGlow" data-default-ui="ui_active_download_glow" onchange="saveDefaultUiToggles()" />
+          <span>{{ _('Color highlight for currently downloading items') }}</span>
+        </label>
+        <label class="settings-checkbox-row" for="defClickEffect">
+          <input type="checkbox" class="chb-main" id="defClickEffect" data-default-ui="ui_click_effect" onchange="saveDefaultUiToggles()" />
+          <span>{{ _('"Button Press" animation when clicking a button or link') }}</span>
+        </label>
+        <label class="settings-checkbox-row" for="defIconMove">
+          <input type="checkbox" class="chb-main" id="defIconMove" data-default-ui="ui_icon_move" onchange="saveDefaultUiToggles()" />
+          <span>{{ _('Icon animations') }}</span>
+        </label>
+      </div>
+    </div>
+    {% endif %}
+    <div class="settings-section">
+      <h2>{{ _('Theme Packs') }}</h2>
+      <div class="settings-hint">{{ _('Theme packs restyle the whole interface — fonts, animations, checkboxes, inputs, the calendar and more. New theme packs can be installed from the Module Store.') }}</div>
+      {# "Your theme" moved to the profile page with the rest of the personal
+         appearance settings. #}
+      {% if is_admin %}
+      <h3 class="settings-subtitle">{{ _('Default for new accounts') }}</h3>
+      <div class="settings-row theme-pack-row">
+        <select id="themePackDefaultSelect" onchange="saveThemePackDefault()">
+          <option value="default">{{ _('MediaForge default look') }}</option>
+          {% for tp in installed_theme_packs %}
+          <option value="{{ tp.folder }}" {% if active_theme_pack and active_theme_pack.folder==tp.folder %}selected{% endif %}>{{ tp.name }} (v{{ tp.version }})</option>
+          {% endfor %}
+        </select>
+        <a class="btn btn-secondary" href="{{ url_for('extensions_page') }}#store">{{ _('Get more themes') }}</a>
+      </div>
+      <div class="settings-hint">{{ _('The theme every account sees until it picks its own on the profile page. Installed and managed in the Module Manager.') }}</div>
+      {% endif %}
+    </div>
+    {# "Advanced Settings" moved to the profile page. They were written to
+       localStorage only, which made them per BROWSER -- neither an instance
+       setting nor an account one, on a page that is otherwise entirely about
+       the instance. They are account preferences now (ui_* keys). #}
+  </div>
+
+  {% if is_admin %}
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Quellen / Sources
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-sources">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Sources') }}</h1>
+      <p class="page-subtitle">{{ _('Configure streaming providers, mirrors and search order') }}</p>
+    </div>
+    {# module cards moved to the Module Settings page #}
+    <div class="settings-section">
+      <h2>{{ _('Sources') }}</h2>
+      <div class="settings-hint">{{ _('Enable or disable the available sources. Disabled sources are hidden on the start page and are no longer loaded there.') }}</div>
+      <label class="settings-checkbox-row" for="sourceEnabledSto">
+        <input type="checkbox" class="chb-main" id="sourceEnabledSto" onchange="saveSourceEnabled('sto')" />
+        <span>SerienStream</span>
+      </label>
+      <label class="settings-checkbox-row" for="sourceEnabledAniworld">
+        <input type="checkbox" class="chb-main" id="sourceEnabledAniworld" onchange="saveSourceEnabled('aniworld')" />
+        <span>AniWorld</span>
+      </label>
+      <label class="settings-checkbox-row" for="sourceEnabledFilmpalast">
+        <input type="checkbox" class="chb-main" id="sourceEnabledFilmpalast" onchange="saveSourceEnabled('filmpalast')" />
+        <span>FilmPalast</span>
+      </label>
+      <label class="settings-checkbox-row" for="sourceEnabledMegakino">
+        <input type="checkbox" class="chb-main" id="sourceEnabledMegakino" onchange="saveSourceEnabled('megakino')" />
+        <span>MegaKino</span>
+      </label>
+      <label class="settings-checkbox-row" for="sourceEnabledFilmo">
+        <input type="checkbox" class="chb-main" id="sourceEnabledFilmo" onchange="saveSourceEnabled('filmo')" />
+        <span>filmo.to</span>
+      </label>
+      <label class="settings-checkbox-row" for="sourceEnabledNineanime">
+        <input type="checkbox" class="chb-main" id="sourceEnabledNineanime" onchange="saveSourceEnabled('nineanime')" />
+        <span>9anime</span>
+        <span class="source-badge-en" title="{{ _('English-only source') }}">EN</span>
+      </label>
+      <label class="settings-checkbox-row" for="sourceEnabledAniwaves">
+        <input type="checkbox" class="chb-main" id="sourceEnabledAniwaves" onchange="saveSourceEnabled('aniwaves')" />
+        <span>Aniwaves</span>
+        <span class="source-badge-en" title="{{ _('English-only source') }}">EN</span>
+      </label>
+      <div class="settings-hint">{{ _('9anime and Aniwaves are English-only sources: they offer no German audio or subtitles, which is why they are switched off by default. Enabling them needs no age confirmation - they are not adult sources.') }}</div>
+      <label class="settings-checkbox-row" for="sourceEnabledHanime">
+        <input type="checkbox" class="chb-main" id="sourceEnabledHanime" onchange="saveSourceEnabled('hanime')" />
+        <span>hanime <span class="browse-provider-18">18+</span></span>
+      </label>
+      <div class="settings-hint">{{ _('hanime.tv is an adult source (18+) for sexually explicit animated content (hentai). Disabled by default; enabling requires an age confirmation.') }}</div>
+      {# Sources added by installed modules. Filled by settings.js's
+         _renderThirdpartySourceToggles() from GET /api/settings ->
+         sources.available, because their number and names are only known at
+         runtime. Empty (and invisible) when no module registered one. #}
+      <div id="thirdpartySourceToggles"></div>
+    </div>
+    <div class="settings-section">
+      <h2>{{ _('Source order (Start Page v1)') }}</h2>
+      <div class="settings-hint">{{ _('Set the order in which sources appear on the start page. Drag the rows or use the arrows. For each source you can also choose whether new or popular items are shown first.') }}</div>
+      <div class="source-order-list" id="sourceOrderList"></div>
+    </div>
+    <div class="settings-section">
+      <h2>{{ _('Search') }}</h2>
+      <label class="settings-checkbox-row" for="sourcesHideInSearch">
+        <input type="checkbox" class="chb-main" id="sourcesHideInSearch" onchange="saveSourcesHideInSearch()" />
+        <span>{{ _('Also hide disabled sources from search results') }}</span>
+      </label>
+      <div class="settings-hint">{{ _('When enabled, disabled sources are also skipped in the search results.') }}</div>
+    </div>
+
+    <!-- ── Provider order & fallback ── -->
+    <div class="settings-section">
+      <h2>{{ _('Provider order') }}</h2>
+      <div class="settings-hint">{{ _('Order in which hosters are tried. If the hoster selected for a download fails (dead link, hoster not offered for that episode), MediaForge automatically continues with the next one in this list. Drag the rows or use the arrows.') }}</div>
+      <label class="settings-checkbox-row" for="providerFallbackEnabled">
+        <input type="checkbox" class="chb-main" id="providerFallbackEnabled" onchange="saveProviderFallbackEnabled()" />
+        <span>{{ _('Automatic provider fallback') }}</span>
+      </label>
+      <div class="settings-hint">{{ _('When disabled, only the selected hoster is used and a download fails if it is unavailable.') }}</div>
+      <div class="source-order-list" id="providerOrderList"></div>
+    </div>
+
+    <!-- ── Domain / mirror fallback ── -->
+    <div class="settings-section">
+      <h2>{{ _('Domain fallback (mirrors)') }}</h2>
+      <div class="settings-hint">{{ _('Alternative domains per site, tried top to bottom whenever a domain is unreachable or blocked (e.g. s.to → serienstream.to → 186.2.175.5). The first entry is the primary domain and cannot be removed. An IP address is called with the primary domain as its Host header. One entry per line.') }}</div>
+      <div class="settings-row">
+        <label class="settings-checkbox-row" for="domainResolverEnabled">
+          <input type="checkbox" class="chb-main" id="domainResolverEnabled" onchange="saveDomainResolver()" />
+          <span>{{ _('Resolve domains automatically') }}</span>
+        </label>
+      </div>
+      <div class="settings-hint" style="padding:0 22px 14px;">{{ _('Some sites mint a new numbered domain whenever the current one is blocked (megakino.to → megakino16.com → …). MediaForge looks the live domain up and uses it automatically, so no domain for those sites is shipped at all. Turn this off to use only the lists below — the affected sources then need a domain entered by hand.') }}</div>
+      <div id="mirrorSitesList"></div>
+    </div>
+  </div>
+  {% endif %}
+
+
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Downloads
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel active" id="tab-downloads">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Downloads') }}</h1>
+      <p class="page-subtitle">{{ _('Download paths, naming template, language preferences and bandwidth limits') }}</p>
+    </div>
+    {# module cards moved to the Module Settings page #}
+
+    {% if is_admin %}
+    <div class="settings-section">
+      <h2>{{ _('Download Settings') }}</h2>
+
+      <h3 class="settings-subtitle">{{ _('Download Path') }}</h3>
+      <div class="settings-row">
+        <input type="text" id="downloadPath" placeholder="/path/to/downloads" />
+        <button onclick="saveDownloadPath()">{{ _('Save') }}</button>
+      </div>
+      <div class="settings-hint">{{ _('Changes take effect immediately for new downloads.') }}</div>
+
+      <h3 class="settings-subtitle" style="margin-top:18px;">{{ _('Media types') }}</h3>
+      {# The default root has no row in the custom-paths table to carry this,
+         so it is a setting of its own (default_path_media_kinds). Only kinds
+         with a scanner are offered here, same as in that table. #}
+      <div id="defaultPathKinds" style="display:flex;flex-wrap:wrap;gap:6px 22px;">
+        <label class="settings-checkbox-row" for="defaultPathKindVideo">
+          <input type="checkbox" class="chb-main" id="defaultPathKindVideo" data-media-kind="video"
+                 onchange="saveDefaultPathMediaKinds(this)" />
+          <span>{{ _('Movies & Series') }}</span>
+        </label>
+        <label class="settings-checkbox-row" for="defaultPathKindBook">
+          <input type="checkbox" class="chb-main" id="defaultPathKindBook" data-media-kind="book"
+                 onchange="saveDefaultPathMediaKinds(this)" />
+          <span>{{ _('eBooks') }}</span>
+        </label>
+      </div>
+      <div class="settings-hint">{{ _('Which libraries the default download path feeds. At least one has to stay selected.') }}</div>
+
+      <h3 class="settings-subtitle" style="margin-top:18px;">{{ _('Default Language') }}</h3>
+      <div class="settings-row" style="gap:12px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Download Language') }}</label>
+          <select id="downloadLanguage" onchange="saveDownloadLanguage()" class="sync-select">
+            <option value="German Dub">German Dub</option>
+            <option value="English Sub">English Sub</option>
+            <option value="German Sub">German Sub</option>
+            <option value="English Dub">English Dub</option>
+            <option value="English Dub (German Sub)">English Dub (German Sub)</option>
+          </select>
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Default Provider') }}</label>
+          <select id="downloadProvider" onchange="saveDownloadProvider()" class="sync-select">
+            <option value="VOE">VOE</option>
+            <option value="Vidmoly">Vidmoly</option>
+            <option value="Vidoza">Vidoza</option>
+            <option value="Filemoon">Filemoon</option>
+            <option value="Doodstream">Doodstream</option>
+            <option value="Vidara">Vidara</option>
+          </select>
+        </div>
+      </div>
+      <div class="settings-hint">{{ _('Used as default when adding a new download.') }}</div>
+
+      <h3 class="settings-subtitle" style="margin-top:18px;">{{ _('File Naming Template') }}</h3>
+      <div class="settings-row">
+        <input type="text" id="namingTemplate"
+          placeholder="{title} ({year}) [imdbid-{imdbid}]/Season {season}/{title} S{season}E{episode}.mkv"
+          style="font-family:monospace;font-size:0.82rem;" />
+        <button onclick="saveNamingTemplate()">{{ _('Save') }}</button>
+        <button class="btn btn-danger" onclick="resetNamingTemplate()">{{ _('Reset') }}</button>
+      </div>
+      <div class="settings-hint">
+        {{ _('Placeholders:') }} <code>{title}</code> <code>{year}</code> <code>{imdbid}</code> <code>{season}</code>
+        <code>{episode}</code> <code>{language}</code>
+      </div>
+
+      <div style="margin-top:18px;">
+        <label class="settings-checkbox-row" for="langSeparation">
+          <input type="checkbox" class="chb-main" id="langSeparation" onchange="saveLangSeparation()" />
+          <span>{{ _('Separate languages into folders') }}</span>
+        </label>
+        <div class="settings-hint">{{ _('Downloads are sorted by language (e.g. german-dub/, english-sub/).') }}</div>
+
+        <label class="settings-checkbox-row" for="disableEnglishSub" style="margin-top:10px;">
+          <input type="checkbox" class="chb-main" id="disableEnglishSub" onchange="saveDisableEnglishSub()" />
+          <span>{{ _('Disable English subtitle downloads') }}</span>
+        </label>
+        <div class="settings-hint">{{ _('Hides English Sub from the language selection.') }}</div>
+
+        <label class="settings-checkbox-row" for="filmpalastSubfolder" style="margin-top:10px;">
+          <input type="checkbox" class="chb-main" id="filmpalastSubfolder" onchange="saveMovieSubfolder()" />
+          <span>{{ _('Enable movie subfolders') }}</span>
+        </label>
+        <div class="settings-hint">{{ _('Each movie gets its own subfolder — recommended for Jellyfin.') }}</div>
+
+        <label class="settings-checkbox-row" for="aniworldAbsoluteEpisodes" style="margin-top:10px;">
+          <input type="checkbox" class="chb-main" id="aniworldAbsoluteEpisodes" onchange="saveAniworldAbsoluteEpisodes()" />
+          <span>{{ _('AniWorld: use absolute episode numbers') }}</span>
+        </label>
+        <div class="settings-hint">{{ _('Long-running shows are split into seasons on AniWorld but keep one continuous count, which the site appends to the episode title as “[Episode 062]”. With this on, that count is used for the file name: S02E062 instead of S02E001. The season stays the one AniWorld lists the episode in — only the number changes. Episodes without the marker keep their season-relative number. Only affects new downloads; files already on disk are not renamed.') }}</div>
+      </div>
+
+      <h3 class="settings-subtitle" style="margin-top:18px;">{{ _('Presets') }}</h3>
+      <div class="settings-preset-block">
+        <div class="settings-notice">
+          <strong>{{ _('Why this matters for Jellyfin') }}</strong><br>
+          {{ _('Jellyfin identifies an episode by its season and episode number. On a long-running show AniWorld\'s per-season count is not the number the episode is known by anywhere else: “Staffel 2, Folge 1” is episode 62 of the series, which is exactly what the site puts in the “[Episode 062]” marker. Absolute numbering writes that number into the file name.') }}
+          {{ _('The preset also puts a series into one folder instead of per-season subfolders, and leaves language folders off — they split one series across several library entries.') }}
+          {{ _('The Jellyfin preset keeps the language in the file name instead. Jellyfin reads whatever follows the SxxExx marker as the episode title, so it will show “(German Dub)” there until a Jellyfin NFO fills in the real one — set a TMDB key under Integrations if you want proper episode titles.') }}
+        </div>
+        <div class="settings-preset-actions">
+          <button class="btn btn-secondary" onclick="applyJellyfinDefaults()">{{ _('Set Jellyfin Defaults') }}</button>
+          <button class="btn btn-secondary" onclick="applyDownloadDefaults()">{{ _('Set Defaults') }}</button>
+        </div>
+        <div class="settings-preset-hint">{{ _('Both buttons write the same five settings at once: naming template, absolute episode numbers, language separation, English subtitle downloads and movie subfolders. The dialog asks whether the folder and file structure should be set too, so you can take the rest and keep your own naming template. Nothing else is touched, and files already on disk are never renamed.') }}</div>
+      </div>
+
+      <h3 class="settings-subtitle" style="margin-top:18px;">{{ _('Subtitles') }}</h3>
+      <div>
+        <label class="settings-checkbox-row" for="dlSubtitles">
+          <input type="checkbox" class="chb-main" id="dlSubtitles" onchange="saveDlSubtitles()" />
+          <span>{{ _('Download subtitles') }}</span>
+        </label>
+        <div class="settings-hint">{{ _('Every subtitle track the source offers is downloaded and muxed into the video file as a selectable track. Only affects sources that provide real subtitle tracks — burned-in subtitles are part of the picture.') }}</div>
+      </div>
+
+      <h3 class="settings-subtitle" style="margin-top:18px;">{{ _('Duplicate Handling') }}</h3>
+      <div>
+        <label class="settings-checkbox-row" for="dlQualityUpgrade">
+          <input type="checkbox" class="chb-main" id="dlQualityUpgrade" onchange="saveDlQualityUpgrade()" />
+          <span>{{ _('Replace with better quality') }}</span>
+        </label>
+        <div class="settings-hint">{{ _('If the episode already exists, the source is checked first. A higher resolution (or a clearly higher bitrate at the same resolution) is downloaded and replaces the old file.') }}</div>
+
+        <label class="settings-checkbox-row" for="dlAudioTrackMerge" style="margin-top:10px;">
+          <input type="checkbox" class="chb-main" id="dlAudioTrackMerge" onchange="saveDlAudioTrackMerge()" />
+          <span>{{ _('Merge additional languages into the existing file') }}</span>
+        </label>
+        <div class="settings-hint">{{ _('An episode already downloaded as German Dub gets a new English Dub added as a second audio track instead of being saved a second time.') }}</div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Custom Paths') }}</h2>
+      <h3 class="settings-subtitle">{{ _('Add Path') }}</h3>
+      <div class="add-user-row" style="margin-bottom:16px">
+        <input type="text" id="newPathName" placeholder="{{ _('Name (e.g. NAS)') }}" />
+        <input type="text" id="newPathValue" placeholder="/mnt/nas/anime" />
+        {# Filled in by settings.js (renderNewPathKindSelect) from the kinds the
+           server reports as scannable, so this markup does not have to list
+           them and cannot drift from the registry. #}
+        <div id="newPathKinds"></div>
+        <button onclick="addCustomPath()">{{ _('Add') }}</button>
+      </div>
+      <div class="user-table-wrapper">
+        <table class="user-table" id="customPathsTable">
+          <thead>
+            <tr>
+              <th>{{ _('Name') }}</th>
+              <th>{{ _('Path') }}</th>
+              <th>{{ _('Default for sites') }}</th>
+              <th>{{ _('Media types') }}</th>
+              {# The Auto-Sync default path lives on the Auto-Sync tab only.
+                 It used to be duplicated here as a radio column, which meant
+                 one setting with two controls that had to be kept in sync by
+                 hand -- and an Auto-Sync option on a page about downloads. #}
+              <th>{{ _('Actions') }}</th>
+            </tr>
+          </thead>
+          <tbody id="customPathsBody"></tbody>
+        </table>
+      </div>
+      <div class="settings-hint">{{ _('Select the sites for which this path should be preselected as the download folder.') }}</div>
+      <div class="settings-hint">{{ _('The media types decide which library a path shows up in — a folder is only scanned for what is ticked here.') }}</div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Language Fallback Groups') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('An ordered list of languages that can be selected instead of a single language — in the download dialog and in auto-sync. Every episode is fetched in the first language of the list it is actually available in, so a series that switches from dub to sub mid-season no longer needs two jobs.') }}
+        {{ _('Auto-sync also upgrades: as soon as an episode you already have becomes available in a language further up the list, it is downloaded again in that language. Whether the previous file is then deleted or kept alongside it is set per group.') }}
+      </div>
+      <div class="lang-group-notice" id="langGroupsDisabledNotice" style="display:none;">
+        {{ _('Language groups require “Separate languages into folders” above. Only per-language folders make it possible to tell which language an existing episode is in — without them a group can neither skip nor upgrade correctly. You can still define groups here; they become selectable once the setting is on.') }}
+      </div>
+
+      <h3 class="settings-subtitle">{{ _('Add Group') }}</h3>
+      <div class="add-user-row" style="margin-bottom:12px">
+        <input type="text" id="newLangGroupName" placeholder="{{ _('Name (e.g. German first)') }}" />
+        <button onclick="addLanguageGroup()">{{ _('Add') }}</button>
+      </div>
+      <div class="lang-group-editor" id="newLangGroupEditor"></div>
+      <label class="settings-checkbox-row" for="newLangGroupDelete" style="margin-top:10px;">
+        <input type="checkbox" class="chb-main" id="newLangGroupDelete" checked />
+        <span>{{ _('Delete the old file after an upgrade') }}</span>
+      </label>
+      <div class="settings-hint">{{ _('On: the episode exists only in the better language afterwards. Off: both language versions are kept, each in its own folder — your library then holds the episode twice.') }}</div>
+
+      <div class="user-table-wrapper" style="margin-top:18px;">
+        <table class="user-table" id="languageGroupsTable">
+          <thead>
+            <tr>
+              <th>{{ _('Name') }}</th>
+              <th>{{ _('Fallback order') }}</th>
+              <th>{{ _('Delete old file') }}</th>
+              <th>{{ _('Actions') }}</th>
+            </tr>
+          </thead>
+          <tbody id="languageGroupsBody"></tbody>
+        </table>
+      </div>
+      <div class="settings-hint">{{ _('A group needs at least two languages. Groups still used by a sync job or a waiting download cannot be deleted.') }}</div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Bandwidth & Schedule') }}</h2>
+
+      <h3 class="settings-subtitle">{{ _('Bandwidth Limit') }}</h3>
+      <div class="settings-row" style="gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Max download speed (KB/s)') }}</label>
+          <input type="number" id="downloadRateLimit" min="0" step="64" placeholder="0"
+            style="max-width:160px;" />
+        </div>
+        <button onclick="saveDownloadRateLimit()">{{ _('Save') }}</button>
+      </div>
+      <div class="settings-hint">{{ _('Throttles all downloads to this speed. 0 = unlimited. Applies to new downloads.') }}</div>
+
+      <div class="settings-row" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-top:18px;">
+        <h3 class="settings-subtitle" style="margin:0;">{{ _('Download Time Window') }}</h3>
+        <div class="settings-field" style="display:flex; align-items:center; gap:8px; margin-bottom:0;">
+          <label class="settings-field-label" style="margin-bottom:0; font-size:0.8rem; font-weight:normal;">{{ _('Time Format') }}:</label>
+          <select id="timeFormatSetting" onchange="changeTimeFormatSetting()" class="sync-select" style="width:110px; height:28px; padding: 0 6px; font-size:0.8rem; border-radius: var(--radius-sm);">
+            <option value="24h">24h</option>
+            <option value="12h">12h (AM/PM)</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-bottom:10px; margin-top:10px;">
+        <label class="settings-checkbox-row" for="downloadWindowEnabled">
+          <input type="checkbox" class="chb-main" id="downloadWindowEnabled" onchange="saveDownloadWindow()" />
+          <span>{{ _('Only download during a specific time window') }}</span>
+        </label>
+      </div>
+      <div class="settings-row" style="gap:12px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('From') }}</label>
+          <input type="time" id="downloadWindowStart" onchange="saveDownloadWindow()" style="max-width:140px;" />
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Until') }}</label>
+          <input type="time" id="downloadWindowEnd" onchange="saveDownloadWindow()" style="max-width:140px;" />
+        </div>
+      </div>
+      <div class="settings-hint">{{ _('New downloads only start within this window (server local time). Overnight windows like 22:00–06:00 are supported. Running downloads are not interrupted.') }}</div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Download History') }}</h2>
+      <div class="settings-row" style="flex-wrap:wrap;gap:12px;align-items:flex-start">
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Keep history for') }}</label>
+          <select id="historyRetention" onchange="saveHistoryRetention()" class="sync-select">
+            <option value="0">{{ _('Unlimited') }}</option>
+            <option value="7">7 {{ _('days') }}</option>
+            <option value="30">30 {{ _('days') }}</option>
+            <option value="90">90 {{ _('days') }}</option>
+            <option value="180">180 {{ _('days') }}</option>
+            <option value="365">365 {{ _('days') }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="settings-hint">{{ _('Automatically delete download-history entries older than the selected period. Runs about hourly.') }}</div>
+    </div>
+    {% endif %}
+
+  </div><!-- /tab-downloads -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Auto-Sync
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-autosync">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">Auto-Sync</h1>
+      <p class="page-subtitle">{{ _('Automatic synchronization, schedules, weekly blocks and adaptive intervals') }}</p>
+    </div>
+    {# module cards moved to the Module Settings page #}
+    {% if is_admin %}
+    <div class="settings-section">
+      <h2>{{ _('Auto-Sync Defaults') }}</h2>
+      <div class="settings-row" style="flex-wrap:wrap;gap:12px;align-items:flex-start">
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Mode') }}</label>
+          <select id="syncMode" onchange="onSyncModeChange()" class="sync-select">
+            <option value="interval">{{ _('Interval') }}</option>
+            <option value="weekly">{{ _('Weekly schedule') }}</option>
+          </select>
+        </div>
+        <div class="settings-field" id="syncIntervalField">
+          <label class="settings-field-label">{{ _('Schedule') }}</label>
+          <select id="syncSchedule" onchange="saveSyncSchedule()" class="sync-select">
+            <option value="0">{{ _('Disabled') }}</option>
+            <option value="1min">1 min (Debug)</option>
+            <option value="30min">30 min</option>
+            <option value="1h">{{ _('1 hour') }}</option>
+            <option value="2h">{{ _('2 hours') }}</option>
+            <option value="4h">{{ _('4 hours') }}</option>
+            <option value="8h">{{ _('8 hours') }}</option>
+            <option value="12h">{{ _('12 hours') }}</option>
+            <option value="16h">{{ _('16 hours') }}</option>
+            <option value="24h">{{ _('24 hours') }}</option>
+          </select>
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Default Language') }}</label>
+          <select id="syncLanguage" onchange="saveSyncDefaults()" class="sync-select">
+            <option>German Dub</option>
+            <option>English Sub</option>
+            <option>German Sub</option>
+            <option>English Dub</option>
+            <option>English Dub (German Sub)</option>
+          </select>
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Default Provider') }}</label>
+          <select id="syncProvider" onchange="saveSyncDefaults()" class="sync-select">
+            <option>VOE</option>
+            <option>Vidmoly</option>
+            <option>Vidoza</option>
+          </select>
+        </div>
+        {# Where a NEW sync job downloads to. settings.js has always had the
+           code for this dropdown (renderSyncDefaultPathOptions /
+           saveSyncDefaultPath) but the <select> it looks for was never in the
+           template, so both functions returned on their first line and the
+           setting could only be reached through the radio column in
+           Downloads. The list is filled from the custom paths at runtime. #}
+        <div class="settings-field">
+          <label class="settings-field-label" for="syncDefaultPath">{{ _('Default path') }}</label>
+          <select id="syncDefaultPath" onchange="saveSyncDefaultPath()" class="sync-select">
+            {# First entry is deliberately not a custom path: "the global
+               download folder" is a real answer the radio column in Downloads
+               cannot express, because unticking every radio is not a choice. #}
+            <option value="">{{ _('Global download folder') }}</option>
+          </select>
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Custom path unavailable') }}</label>
+          <select id="syncPathUnavailableAction" onchange="saveSyncPathAction()" class="sync-select">
+            <option value="skip">{{ _('Skip sync') }}</option>
+            <option value="hold">{{ _('Wait (Hold)') }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="sync-weekly-block" id="syncWeeklyBlock" style="display:none;">
+        <div class="sync-weekly-field">
+          <label class="settings-field-label">{{ _('Weekdays') }}</label>
+          <div class="weekday-toggles" id="syncDaysToggles"></div>
+        </div>
+        <div class="sync-weekly-field">
+          <label class="settings-field-label">{{ _('Times') }}</label>
+          <div class="sync-times-list" id="syncTimesList"></div>
+          <button type="button" class="btn btn-ghost sync-add-time" onclick="addSyncTime()">+ {{ _('Add time') }}</button>
+        </div>
+      </div>
+      <div class="settings-hint">
+        {{ _('How often Auto-Sync checks for new episodes. Language and provider are defaults for new sync jobs.') }}<br>
+        <strong>{{ _('Custom path unavailable:') }}</strong> {{ _('Defines what Auto-Sync should do when the assigned custom path is not available. This is the default for all new jobs but can be overridden per job.') }}
+      </div>
+    </div>
+    <div class="settings-section">
+      <h2>{{ _('Auto-Sync Error Handling') }}</h2>
+      <div class="settings-row" style="flex-wrap:wrap;gap:12px;align-items:flex-start">
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Retries on error') }}</label>
+          <select id="syncErrorRetries" onchange="saveSyncErrorRetries()" class="sync-select">
+            <option value="0">{{ _('No retries') }}</option>
+            <option value="1">{{ _('1 retry') }}</option>
+            <option value="2">{{ _('2 retries') }}</option>
+            <option value="3">{{ _('3 retries') }}</option>
+          </select>
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Time between attempts') }}</label>
+          <select id="syncErrorRetryTime" onchange="saveSyncErrorRetryTime()" class="sync-select">
+            <option value="0min">{{ _('No delay') }}</option>
+            <option value="1min">{{ _('1 minute') }}</option>
+            <option value="2min">{{ _('2 minutes') }}</option>
+            <option value="3min">{{ _('3 minutes') }}</option>
+            <option value="4min">{{ _('4 minutes') }}</option>
+            <option value="5min">{{ _('5 minutes') }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="settings-hint">
+        {{ _('Defines how often and at what interval a failed Auto-Sync is retried before it is considered permanently failed.') }}
+      </div>
+    </div>
+    <div class="settings-section">
+      <h2>{{ _('Adaptive Auto-Sync') }}</h2>
+      <div class="settings-row">
+        <label class="settings-checkbox-row" style="padding:unset !important;" for="syncAdaptiveEnabled">
+          <input type="checkbox" class="chb-main" id="syncAdaptiveEnabled" onchange="saveSyncAdaptiveEnabled()" />
+          <span>{{ _('Enable Adaptive Auto-Sync') }}</span>
+        </label>
+      </div>
+      <div class="settings-row" style="flex-wrap:wrap;gap:12px;align-items:flex-start">
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Pause after') }}</label>
+          <select id="syncAdaptivePauseAfter" onchange="saveSyncAdaptivePauseAfter()" class="sync-select">
+            <option value="2w">{{ _('2 weeks') }}</option>
+            <option value="3w">{{ _('3 weeks') }}</option>
+            <option value="4w">{{ _('4 weeks') }}</option>
+            <option value="5w">{{ _('5 weeks') }}</option>
+            <option value="6w">{{ _('6 weeks') }}</option>
+            <option value="7w">{{ _('7 weeks') }}</option>
+            <option value="8w">{{ _('8 weeks') }}</option>
+          </select>
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('Retry after') }}</label>
+          <select id="syncAdaptiveRetryValue" onchange="saveSyncAdaptiveRetry()" class="sync-select">
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+            <option value="11">11</option>
+            <option value="12">12</option>
+          </select>
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label">&nbsp;</label>
+          <select id="syncAdaptiveRetryUnit" onchange="saveSyncAdaptiveRetry()" class="sync-select">
+            <option value="days">{{ _('Days') }}</option>
+            <option value="weeks">{{ _('Weeks') }}</option>
+            <option value="months">{{ _('Months') }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="settings-hint">
+        {{ _('When an Auto-Sync job finds no new episodes for the selected period, it enters pause mode and is only re-checked at the wider interval below. As soon as a new episode is found again, it returns to the normal cycle.') }}
+      </div>
+    </div>
+    {% else %}
+    <div class="settings-section">
+      <div class="settings-hint">{{ _('Only administrators can change Auto-Sync settings.') }}</div>
+    </div>
+    {% endif %}
+  </div><!-- /tab-autosync -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Netzwerk
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-network">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Network & Access') }}</h1>
+      <p class="page-subtitle">{{ _('DNS server configuration, Captcha solver behavior and reverse proxy base URL') }}</p>
+    </div>
+    {# module cards moved to the Module Settings page #}
+    <div class="settings-section">
+      <h2>{{ _('Network / DNS') }}</h2>
+      {% if is_admin %}
+      <div class="settings-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+        <div class="settings-field">
+          <label class="settings-field-label">{{ _('DNS Mode') }}</label>
+          <select id="dnsMode" onchange="onDnsModeChange()" class="sync-select">
+            <option value="system">{{ _('System (Default)') }}</option>
+            <option value="cloudflare">Cloudflare (1.1.1.1)</option>
+            <option value="google">Google (8.8.8.8)</option>
+            <option value="quad9">Quad9 (9.9.9.9)</option>
+            <option value="custom">{{ _('Custom...') }}</option>
+          </select>
+        </div>
+        <div class="settings-field" id="dnsCustomField" style="display:none;flex:1;min-width:180px">
+          <label class="settings-field-label">{{ _('DNS Server IP') }}</label>
+          <input type="text" id="dnsServer" placeholder="z.B. 1.1.1.1" />
+        </div>
+        <button onclick="saveDnsSettings()">{{ _('Save') }}</button>
+      </div>
+      {% endif %}
+      <div class="settings-hint">
+        {{ _('Defines which DNS server resolves domains. Useful if your ISP blocks AniWorld or SerienStream.') }}
+      </div>
+      <div style="padding:0 22px 16px;display:flex;gap:8px;align-items:center;">
+        <button onclick="toggleDnsTestPanel()" id="dnsTestToggleBtn" style="font-size:0.82rem;padding:5px 12px;">{{ _('Test DNS') }}</button>
+      </div>
+      <div id="dnsTestPanel" class="dns-test-panel" style="display:none">
+        <div class="dns-test-header">
+          <span>{{ _('DNS Diagnostics') }}</span>
+          <button class="dns-test-rerun" onclick="runDnsTest()" id="dnsTestRunBtn">▶ {{ _('Test') }}</button>
+        </div>
+        <div class="dns-test-block">
+          <div class="dns-test-block-title">{{ _('DNS Status') }}</div>
+          <div id="dnsTestStatus" class="dns-test-status-row">
+            <span class="dns-test-idle">{{ _('— Not tested yet') }}</span>
+          </div>
+        </div>
+        <div class="dns-test-block">
+          <div class="dns-test-block-title">{{ _('Reachability') }}</div>
+          <!-- Static rows for the built-in sites, kept as fixed ids so their
+               order/labels never move around. A third-party module's site (any
+               register_monitor_site() entry -- see web/uptime_monitor.py -- that
+               isn't one of these five) has no row here: runDnsTest() in
+               settings.js creates one dynamically, appended to this same
+               container, from whatever extra keys /api/settings/dns/test
+               returns. Do not remove this id -- it is where those go. -->
+          <div id="dnsTestSiteRows">
+            <div class="dns-test-site-row" id="dnsTestRowAniWorld">
+              <span class="dns-test-site-name">aniworld.to</span>
+              <span class="dns-test-site-result dns-test-idle">—</span>
+            </div>
+            <div class="dns-test-site-row" id="dnsTestRowSTO">
+              <span class="dns-test-site-name">serienstream.to</span>
+              <span class="dns-test-site-result dns-test-idle">—</span>
+            </div>
+            <div class="dns-test-site-row" id="dnsTestRowFilmpalast">
+              <span class="dns-test-site-name">filmpalast.to</span>
+              <span class="dns-test-site-result dns-test-idle">—</span>
+            </div>
+            <div class="dns-test-site-row" id="dnsTestRowMegaKino">
+              <span class="dns-test-site-name">MegaKino</span>
+              <span class="dns-test-site-result dns-test-idle">—</span>
+            </div>
+            <div class="dns-test-site-row" id="dnsTestRowFilmo">
+              <span class="dns-test-site-name">filmo.to</span>
+              <span class="dns-test-site-result dns-test-idle">—</span>
+            </div>
+            <div class="dns-test-site-row" id="dnsTestRowNineanime">
+              <span class="dns-test-site-name">9anime.or.at</span>
+              <span class="dns-test-site-result dns-test-idle">—</span>
+            </div>
+            <div class="dns-test-site-row" id="dnsTestRowAniwaves">
+              <span class="dns-test-site-name">aniwaves.ru</span>
+              <span class="dns-test-site-result dns-test-idle">—</span>
+            </div>
+            <div class="dns-test-site-row" id="dnsTestRowHanime">
+              <span class="dns-test-site-name">hanime.tv</span>
+              <span class="dns-test-site-result dns-test-idle">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {% if is_admin %}
+    <div class="settings-section">
+      <h2>{{ _('Captcha / Browser') }}</h2>
+      <div class="settings-row">
+        <label class="settings-checkbox-row" for="browserPersistentProfile">
+          <input type="checkbox" class="chb-main" id="browserPersistentProfile" onchange="saveCaptchaSettings()" />
+          <span>{{ _('Persistent browser profile (keeps a warm Cloudflare trust for captcha solving)') }}</span>
+        </label>
+      </div>
+      <div class="settings-hint">
+        {{ _('Reuses one Chromium profile across captcha solves so a once-earned Cloudflare trust (cf_clearance) and browser fingerprint survive. This raises the Turnstile success rate. Applies on the next captcha; a restart guarantees a clean state.') }}
+      </div>
+      <h3 class="settings-subtitle" style="padding:0 22px">{{ _('Captcha options') }}</h3>
+      <div style="padding:0 22px 8px;display:flex;flex-direction:column;gap:6px">
+          <label class="settings-checkbox-row" for="captchaManual">
+            <input type="checkbox" class="chb-main" id="captchaManual" onchange="saveCaptchaSettings()" />
+            <span>{{ _('Solve manually (no auto-click) — only your own click on the checkbox counts') }}</span>
+          </label>
+          <label class="settings-checkbox-row" for="captchaVisible">
+            <input type="checkbox" class="chb-main" id="captchaVisible" onchange="saveCaptchaSettings()" />
+            <span>{{ _('Show the captcha window on screen (do not move it off-screen)') }}</span>
+          </label>
+          <label class="settings-checkbox-row" for="captchaAdblock">
+            <input type="checkbox" class="chb-main" id="captchaAdblock" onchange="saveCaptchaSettings()" />
+            <span>{{ _('Network ad-blocker active (turn off if the captcha does not load)') }}</span>
+          </label>
+          <label class="settings-checkbox-row" for="captchaAdtabGuard">
+            <input type="checkbox" class="chb-main" id="captchaAdtabGuard" onchange="saveCaptchaSettings()" />
+            <span>{{ _('Ad-tab guard active (auto-closes pop-up ad tabs)') }}</span>
+          </label>
+          <label class="settings-checkbox-row" for="captchaOverlayRemoval">
+            <input type="checkbox" class="chb-main" id="captchaOverlayRemoval" onchange="saveCaptchaSettings()" />
+            <span>{{ _('Ad-overlay remover active (recommended — off can let clicks be hijacked)') }}</span>
+          </label>
+          <label class="settings-checkbox-row" for="captchaUaSync">
+            <input type="checkbox" class="chb-main" id="captchaUaSync" onchange="saveCaptchaSettings()" />
+            <span>{{ _('User-agent sync active (recommended — keeps the cf_clearance cookie valid)') }}</span>
+          </label>
+          <label class="settings-checkbox-row" for="captchaWebglSpoof">
+            <input type="checkbox" class="chb-main" id="captchaWebglSpoof" onchange="saveCaptchaSettings()" />
+            <span>{{ _('WebGL renderer spoof (only useful on servers/Docker without a GPU)') }}</span>
+          </label>
+          <div class="settings-field" style="max-width:260px">
+            <label class="settings-field-label" for="captchaTimeout">{{ _('Captcha timeout (seconds, empty = default)') }}</label>
+            <input type="number" id="captchaTimeout" min="10" max="1800" placeholder="90–300" onchange="saveCaptchaSettings()" />
+          </div>
+      </div>
+      <div class="settings-row" style="gap:8px;flex-wrap:wrap">
+        <button type="button" onclick="clearBrowserProfile()">{{ _('Clear browser profile') }}</button>
+      </div>
+      <div class="settings-hint">
+        {{ _('If Turnstile keeps failing (red cross), delete the profile and solve one captcha manually in the web UI to seed a fresh trust.') }}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if is_admin %}
+    <div class="settings-section">
+      <h2>{{ _('Web Server') }}</h2>
+      <h3 class="settings-subtitle">{{ _('Base URL (Reverse Proxy)') }}</h3>
+      <div class="settings-row">
+        <input type="text" id="webBaseUrl" placeholder="https://mediaforge.example.com" />
+        <button onclick="saveWebBaseUrl()">{{ _('Save') }}</button>
+      </div>
+      <div class="settings-hint">
+        {{ _('Public URL when MediaForge runs behind a reverse proxy (e.g. Nginx, Traefik). Required for OIDC callbacks and absolute links. Leave empty if no proxy is used.') }}
+        <strong>{{ _('Changes take effect after the next restart.') }}</strong>
+      </div>
+    </div>
+    {% endif %}
+  </div><!-- /tab-network -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Authentifizierung
+  ══════════════════════════════════════════════════════ -->
+  {% if is_admin %}
+  <div class="settings-tab-panel" id="tab-auth">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Authentication') }}</h1>
+      <p class="page-subtitle">{{ _('User management, roles, passwords and Single Sign-On (SSO/OIDC)') }}</p>
+    </div>
+    {# module cards moved to the Module Settings page #}
+
+    <div class="settings-section">
+      <h2>{{ _('User Management') }}</h2>
+      {% if not force_sso %}
+      <h3 class="settings-subtitle">{{ _('Add User') }}</h3>
+      <div class="add-user-row" style="margin-bottom:16px">
+        <input type="text" id="newUsername" placeholder="{{ _('Username') }}" />
+        <input type="password" id="newPassword" placeholder="{{ _('Password') }}" />
+        <select id="newRole">
+          <option value="user">{{ _('User') }}</option>
+          <option value="admin">{{ _('Administrator') }}</option>
+          {# A restriction, not a rank -- see web/age_gate.py. #}
+          <option value="kids">{{ _('Kids') }}</option>
+        </select>
+        <button onclick="addUser()">{{ _('Add') }}</button>
+      </div>
+      {% endif %}
+      <div class="user-table-wrapper">
+        <table class="user-table" id="userTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>{{ _('Username') }}</th>
+              <th>{{ _('Role') }}</th>
+              <th>{{ _('Authentication') }}</th>
+              <th>{{ _('Created') }}</th>
+              <th>{{ _('Actions') }}</th>
+            </tr>
+          </thead>
+          <tbody id="userTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    {# Groups sit next to the user list on purpose: "which users are in this
+       group" and "which groups is this user in" are the same question, and
+       splitting them across two pages is how the answer drifts. #}
+    <div class="settings-section">
+      <h2>{{ _('Groups & Permissions') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('The three built-in groups (Administrator, User, Kids) cannot be edited or removed — they define what the roles mean app-wide. Custom groups are additive: a member keeps everything their role grants and gains what the group adds. If a group names specific library locations, its members are restricted to those.') }}
+      </div>
+      <div id="opsGroupList" class="ops-card-grid">
+        <div class="settings-hint">{{ _('Loading…') }}</div>
+      </div>
+      <div class="settings-row" style="margin-top:14px;">
+        <button type="button" class="btn btn-primary" onclick="opsGroupEdit(null)">{{ _('New group') }}</button>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Single Sign-On (SSO / OIDC)') }}</h2>
+      <div class="settings-hint" style="margin-bottom:16px;">
+        {{ _('Connect MediaForge with an external identity provider (Keycloak, Authentik, Google, etc.).') }}
+        <strong>{{ _('Changes require a server restart.') }}</strong>
+      </div>
+
+      <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px;">
+        <label class="settings-checkbox-row" for="ssoEnabled">
+          <input type="checkbox" class="chb-main" id="ssoEnabled" onchange="onSsoToggle()" />
+          <span>{{ _('Enable SSO login') }}</span>
+        </label>
+        <label class="settings-checkbox-row" for="forceSso">
+          <input type="checkbox" class="chb-main" id="forceSso" onchange="onSsoToggle()" />
+          <span>{{ _('SSO only (disable local logins)') }}</span>
+        </label>
+      </div>
+
+      <div id="ssoFields">
+        <div class="settings-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end;">
+          <div class="settings-field" style="flex:2;min-width:240px;">
+            <label class="settings-field-label">Issuer URL</label>
+            <input type="text" id="oidcIssuerUrl" placeholder="https://keycloak.example.com/realms/myrealm" />
+          </div>
+          <div class="settings-field" style="flex:1;min-width:160px;">
+            <label class="settings-field-label">Display-Name</label>
+            <input type="text" id="oidcDisplayName" placeholder="SSO" />
+          </div>
+        </div>
+        <div class="settings-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end;margin-top:10px;">
+          <div class="settings-field" style="flex:1;min-width:180px;">
+            <label class="settings-field-label">Client ID</label>
+            <input type="text" id="oidcClientId" placeholder="mediaforge" />
+          </div>
+          <div class="settings-field" style="flex:1;min-width:180px;">
+            <label class="settings-field-label">Client Secret</label>
+            <input type="password" id="oidcClientSecret" placeholder="••••••••" autocomplete="new-password" />
+          </div>
+        </div>
+        <div class="settings-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end;margin-top:10px;">
+          <div class="settings-field" style="flex:1;min-width:180px;">
+            <label class="settings-field-label">{{ _('Admin username (SSO)') }}</label>
+            <input type="text" id="oidcAdminUser" placeholder="admin@example.com" />
+          </div>
+          <div class="settings-field" style="flex:1;min-width:180px;">
+            <label class="settings-field-label">{{ _('Admin subject (sub claim)') }}</label>
+            <input type="text" id="oidcAdminSubject" placeholder="{{ _('UUID from the identity provider') }}" />
+          </div>
+        </div>
+        <div class="settings-hint" style="margin-top:6px;">
+          {{ _('The sub claim is more secure than the username. Found in server logs after the first SSO login.') }}
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <button class="btn btn-primary" onclick="saveSsoSettings()">{{ _('Save SSO settings') }}</button>
+        <span id="ssoSaveHint" style="margin-left:10px;font-size:0.82rem;color:var(--text-muted);display:none;">
+          {{ _('✓ Saved — restart required') }}
+        </span>
+      </div>
+    </div>
+
+  </div><!-- /tab-auth -->
+  {% endif %}
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: API
+  ══════════════════════════════════════════════════════ -->
+  {% if is_admin %}
+  <div class="settings-tab-panel" id="tab-api">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">API</h1>
+      <p class="page-subtitle">{{ _('External REST API key, endpoint reference and integration documentation') }}</p>
+    </div>
+    {# module cards moved to the Module Settings page #}
+    <div class="settings-section">
+      <h2>MediaForge API</h2>
+      <div class="settings-hint">
+        {{ _('External REST API for Home Assistant & Co. Auth via X-Api-Key header or ?apikey=.') }}
+      </div>
+      <div class="settings-row" style="flex-wrap:wrap;gap:10px;align-items:flex-end">
+        <div class="settings-field" style="flex:1;min-width:260px">
+          <label class="settings-field-label">API-Key</label>
+          <div class="api-key-input-row">
+            <input type="password" id="externalApiKeyDisplay" readonly
+              style="font-family:monospace;font-size:0.82rem;flex:1;" placeholder="{{ _('Loading...') }}" />
+            <div class="api-key-btn-group">
+              <button onclick="toggleApiKeyVisibility()" id="apiKeyToggleBtn">{{ _('Show') }}</button>
+              <button onclick="copyApiKey()">{{ _('Copy') }}</button>
+              <button onclick="regenerateApiKey()">{{ _('Regenerate') }}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="padding:0 22px 6px;">
+        <div class="settings-subtitle" style="padding-left:0;">{{ _('Base URL') }}</div>
+        <code id="apiBaseUrlDisplay" style="font-size:0.85rem;">http://localhost:8080</code>
+      </div>
+      <div style="padding:4px 22px 16px;">
+        <div class="settings-subtitle" style="padding-left:0;">{{ _('Machine-readable description') }}</div>
+        <div class="settings-hint">
+          {{ _('The OpenAPI document describes every endpoint, its parameters and the scope it needs. It is generated from the routes that are actually running, so it cannot drift from the code, and it is readable without a key — a client cannot know which scopes to ask for until it can read the spec.') }}
+        </div>
+        <a href="/api/v1/openapi.json" target="_blank" rel="noopener"><code>/api/v1/openapi.json</code></a>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Scoped API keys') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('The single key above is all-or-nothing: whatever can read the status can also read your whole library and history. A scoped key carries only the scopes you pick, can be revoked or expired on its own, and is stored hashed — so it is shown exactly once, when you create it, and cannot be recovered afterwards. The single key keeps working and grants every scope.') }}
+      </div>
+      <div id="opsApiKeyList" class="ops-card-grid">
+        <div class="settings-hint">{{ _('Loading…') }}</div>
+      </div>
+      <div class="settings-row" style="margin-top:14px;">
+        <button type="button" class="btn btn-primary" onclick="opsApiKeyCreate()">{{ _('New API key') }}</button>
+      </div>
+      <div style="padding:4px 22px 16px;">
+        <div class="settings-subtitle" style="padding-left:0;margin-bottom:8px;">{{ _('Endpoints') }}</div>
+        <table class="api-endpoints-table">
+          <tbody>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/status</code></td>
+              <td>{{ _('Status & queue overview') }}</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/queue</code></td>
+              <td>{{ _('Download queue') }} <span class="api-param">?status=queued|running|completed|failed</span></td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/queue/{id}</code></td>
+              <td>{{ _('Single queue item') }}</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/library</code></td>
+              <td>{{ _('Library — all titles') }}</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/library/series</code></td>
+              <td>{{ _('Series only') }}</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/library/movies</code></td>
+              <td>{{ _('Movies only') }}</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/stats</code></td>
+              <td>{{ _('Download statistics') }}</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/autosync</code></td>
+              <td>{{ _('AutoSync jobs — status overview (all users)') }}</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/uptime</code></td>
+              <td>{{ _('UpTime monitor — current status per source') }}</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/update-status</code></td>
+              <td>{{ _('Self-update progress / state') }}</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/mediascan</code></td>
+              <td>{{ _('MediaScan run status') }}</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/upscale</code></td>
+              <td>{{ _('Upscale queue, badge count & progress') }}</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/history</code></td>
+              <td>{{ _('Download history — all users') }} <span class="api-param">?limit=&offset=&status=&source=</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="settings-hint" style="padding-top:0;">
+        <strong>{{ _('Example:') }}</strong> <code id="apiExampleUrl">…</code>
+      </div>
+    </div>
+  </div><!-- /tab-api -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Privacy & Telemetry
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-privacy">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Privacy & Telemetry') }}</h1>
+      <p class="page-subtitle">{{ _('Crash reports, diagnostic telemetry and data privacy controls') }}</p>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Your installation') }}</h2>
+      <div class="settings-hint">
+        {{ _('This ID is generated once per installation and is pseudonymous, not anonymous, from stage 2 onward -- it lets usage over time be linked to this one installation. It is never linked to your MediaForge account or username.') }}
+      </div>
+      <div class="settings-row" style="flex-wrap:wrap;gap:10px;align-items:flex-end">
+        <div class="settings-field" style="flex:1;min-width:260px">
+          <label class="settings-field-label">{{ _('Installation ID') }}</label>
+          <input type="text" id="telemetryInstallId" readonly style="font-family:monospace;font-size:0.82rem;" />
+        </div>
+        <button class="btn btn-secondary" onclick="telemetryCopyInstallId()">{{ _('Copy') }}</button>
+        <button class="btn btn-secondary" onclick="telemetryRegenerateInstallId()">{{ _('Reset identity') }}</button>
+      </div>
+      <div class="settings-hint" id="telemetryConsentSummary"></div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Manage my data') }}</h2>
+      <div class="settings-hint">
+        {{ _('Request deletion or export of any data already sent under your installation ID -- available whether or not telemetry is currently enabled. The request is sent from this app, with your installation ID attached automatically (never typed by hand).') }}
+      </div>
+      <div class="settings-row" style="flex-wrap:wrap;gap:16px;">
+        <div class="settings-field" style="flex:1;min-width:160px;">
+          <label class="settings-field-label">{{ _('Username') }}</label>
+          <input type="text" id="telemetryReqUsername" placeholder="{{ _('Your name') }}" />
+        </div>
+        <div class="settings-field" style="flex:1;min-width:200px;">
+          <label class="settings-field-label">{{ _('Email (for contact only)') }}</label>
+          <input type="email" id="telemetryReqEmail" placeholder="you@example.com" />
+        </div>
+      </div>
+      <div class="settings-row" style="gap:10px;">
+        <button class="btn btn-secondary" onclick="telemetrySubmitRequest('export')">{{ _('Request data export') }}</button>
+        <button class="btn btn-danger" onclick="telemetrySubmitRequest('delete')">{{ _('Request data deletion') }}</button>
+      </div>
+      <div id="telemetryRequestStatus" class="settings-hint"></div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Data collection stages') }}</h2>
+      <div class="settings-hint">
+        {{ _('Nothing here is sent unless you actively enable it. Turning a stage on enables every data point in it at once; you can then switch individual points back off -- the stage switch always reflects the combined state of its data points.') }}
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Telemetry active at all') }}</div>
+          <div class="settings-row-desc" id="telemetryConsentDesc"></div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="telemetryMasterConsent" onchange="telemetryMasterConsentToggle(this)" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div id="telemetryStageTree"><!-- populated by static/telemetry.js --></div>
+
+    <div class="settings-section">
+      <div class="settings-row" style="justify-content:flex-start;gap:12px;">
+        <button class="btn btn-primary" onclick="telemetrySave()">{{ _('Save') }}</button>
+        <span id="telemetrySaveHint" style="font-size:0.82rem;color:var(--text-muted);"></span>
+      </div>
+    </div>
+
+  </div><!-- /tab-privacy -->
+  {% endif %}
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Updates
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-updates">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Updates') }}</h1>
+      <p class="page-subtitle">{{ _('Check for updates, switch release channels and configure automatic updates') }}</p>
+    </div>
+    {# module cards moved to the Module Settings page #}
+    <div class="settings-section">
+      <h2>Updates</h2>
+      <div class="settings-row" style="align-items:center;gap:16px;flex-wrap:wrap">
+        <div>
+          <span class="settings-field-label">{{ _('Installed') }}</span>
+          <code id="localVersion">{{ app_version or _('unknown') }}</code>
+        </div>
+        <div>
+          <span class="settings-field-label">{{ _('Available') }}</span>
+          <code id="latestVersion">—</code>
+        </div>
+        <button onclick="checkForUpdates(true)" id="updateCheckBtn">{{ _('Check now') }}</button>
+      </div>
+      <div id="updateStatus" class="settings-hint" style="margin-top:8px"></div>
+      <div id="updateBanner" style="display:none;">
+        <div class="settings-hint" style="margin-bottom:8px">
+          🆕 <strong id="updateBannerText"></strong> —
+          <a id="updateReleaseLink" href="#" target="_blank" rel="noopener">{{ _('Open release') }}</a>
+        </div>
+        <div id="updateInstallRow" style="display:none;margin:4px 0 12px;padding-left: 18px;">
+          <button type="button" class="update-install-btn" id="updateInstallBtn" onclick="installUpdateNow()">⬇️ {{ _('Install update now') }}</button>
+        </div>
+        <pre id="updateChangelog"
+          style="background:var(--input-bg,#1e1e2e);border:1px solid var(--border,#333);border-radius:6px;padding:12px;font-size:0.78rem;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow-y:auto;margin:12px;"></pre>
+        <div style="margin-top:12px">
+          <span class="settings-field-label">{{ _('Install update') }}</span>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+            <code id="updatePipCmd"
+              style="flex:1;background:var(--input-bg,#1e1e2e);border:1px solid var(--border,#333);border-radius:6px;padding:8px 12px;font-size:0.82rem;white-space:nowrap;overflow-x:auto;display:block"></code>
+            <button onclick="copyUpdateCmd()" style="white-space:nowrap">{{ _('Copy') }}</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Channel switch — only for self-updatable installs (pip / pipx) -->
+      <div id="updateChannelRow" style="display:none;margin-top:20px;border-top:1px solid var(--border,#333);padding-top:16px; padding-left: 24px;">
+        <span class="settings-field-label" style="display:block;margin-bottom:8px">{{ _('Update channel') }}</span>
+        <div class="update-channel-switch" id="updateChannelSwitch">
+          <button type="button" class="update-channel-btn" data-channel="stable" onclick="switchChannel('stable')">{{ _('Stable') }}</button>
+          <button type="button" class="update-channel-btn" data-channel="dev" onclick="switchChannel('dev')">🧪 Dev</button>
+        </div>
+        <div style="margin-top:10px;font-size: 0.8rem;color: var(--text-muted);line-height: 1.5;padding-bottom: 12px;">
+          {{ _('Switch between the stable release and the development channel (latest commits from the models branch — may be unstable). Switching installs the selected version right away.') }}
+        </div>
+      </div>
+
+      <!-- Dev-Channel-Hinweis — nur bei stabilem Release sichtbar -->
+      <div id="devChannelHint" style="display:none;margin-top:20px;border-top:1px solid var(--border,#333);padding-top:16px">
+        <span class="settings-field-label" style="display:block;margin-bottom:6px;padding: 8px 22px 14px;font-size: medium;">🧪 {{ _('Development channel') }}</span>
+        <div class="settings-hint" style="margin-bottom:10px">
+          {{ _('You are using a stable release. The development channel contains the latest commits directly from the models branch — it may be unstable or contain unfinished features.') }}
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;padding: 0rem 0rem 1rem 1rem;">
+          <code id="devChannelCmd"
+            style="flex:1;background:var(--input-bg,#1e1e2e);border:1px solid var(--border,#333);border-radius:6px;padding:8px 12px;font-size:0.82rem;white-space:nowrap;overflow-x:auto;display:block">pip install --upgrade "git+https://github.com/PD-Codes/MediaForge.git@main"</code>
+          <button onclick="copyDevChannelCmd()" style="white-space:nowrap;padding-right: 1rem;">{{ _('Copy') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section" id="autoUpdateSection" style="display:none">
+      <h2>{{ _('Automatic updates') }}</h2>
+      <div class="settings-row">
+        <label class="settings-checkbox-row" for="autoUpdateEnabled">
+          <input type="checkbox" class="chb-main" id="autoUpdateEnabled" onchange="saveAutoUpdate()" />
+          <span>{{ _('Install available updates automatically') }}</span>
+        </label>
+      </div>
+      <div class="auto-update-block" id="autoUpdateBlock" style="display:none">
+        <div class="auto-update-field">
+          <label class="settings-field-label">{{ _('Weekdays') }}</label>
+          <div class="weekday-toggles" id="autoUpdateDays"></div>
+        </div>
+        <div class="auto-update-field">
+          <label class="settings-field-label">{{ _('Time') }}</label>
+          <input type="time" id="autoUpdateTime" class="auto-update-time-input" value="03:00" onchange="saveAutoUpdate()">
+        </div>
+      </div>
+      <div class="settings-hint" style="padding:0 22px 14px;">
+        {{ _('When enabled, an available update is installed automatically at the selected time on the chosen weekdays. The app restarts itself and running downloads resume afterwards.') }}
+      </div>
+    </div>
+  </div><!-- /tab-updates -->
+
+  {% if is_admin %}
+  {# Full & Selective Backup — admin-only tab (settings + user data). #}
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Backup (admin only)
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-backup">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Backup') }}</h1>
+      <p class="page-subtitle">{{ _('Create, download and restore full system backups') }}</p>
+    </div>
+
+    <!-- Export -->
+    <div class="settings-section">
+      <h2>{{ _('Create backup') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('Export your settings and data to a single backup file. Choose which categories to include. A password is required — it encrypts sensitive values such as API keys and passwords. Without the password the backup cannot be restored.') }}
+      </div>
+      <div class="backup-cat-grid" id="backupExportCats">
+        <div class="settings-hint">{{ _('Loading…') }}</div>
+      </div>
+      <label class="settings-checkbox-row" for="backupNoPassword" style="margin-top:12px;">
+        <input type="checkbox" class="chb-main" id="backupNoPassword" onchange="backupToggleNoPassword()">
+        <span>{{ _('Save backup without a password (insecure)') }}</span>
+      </label>
+      <div class="settings-row" id="backupPwRow" style="gap:16px;flex-wrap:wrap;margin-top:12px;">
+        <div class="settings-field">
+          <label class="settings-field-label" for="backupExportPw">{{ _('Backup password') }}</label>
+          <input type="password" id="backupExportPw" autocomplete="new-password">
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label" for="backupExportPw2">{{ _('Repeat password') }}</label>
+          <input type="password" id="backupExportPw2" autocomplete="new-password">
+        </div>
+      </div>
+      <div class="settings-row" style="margin-top:12px;">
+        <button type="button" id="backupExportBtn" onclick="backupExport()">{{ _('Create backup') }}</button>
+      </div>
+      <div id="backupExportMsg" class="settings-hint" style="margin-top:8px;"></div>
+    </div>
+
+    <!-- Import -->
+    <div class="settings-section">
+      <h2>{{ _('Restore backup') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('Restore a backup file. Select the file and enter its password to preview the contents, then choose which categories to restore.') }}
+      </div>
+      <div class="settings-row backup-import-row" style="gap:16px;flex-wrap:wrap;align-items:flex-end;">
+        <div class="settings-field">
+          <span class="settings-field-label">{{ _('Backup file') }}</span>
+          <label class="btn btn-ghost backup-file-btn" style="margin-bottom: unset !important;" title="{{ _('Choose backup file') }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="backup-file-icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="17"/></svg>
+            <span id="backupFileLabel" class="backup-file-name">{{ _('Choose file…') }}</span>
+            <input type="file" id="backupImportFile" accept=".mfbackup,application/json" style="display:none;" onchange="backupOnFileChange()">
+          </label>
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label" for="backupImportPw">{{ _('Backup password') }}</label>
+          <input type="password" id="backupImportPw" autocomplete="off">
+        </div>
+        <div class="backup-preview-btn-wrap">
+          <button type="button" id="backupPreviewBtn" onclick="backupPreview()">{{ _('Preview') }}</button>
+        </div>
+      </div>
+
+      <div id="backupPreviewBox" style="display:none;margin-top:16px;">
+        <div id="backupPreviewInfo" class="settings-hint" style="margin-bottom:10px;"></div>
+        <div class="backup-cat-grid" id="backupImportCats"></div>
+        <div class="settings-row" style="gap:20px;margin-top:12px;">
+          <label class="settings-checkbox-row" for="backupModeMerge">
+            <input type="radio" name="backupMode" id="backupModeMerge" value="merge" checked>
+            <span>{{ _('Merge (keep existing, add/overwrite from backup)') }}</span>
+          </label>
+          <label class="settings-checkbox-row" for="backupModeReplace">
+            <input type="radio" name="backupMode" id="backupModeReplace" value="replace">
+            <span>{{ _('Replace (clear selected data first)') }}</span>
+          </label>
+        </div>
+        <div class="settings-row" style="margin-top:12px;">
+          <button type="button" id="backupImportBtn" onclick="backupImport()">{{ _('Restore') }}</button>
+        </div>
+        <div id="backupImportMsg" class="settings-hint" style="margin-top:8px;"></div>
+      </div>
+    </div>
+  </div><!-- /tab-backup -->
+  {% endif %}
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Regeln & Sprachen (rule engine + language profiles)
+  ══════════════════════════════════════════════════════ -->
+  {% if is_admin %}
+  <div class="settings-tab-panel" id="tab-rules">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Rules & Languages') }}</h1>
+      <p class="page-subtitle">{{ _('Conditional handling per title, provider or language') }}</p>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Download rules') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('A rule is a list of conditions and the actions to apply when they all match. Rules run in priority order, lowest number first, and later matches override earlier ones. A rule marked “stop” ends evaluation. A rule with no conditions matches everything — useful as a low-priority default.') }}
+      </div>
+      <div id="opsRuleList" class="ops-card-grid">
+        <div class="settings-hint">{{ _('Loading…') }}</div>
+      </div>
+      <div class="settings-row" style="margin-top:14px;gap:10px;flex-wrap:wrap;">
+        <button type="button" class="btn btn-primary" onclick="opsRuleEdit(null)">{{ _('New rule') }}</button>
+        <button type="button" class="btn btn-ghost" onclick="opsRuleTestOpen()">{{ _('Test rules') }}</button>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Language profiles') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('A profile is an ordered fallback chain. “First match” takes the first language that exists; “all” downloads every language in the chain. Titles bound to a profile ignore the global language setting.') }}
+      </div>
+      <div id="opsProfileList" class="ops-card-grid">
+        <div class="settings-hint">{{ _('Loading…') }}</div>
+      </div>
+      <div class="settings-row" style="margin-top:14px;">
+        <button type="button" class="btn btn-primary" onclick="opsProfileEdit(null)">{{ _('New profile') }}</button>
+      </div>
+    </div>
+  </div><!-- /tab-rules -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Betrieb (workers, schema snapshots, quiet hours, diagnostics)
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-operations">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Operations') }}</h1>
+      <p class="page-subtitle">{{ _('Worker states, database snapshots, quiet hours and diagnostics') }}</p>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Background workers') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('Every worker reports its own status live. A worker that is processing something shows how long it has before the watchdog restarts it.') }}
+      </div>
+      <div id="opsWorkerList" class="ops-worker-grid">
+        <div class="settings-hint">{{ _('Loading…') }}</div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Database schema & snapshots') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('A snapshot is taken automatically before any schema change, and can be taken manually at any time. Verifying a snapshot opens it read-only and checks that it is actually restorable — an unverified backup is not a backup. Restoring replaces the live database and requires a restart.') }}
+      </div>
+      <div id="opsSchemaInfo" class="settings-hint" style="margin-bottom:12px;"></div>
+      <div class="settings-row" style="gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        <button type="button" class="btn btn-primary" onclick="opsSnapshotCreate()">{{ _('Create snapshot') }}</button>
+      </div>
+      <div id="opsSnapshotList" class="ops-card-grid">
+        <div class="settings-hint">{{ _('Loading…') }}</div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Quiet hours') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('Limit what the workers may do at certain times of day — for example one download and no encoding during working hours. A quiet period is a restriction: outside every period the normal settings apply. Overlapping periods combine to the strictest result.') }}
+      </div>
+      <div id="opsWindowCurrent" class="settings-hint" style="margin-bottom:12px;"></div>
+      <div id="opsWindowList" class="ops-card-grid">
+        <div class="settings-hint">{{ _('Loading…') }}</div>
+      </div>
+      <div class="settings-row" style="margin-top:14px;">
+        <button type="button" class="btn btn-primary" onclick="opsWindowEdit(null)">{{ _('New quiet period') }}</button>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Settings profile') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('A small, plain-JSON export of the configuration itself — naming template, provider order, quality defaults, path layout. Deliberately free of users, history, queues and API keys, so it can be pasted into a support ticket. Importing shows you exactly what would change before anything is written.') }}
+      </div>
+      <div class="settings-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;">
+        <button type="button" class="btn btn-primary" onclick="opsProfileExport()">{{ _('Export profile') }}</button>
+        <label class="btn btn-ghost" style="margin-bottom:unset !important;">
+          <span>{{ _('Choose profile file…') }}</span>
+          <input type="file" id="opsProfileFile" accept="application/json,.json" style="display:none;" onchange="opsProfilePreview(this)">
+        </label>
+      </div>
+      <div id="opsProfilePreview" style="margin-top:14px;"></div>
+    </div>
+
+    <div class="settings-section">
+      <h2>{{ _('Diagnostics') }}</h2>
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('Builds a ZIP with version and platform info, which settings are set (sensitive values replaced), table row counts, worker states, recent queue errors and the tail of the log. Paths, URLs and secret-shaped tokens are scrubbed. Nothing is sent anywhere — the file is generated on demand and downloaded once.') }}
+      </div>
+      <div class="settings-row">
+        <button type="button" class="btn btn-primary" onclick="opsDiagnostics()">{{ _('Download diagnostic bundle') }}</button>
+      </div>
+    </div>
+  </div><!-- /tab-operations -->
+
+  <!-- ══════════════════════════════════════════════════════
+       Tab: Audit-Log
+  ══════════════════════════════════════════════════════ -->
+  <div class="settings-tab-panel" id="tab-audit">
+    <div class="page-header" style="margin-bottom:20px;">
+      <h1 class="page-title">{{ _('Audit Log') }}</h1>
+      <p class="page-subtitle">{{ _('Who changed what, and when') }}</p>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-hint" style="margin-bottom:14px;">
+        {{ _('The audit log lives in its own database file so it survives a snapshot restore or a backup import. Entries are append-only and hash-chained: removing one from the middle breaks the chain and is detected by “Verify”. Sensitive values are never recorded — only the fact that they changed.') }}
+      </div>
+      <div id="opsAuditStats" class="ops-stat-row"></div>
+      <div class="settings-row" style="gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:14px;">
+        <div class="settings-field">
+          <label class="settings-field-label" for="opsAuditRetention">{{ _('Keep entries for (days)') }}</label>
+          <input type="number" id="opsAuditRetention" min="0" max="3650" step="1">
+          <span class="settings-hint">{{ _('0 keeps everything forever. Pruning is the only deletion the log permits, and it is itself recorded.') }}</span>
+        </div>
+        <button type="button" class="btn btn-ghost" onclick="opsAuditSaveRetention()">{{ _('Save') }}</button>
+      </div>
+      <div class="settings-row ops-audit-filters" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin:14px 0;">
+        <div class="settings-field">
+          <label class="settings-field-label" for="opsAuditSearch">{{ _('Search') }}</label>
+          <input type="text" id="opsAuditSearch" oninput="opsAuditDebounced()" placeholder="{{ _('User, target, action…') }}">
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label" for="opsAuditCategory">{{ _('Category') }}</label>
+          <select id="opsAuditCategory" onchange="opsAuditLoad(0)"></select>
+        </div>
+        <div class="settings-field">
+          <label class="settings-field-label" for="opsAuditSeverity">{{ _('Severity') }}</label>
+          <select id="opsAuditSeverity" onchange="opsAuditLoad(0)"></select>
+        </div>
+        <button type="button" class="btn btn-ghost" onclick="opsAuditVerify()">{{ _('Verify chain') }}</button>
+        <button type="button" class="btn btn-ghost" onclick="opsAuditExport()">{{ _('Export CSV') }}</button>
+      </div>
+      <div id="opsAuditList" class="ops-audit-list">
+        <div class="settings-hint">{{ _('Loading…') }}</div>
+      </div>
+      <div class="mf-pagination-bar" id="opsAuditPager"></div>
+    </div>
+  </div><!-- /tab-audit -->
+  {% endif %}
+
+  {# Module-contributed settings tabs render on the Module Settings page
+     (registry.resolve_module_settings), not here anymore. #}
+
+  {# Encoding is embedded here as a client-side panel (no reload) — same body
+     the standalone /encoding route uses. Admin-only, matching encoding_page. #}
+  {% if is_admin %}
+  <div class="settings-tab-panel" id="tab-encoding">
+    {% include "_encoding_body.html" %}
+  </div>
+  {% endif %}
+
+</div><!-- /settings-container -->
+
+<!-- hanime 18+ age confirmation (two-step; read carefully!) -->
+<div class="hanime-age-overlay" id="hanimeAgeOverlay">
+  <div class="hanime-age-modal">
+    <!-- Variant A: shown on the first activation attempt -->
+    <div class="hanime-age-step" id="hanimeAgeStep1">
+      <span class="hanime-age-badge">18+</span>
+      <h3 class="hanime-age-title">{{ _('Enable hanime (18+)') }}</h3>
+      <p class="hanime-age-text">
+        {{ _('hanime.tv is a source for adult, sexually explicit animated content (hentai) and is only permitted for users aged 18 or older.') }}
+        <br><br>
+        <strong>{{ _('Are you UNDER 18 years old?') }}</strong>
+      </p>
+      <div class="hanime-age-actions">
+        <button type="button" class="hanime-age-btn hanime-age-no" onclick="hanimeAgeUnder18()">{{ _('Yes, I am under 18') }}</button>
+        <button type="button" class="hanime-age-btn hanime-age-yes" onclick="hanimeAgeConfirm()">{{ _('No, I am 18 or older') }}</button>
+      </div>
+    </div>
+    <!-- Variant B: shown when the user already bailed once and tries again -->
+    <div class="hanime-age-step" id="hanimeAgeStep2" style="display:none">
+      <span class="hanime-age-badge">18+</span>
+      <h3 class="hanime-age-title">{{ _('Enable hanime (18+)') }}</h3>
+      <p class="hanime-age-text">
+        {{ _('hanime.tv is a source for adult, sexually explicit animated content (hentai) and is only permitted for users aged 18 or older.') }}
+        <br><br>
+        <strong>{{ _('Should we really believe you are at least 18?') }}</strong>
+      </p>
+      <div class="hanime-age-actions">
+        <button type="button" class="hanime-age-btn hanime-age-no" onclick="hanimeAgeConfirm()">{{ _('Yes') }}</button>
+        <button type="button" class="hanime-age-btn hanime-age-yes" onclick="hanimeAgeDecline()">{{ _('No') }}</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+{# setUiLanguage() is defined once, in base.html, and is therefore available on
+   every page. The byte-identical copy that used to live here was loaded from
+   {% block scripts %} -- i.e. AFTER base.html's -- so on this page the sidebar
+   footer's flag dropdown called the settings page's copy rather than the
+   shared one. Harmless while the two bodies agreed; a trap the moment one of
+   them was changed. #}
+var settingsCanEdit = {{ 'true' if is_admin else 'false' }};
+{# ops.js's strings are built HERE, not in the JS file. babel.cfg extracts
+   Jinja templates only, so a string written directly in a .js file never
+   reaches the .po catalogue and silently stays English forever -- the trap
+   that already cost this project two rounds of missing translations. The
+   server hands ops.js a key->translated-text map instead. #}
+window.OPS_I18N = {
+  close: {{ _('Close')|tojson }},
+  cancel: {{ _('Cancel')|tojson }},
+  save: {{ _('Save')|tojson }},
+  saved: {{ _('Saved')|tojson }},
+  edit: {{ _('Edit')|tojson }},
+  delete: {{ _('Delete')|tojson }},
+  deleted: {{ _('Deleted')|tojson }},
+  name: {{ _('Name')|tojson }},
+  key: {{ _('Key')|tojson }},
+  description: {{ _('Description')|tojson }},
+  enabled: {{ _('Enabled')|tojson }},
+  disabled: {{ _('disabled')|tojson }},
+  all: {{ _('All')|tojson }},
+  details: {{ _('Details')|tojson }},
+  run: {{ _('Run')|tojson }},
+  confirm_delete: {{ _('Delete this entry?')|tojson }},
+
+  builtin: {{ _('Built-in')|tojson }},
+  members: {{ _('members')|tojson }},
+  permissions: {{ _('Permissions')|tojson }},
+  all_permissions: {{ _('all permissions')|tojson }},
+  all_libraries: {{ _('all libraries')|tojson }},
+  no_locations: {{ _('No library locations configured.')|tojson }},
+
+  no_api_keys: {{ _('No scoped keys yet.')|tojson }},
+  new_api_key: {{ _('New API key')|tojson }},
+  api_key_created: {{ _('API key created')|tojson }},
+  copy_now: {{ _('Copy it now. Only a hash is stored, so this key cannot be shown again — if you lose it, revoke it and create another.')|tojson }},
+  copy: {{ _('Copy')|tojson }},
+  copied: {{ _('Copied')|tojson }},
+  your_new_key: {{ _('Your new key')|tojson }},
+  done: {{ _('Done')|tojson }},
+  scopes: {{ _('Scopes')|tojson }},
+  scope_hint_key: {{ _('Pick only what the client needs. A dashboard that shows a queue count needs status:read and nothing else.')|tojson }},
+  pick_a_scope: {{ _('Pick at least one scope.')|tojson }},
+  expires_optional: {{ _('Expires (optional)')|tojson }},
+  expires: {{ _('expires')|tojson }},
+  last_used: {{ _('last used')|tojson }},
+  expired: {{ _('expired')|tojson }},
+  active: {{ _('active')|tojson }},
+  enable: {{ _('Enable')|tojson }},
+  disable: {{ _('Disable')|tojson }},
+  revoke: {{ _('Revoke')|tojson }},
+  confirm_revoke: {{ _('Revoke this key? Anything using it stops working immediately.')|tojson }},
+  library_scope: {{ _('Library scope')|tojson }},
+  scope_hint: {{ _('Comma-separated library location ids, or * for all. Naming any location restricts members to those.')|tojson }},
+  no_groups: {{ _('No groups.')|tojson }},
+  new_group: {{ _('New group')|tojson }},
+  edit_group: {{ _('Edit group')|tojson }},
+  confirm_delete_group: {{ _('Delete this group? Members keep their role but lose what this group granted.')|tojson }},
+
+  no_rules: {{ _('No rules yet.')|tojson }},
+  new_rule: {{ _('New rule')|tojson }},
+  edit_rule: {{ _('Edit rule')|tojson }},
+  priority: {{ _('Priority')|tojson }},
+  conditions: {{ _('Conditions')|tojson }},
+  actions: {{ _('Actions')|tojson }},
+  add_condition: {{ _('Add condition')|tojson }},
+  cond_hint: {{ _('All conditions must match. No conditions means the rule always applies.')|tojson }},
+  action_hint: {{ _('Leave a text action empty to not set it.')|tojson }},
+  stop: {{ _('stop')|tojson }},
+  stop_after_match: {{ _('Stop after this rule')|tojson }},
+  always: {{ _('always')|tojson }},
+  no_actions: {{ _('no actions')|tojson }},
+  test_rules: {{ _('Test rules')|tojson }},
+  test_hint: {{ _('Describe a hypothetical download. The result shows which rules match, in order, and the actions that would apply.')|tojson }},
+
+  no_profiles: {{ _('No profiles yet.')|tojson }},
+  new_profile: {{ _('New profile')|tojson }},
+  edit_profile: {{ _('Edit profile')|tojson }},
+  chain: {{ _('Language chain')|tojson }},
+  chain_hint: {{ _('Comma-separated, in order of preference.')|tojson }},
+  grab_all: {{ _('Download every language in the chain')|tojson }},
+  first_match: {{ _('first match')|tojson }},
+  all_languages: {{ _('all')|tojson }},
+  titles: {{ _('titles')|tojson }},
+
+  worker_queue: {{ _('Download queue')|tojson }},
+  worker_encoding: {{ _('Encoding')|tojson }},
+  worker_upscale: {{ _('Upscaling')|tojson }},
+  {# Auto-Sync and MediaScan are product names, identical in every language. #}
+  worker_autosync: 'Auto-Sync',
+  worker_libscan: {{ _('Library scan (local folders)')|tojson }},
+  worker_uptime: {{ _('UpTime monitor')|tojson }},
+  {# "MediaScan" and "Bibliotheks-Scan" were read as the same thing, which is
+     a fair mistake: one scans your folders, the other caches the Plex/Jellyfin
+     library and pokes it to refresh after a download. The product name stays
+     (it is what the Integrations page calls it), the parenthetical is what
+     tells the two cards apart at a glance. #}
+  worker_mediascan: 'MediaScan (Plex/Jellyfin)',
+  worker_keywords: {{ _('TMDB keywords')|tojson }},
+  worker_catalogue: {{ _('Catalogue bulk selection')|tojson }},
+  worker_catalogue_sync: {{ _('Catalogue list refresh')|tojson }},
+  worker_catalogue_ids: {{ _('Catalogue title matching')|tojson }},
+  worker_cacheevict: {{ _('Cache eviction')|tojson }},
+  worker_devinfos: {{ _('Dev infos')|tojson }},
+  worker_auditprune: {{ _('Audit retention')|tojson }},
+
+  {# Exactly three worker states. "running"/"stale"/"unknown" are gone -- see
+     the STATE_* constants in web/worker_registry.py. #}
+  state_idle: {{ _('Inactive')|tojson }},
+  {# A scheduled worker between two runs is not idle in the "something is
+     wrong" sense, which is how the bare word reads on a card that also says
+     "last run: never". Own msgid on purpose: "Inactive" is shared with the
+     rest of the app and must stay short there. #}
+  state_idle_scheduled: {{ _('Inactive (waiting for the next run)')|tojson }},
+  state_working: {{ _('Working')|tojson }},
+  state_error: {{ _('Error')|tojson }},
+
+  status: {{ _('Status')|tojson }},
+  last_run: {{ _('Last run')|tojson }},
+  next_run: {{ _('Next run')|tojson }},
+  next_update: {{ _('Next update')|tojson }},
+  stall: {{ _('Restart in')|tojson }},
+  stall_due: {{ _('restarting…')|tojson }},
+  found: {{ _('Files found')|tojson }},
+  online: {{ _('Online / offline')|tojson }},
+  entries: {{ _('Entries')|tojson }},
+  never: {{ _('never')|tojson }},
+
+  schema_version: {{ _('Schema version')|tojson }},
+  pending: {{ _('pending')|tojson }},
+  no_snapshots: {{ _('No snapshots yet.')|tojson }},
+  snapshot_created: {{ _('Snapshot created')|tojson }},
+  verify: {{ _('Verify')|tojson }},
+  restore: {{ _('Restore')|tojson }},
+  restored: {{ _('Restored — please restart the server now.')|tojson }},
+  checking: {{ _('Checking…')|tojson }},
+  integrity: {{ _('integrity')|tojson }},
+  confirm_restore: {{ _('Replace the live database with this snapshot? A snapshot of the current state is taken first. The server must be restarted afterwards.')|tojson }},
+
+  no_windows: {{ _('No quiet hours configured.')|tojson }},
+  new_window: {{ _('New quiet period')|tojson }},
+  edit_window: {{ _('Edit quiet period')|tojson }},
+  window_active: {{ _('Active now')|tojson }},
+  no_window_active: {{ _('No quiet period active — normal settings apply.')|tojson }},
+  max_downloads: {{ _('Max downloads')|tojson }},
+  encoding: {{ _('Encoding')|tojson }},
+  upscaling: {{ _('Upscaling')|tojson }},
+  scanning: {{ _('Library scans')|tojson }},
+  allowed_during_window: {{ _('Allowed during this period')|tojson }},
+  days: {{ _('Days')|tojson }},
+  from: {{ _('From')|tojson }},
+  to: {{ _('To')|tojson }},
+  wrap_hint: {{ _('An end time before the start time wraps over midnight.')|tojson }},
+  day_mon: {{ _('Mon')|tojson }},
+  day_tue: {{ _('Tue')|tojson }},
+  day_wed: {{ _('Wed')|tojson }},
+  day_thu: {{ _('Thu')|tojson }},
+  day_fri: {{ _('Fri')|tojson }},
+  day_sat: {{ _('Sat')|tojson }},
+  day_sun: {{ _('Sun')|tojson }},
+
+  file_too_large: {{ _('That file is too large to be a settings profile.')|tojson }},
+  profile_no_changes: {{ _('This profile matches the current configuration — nothing to apply.')|tojson }},
+  profile_applied: {{ _('Applied')|tojson }},
+  apply_selected: {{ _('Apply selected')|tojson }},
+  changes: {{ _('change(s)')|tojson }},
+  unchanged: {{ _('unchanged')|tojson }},
+  refused: {{ _('refused')|tojson }},
+
+  entries: {{ _('entries')|tojson }},
+  failures: {{ _('failures')|tojson }},
+  size: {{ _('size')|tojson }},
+  oldest: {{ _('oldest')|tojson }},
+  no_entries: {{ _('No entries.')|tojson }},
+  chain_ok: {{ _('Chain intact')|tojson }},
+  chain_broken: {{ _('Chain broken at entry ')|tojson }},
+  cat_auth: {{ _('Authentication')|tojson }},
+  cat_user: {{ _('User')|tojson }},
+  cat_group: {{ _('Group')|tojson }},
+  cat_settings: {{ _('Settings')|tojson }},
+  cat_module: {{ _('Module')|tojson }},
+  cat_backup: {{ _('Backup')|tojson }},
+  cat_queue: {{ _('Queue')|tojson }},
+  cat_library: {{ _('Library')|tojson }},
+  cat_system: {{ _('System')|tojson }},
+  cat_api: 'API',
+  cat_integration: {{ _('Integration')|tojson }},
+  sev_info: {{ _('Info')|tojson }},
+  sev_notice: {{ _('Notice')|tojson }},
+  sev_warning: {{ _('Warning')|tojson }},
+  sev_critical: {{ _('Critical')|tojson }}
+};
+</script>
+{{ startpage.start_page_i18n() }}
+<script src="{{ url_for('static', filename='settings.js') }}"></script>
+<script src="{{ url_for('static', filename='start_page.js') }}"></script>
+<script src="{{ url_for('static', filename='pwa.js') }}"></script>
+<!-- Generic collapsible-card behaviour + enable toggle for any thirdparty
+     registered with settings_host="settings" (see _settings_card_macro.html
+     / web/thirdparties/registry.py) -- same script integrations.html/
+     notifications.html/extensions.html load for the identical purpose. -->
+<script src="{{ url_for('static', filename='extension_cards.js') }}"></script>
+<script src="{{ url_for('static', filename='telemetry.js') }}"></script>
+<!-- Operations UI: groups, rules, language profiles, workers, snapshots,
+     quiet hours, diagnostics, audit log. Loaded after settings.js
+     because it wraps that file's switchTab() to lazy-load its panels. -->
+<script src="{{ url_for('static', filename='ops.js') }}"></script>
+{% endblock %}

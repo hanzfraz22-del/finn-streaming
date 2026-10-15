@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% import "_settings_card_macro.html" as ext %}
+{% block title %}{{ _('Module Settings') }} — MediaForge{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='settings_rows.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='settings.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='integrations.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="settings-container">
+  <div class="page-header" style="margin-bottom:20px;">
+    <h1 class="page-title">{{ _('Module Settings') }}</h1>
+    <p class="page-subtitle">{{ _('Settings contributed by installed modules') }}</p>
+  </div>
+
+  {# Groups come from registry.resolve_module_settings() -- every enabled
+     module that registered settings, grouped by the page its card also lives
+     on. Rendered with the same shared macro the Integrations page uses, so the
+     generic /api/settings/thirdparty/<id> API (static/extension_cards.js)
+     drives every toggle/field with no extra wiring -- which is also why a card
+     shown here and on its original page is not a copy: both edit the same
+     settings through the same endpoint. #}
+  {% set module_settings_groups = get_module_settings() %}
+  {% if module_settings_groups %}
+  <div class="settings-tab-panel active" id="tab-modules">
+    {% for group in module_settings_groups %}
+    <div class="integ-subsection-header">
+      <span class="integ-subsection-title">{{ group.label }}</span>
+      <span class="integ-subsection-badge">{{ group.cards|length }}</span>
+    </div>
+    {# Only hosts that really render a second card say so. "integrations" no
+       longer does -- module cards were taken off the Integrations page's Third
+       Party tab, so this page is the only place they exist -- and claiming
+       otherwise would send people looking for a card that is not there. #}
+    {% if group.host in ['notifications', 'monitoring'] %}
+    <div class="integ-subsection-hint">
+      {{ _('These modules also keep their card on that page. Both places edit the same settings.') }}
+    </div>
+    {% endif %}
+    {% for card in group.cards %}
+    {{ ext.render_settings_card(card) }}
+    {% endfor %}
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="settings-section" style="text-align:center;padding:48px 20px;">
+    <p class="settings-row-desc" style="font-size:0.95rem;">
+      {{ _('No module has contributed settings yet. Enable a module in the Module Manager to see its settings here.') }}
+    </p>
+    <a href="{{ url_for('extensions_page') }}" class="btn btn-secondary" style="margin-top:14px;display:inline-flex;">{{ _('Open Module Manager') }}</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='extension_cards.js') }}"></script>
+{% endblock %}

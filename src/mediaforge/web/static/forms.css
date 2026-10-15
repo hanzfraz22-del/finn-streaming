@@ -1,0 +1,958 @@
+/* ===================================================================
+   MediaForge — Form controls
+   Custom checkboxes, text/search/number inputs, <select>, the themed
+   number-input stepper pill (see static/number_input.js), the index-
+   page search bar, and the reusable "icon + input + clear button"
+   search-input-wrap plus its results/list layout.
+   =================================================================== */
+
+/* Checkboxes */
+.chb-main {
+  /* Reset native checkbox rendering so the custom shapes below can take over. */
+  appearance: none;
+  -webkit-appearance: none;
+  min-width: 16px !important;
+  min-height: 16px !important;
+  max-width: 16px !important;
+  max-height: 16px !important;
+  border: 2px solid var(--bg-hover, #6b7280);
+  border-radius: 6px;
+  background-color: transparent;
+  cursor: pointer;
+  position: relative;
+  margin: 0;
+  transition: background-color 0.3s, border-color 0.3s;
+  border-color: var(--text-primary) !important;
+  flex: unset !important;
+}
+
+.chb-main:hover {
+  border-color: var(--accent, #8b5cf6);
+}
+
+.chb-main::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  background: var(--accent, #8b5cf6);
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(0);
+  opacity: 1;
+  pointer-events: none;
+}
+
+/* Checkmark icon (SVG data URI). clip-path starts collapsed to a single point
+   so it stays invisible until :checked, when draw-check below wipes it in. */
+.chb-main::after {
+  content: '';
+  position: absolute;
+  width: 17px;
+  height: 30px;
+  margin-left:-1px;
+  margin-top:-14px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 32'%3E%3Cpath d='M2 14 L8 20 L24 4' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center bottom;
+  
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity 0.2s, transform 0.2s;
+  
+  clip-path: polygon(0 0, 0 0, 0 0, 0 0);
+}
+
+.chb-main:checked {
+  background-color: var(--accent, #8b5cf6) !important; 
+  border-color: var(--accent, #8b5cf6) !important;    
+  animation: wave-bounce 0.4s ease;
+}
+
+.chb-main:checked::before {
+  transform: translate(-50%, -50%) scale(3.5);
+  opacity: 0;
+  transition: transform 0.6s ease, opacity 0.6s ease;
+}
+
+.chb-main:checked::after {
+  opacity: 1;
+  transform: scale(1);
+  
+  animation: draw-check 0.3s ease-out forwards;
+  transition-delay: 0.1s;
+}
+
+.chb-main:focus-visible {
+  outline: 2px solid var(--accent, #8b5cf6);
+  outline-offset: 4px;
+}
+
+/* Smaller checkboxes for the per-slot / whole-series ignore list in the
+   incomplete-items modal (rendered by static/stats.js). */
+.ign-slot, .ign-series {
+  height: 16px !important;
+  width: 16px !important;
+}
+
+/* Checked-state animations: wave-bounce squashes the box on click (triggered
+   by .chb-main:checked above), draw-check wipes the checkmark in via clip-path. */
+@keyframes wave-bounce {
+  50% {
+    transform: scale(0.85);
+  }
+}
+
+@keyframes draw-check {
+  0% { clip-path: polygon(0 0, 0 0, 0 0, 0 0); }
+  40% { clip-path: polygon(0 40%, 100% 40%, 100% 100%, 0 100%); }
+  100% { clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%); }
+}
+/* ===================================================================
+   SEARCH BAR
+   =================================================================== */
+.search-bar {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+/* ===================================================================
+   FORM ELEMENTS
+   =================================================================== */
+input[type="text"],
+input[type="search"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="url"],
+input[type="time"],
+input[type="date"],
+input[type="datetime-local"],
+input[type="month"],
+input[type="week"],
+select,
+textarea {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  color: var(--text-primary);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  width: 100%;
+  transition: border-color var(--transition), box-shadow var(--transition);
+  outline: none;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+}
+
+select option {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+/* Native select arrow is removed (cross-browser, hence the prefixes) and
+   replaced with a custom SVG chevron drawn as a background image. */
+select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23c4c4d4'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 10px center !important;
+  background-size: 18px !important;
+  padding-right: 30px !important;
+}
+
+/* ===================================================================
+   DATE / TIME INPUTS
+   The native field parts (the mm/dd/yyyy spinner text and the calendar
+   button) are shadow-DOM pseudo elements that ignore `color`, so they
+   are tinted explicitly here. `color-scheme` is repeated on the element
+   itself because the native picker panel reads it from the input, not
+   from :root, in some engines -- without it a dark theme opens a white
+   calendar popup.
+   =================================================================== */
+input[type="date"],
+input[type="datetime-local"],
+input[type="month"],
+input[type="week"],
+input[type="time"] {
+  color-scheme: dark;
+  min-height: 42px;
+}
+[data-theme="light"] input[type="date"],
+[data-theme="light"] input[type="datetime-local"],
+[data-theme="light"] input[type="month"],
+[data-theme="light"] input[type="week"],
+[data-theme="light"] input[type="time"] {
+  color-scheme: light;
+}
+input[type="date"]::-webkit-datetime-edit,
+input[type="datetime-local"]::-webkit-datetime-edit,
+input[type="month"]::-webkit-datetime-edit,
+input[type="week"]::-webkit-datetime-edit,
+input[type="time"]::-webkit-datetime-edit {
+  color: var(--text-primary);
+  font-family: inherit;
+  font-weight: 400;
+}
+/* An empty date field shows its format hint (mm/dd/yyyy) through these
+   parts. There is no CSS selector for "date input with no value", so the
+   hint is muted via the field-text parts, which only carry literal
+   placeholder glyphs while the field is untouched. */
+input[type="date"]::-webkit-datetime-edit-text,
+input[type="datetime-local"]::-webkit-datetime-edit-text {
+  color: var(--text-muted);
+  padding: 0 1px;
+}
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator,
+input[type="week"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.65);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  transition: filter var(--transition), background var(--transition);
+}
+[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator,
+[data-theme="light"] input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+[data-theme="light"] input[type="month"]::-webkit-calendar-picker-indicator,
+[data-theme="light"] input[type="week"]::-webkit-calendar-picker-indicator,
+[data-theme="light"] input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.25);
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover,
+input[type="month"]::-webkit-calendar-picker-indicator:hover,
+input[type="week"]::-webkit-calendar-picker-indicator:hover,
+input[type="time"]::-webkit-calendar-picker-indicator:hover {
+  background: var(--accent-soft);
+}
+
+/* ===================================================================
+   NUMBER INPUT STEPPER
+   Native browser spin buttons (the classic tiny up/down arrows) don't
+   match the app's theme, so they're hidden here and replaced with a
+   themed [ − ][ 999 ][ + ] pill — same idea as the <select> arrow above,
+   just a quantity-stepper layout instead of stacked chevrons. The pill is
+   built by static/number_input.js (progressive enhancement: it wraps
+   every input[type=number] in .num-input-wrap with a .num-step-btn on
+   each side, so no template markup had to change).
+   =================================================================== */
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.num-input-wrap {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  /* Fixed (not min-) width so every pill is identical regardless of digit
+     count ("2" vs "15") or leftover per-page input sizing (e.g. the
+     uptime settings' .integ-num width/padding/text-align in
+     integrations.css) — see .num-input-wrap input[type=number] below,
+     which uses !important to make sure this wrapper's sizing always wins. */
+  width: 120px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 999px;
+  overflow: hidden;
+  vertical-align: middle;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.num-input-wrap:focus-within {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.num-input-wrap input[type="number"] {
+  flex: 1 1 auto;
+  width: 100% !important;
+  min-width: 0;
+  text-align: center !important;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 8px 2px !important;
+}
+.num-input-wrap input[type="number"]:focus {
+  border-color: transparent;
+  box-shadow: none;
+}
+.num-step-btn {
+      height: 35px;
+    padding: 0 8px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-md);
+    font-size: 0.88rem;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background var(--transition);
+    white-space: nowrap;
+}
+.num-step-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.num-step-btn:active:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.num-step-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.num-step-btn svg {
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+
+label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  display: block;
+  margin-bottom: 6px;
+}
+/* ===================================================================
+   SEARCH INPUT (index page)
+   =================================================================== */
+.search-wrap {
+  position: relative;
+  margin-bottom: 32px;
+}
+
+.search-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-input-wrap .search-icon {
+  position: absolute;
+  left: 14px;
+  color: var(--text-muted);
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+/* padding-left leaves room for .search-icon (left:14px, 18px wide); padding-right
+   leaves room for .search-clear-btn on the right. */
+.search-input-wrap input {
+  padding-left: 44px;
+  padding-right: 50px;
+  height: 48px;
+  font-size: 0.95rem;
+  border-radius: var(--radius-lg);
+}
+
+.search-clear-btn {
+  position: absolute;
+  right: 14px;
+  color: var(--text-muted);
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 99px;
+  transition: background var(--transition), color var(--transition);
+}
+
+.search-clear-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.search-clear-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ===================================================================
+   RESULTS / LISTS
+   =================================================================== */
+.results-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.result-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--transition);
+  border: 1px solid transparent;
+}
+
+.result-item:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+}
+
+.result-item-thumb {
+  width: 44px;
+  height: 62px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--bg-elevated);
+  flex-shrink: 0;
+}
+
+.result-item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.result-item-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-item-meta {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.result-item-arrow {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.result-item-arrow svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ===================================================================
+   Reusable composite form controls (added with the Advanced Search
+   rework, July 2026).
+
+   These five blocks used to live in advanced_search.css and were
+   therefore usable on exactly one page. They are generic, they are what
+   the Advanced Search is built from, and third-party modules kept
+   re-inventing them — so they live here now, next to .chb-main, and are
+   documented in .examples/thirdparties/README.md ("Reusable UI
+   components"). forms.css is linked from base.html on every page, so a
+   module gets all of this without adding a <link> of its own.
+
+     .mf-segmented   — segmented button group (2-4 mutually exclusive modes)
+     .mf-multiselect — dropdown that checks several .chb-main options
+     .mf-token-field — text input with autocomplete + removable tokens
+     .mf-range       — themed <input type="range"> row with a value label
+     .mf-chip        — removable "active filter" chip
+     .mf-pagination  — numbered pager (first/prev/pages/next/last + jump)
+   =================================================================== */
+
+/* ---- Segmented button group ---- */
+.mf-segmented {
+  display: inline-flex;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  padding: 3px;
+  gap: 2px;
+  max-width: 100%;
+}
+
+.mf-segmented-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 7px 16px;
+  border-radius: calc(var(--radius-sm, 8px) - 3px);
+  white-space: nowrap;
+  transition: background 0.18s, color 0.18s, box-shadow 0.18s;
+  min-height: 34px;
+}
+
+/* Icon-only segmented buttons (grid/list switches and the like). An inline
+   <svg> carrying only a viewBox and no width/height attribute resolves to
+   0x0 here, which turned an active icon button into a bare accent-coloured
+   block. Flex centring plus an explicit size fixes it for every caller,
+   third-party modules included. */
+.mf-segmented-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.mf-segmented-btn svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.mf-segmented-btn:hover { color: var(--text-primary); }
+
+.mf-segmented-btn.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 10px var(--accent-glow, rgba(124, 58, 237, 0.4));
+}
+
+.mf-segmented-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- Multi-select dropdown ---- */
+.mf-multiselect {
+  position: relative;
+  width: 100%;
+}
+
+.mf-multiselect-trigger {
+  width: 100%;
+  padding: 8px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  font-family: inherit;
+  font-weight: 500;
+  text-align: left;
+  transition: border-color 0.18s, box-shadow 0.18s;
+  min-height: 40px;
+  box-sizing: border-box;
+}
+
+.mf-multiselect-trigger:hover { border-color: var(--accent); }
+
+.mf-multiselect-trigger svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.mf-multiselect-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-multiselect.is-open .mf-multiselect-trigger {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft, rgba(124, 58, 237, 0.18));
+}
+
+.mf-multiselect.is-open .mf-multiselect-trigger svg { transform: rotate(180deg); }
+
+.mf-multiselect-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 100%;
+  min-width: 220px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+  z-index: 100;
+  max-height: 280px;
+  overflow-y: auto;
+  display: none;
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+.mf-multiselect.is-open .mf-multiselect-dropdown { display: block; }
+
+.mf-multiselect-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: background 0.18s, color 0.18s;
+  font-size: 0.88rem;
+  gap: 10px;
+  user-select: none;
+  min-height: 40px;
+  box-sizing: border-box;
+}
+
+.mf-multiselect-item:hover {
+  background: var(--accent-soft, rgba(124, 58, 237, 0.18));
+  color: var(--text-primary);
+}
+
+.mf-multiselect-item > span {
+  flex: 1;
+  pointer-events: none;
+}
+
+/* A short qualifier after an entry's name ("(video track)"), for when picking
+   it does something materially different from picking its neighbours. */
+.mf-multiselect-note {
+  font-style: normal;
+  font-size: 0.78em;
+  color: var(--text-muted);
+}
+
+.mf-multiselect-empty {
+  padding: 10px 12px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+/* ---- Token field (autocomplete + removable tokens) ---- */
+.mf-token-field { position: relative; }
+
+.mf-token-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.88rem;
+  transition: border-color 0.18s, box-shadow 0.18s;
+  min-height: 40px;
+}
+
+.mf-token-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft, rgba(124, 58, 237, 0.15));
+}
+
+.mf-token-suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  z-index: 30;
+  max-height: 220px;
+  overflow-y: auto;
+  display: none;
+}
+
+.mf-token-suggestions.is-open { display: block; }
+
+.mf-token-suggestion {
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  transition: background 0.18s, color 0.18s;
+}
+
+.mf-token-suggestion:hover,
+.mf-token-suggestion.is-active {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.mf-token-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.mf-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  max-width: 100%;
+}
+
+.mf-token > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-token-remove {
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.18s;
+  display: inline-flex;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+}
+
+.mf-token-remove:hover { opacity: 1; }
+
+/* ---- Range slider row ---- */
+.mf-range-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mf-range-value {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.mf-range {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+}
+
+.mf-range input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-elevated, #252836);
+  outline: none;
+  transition: background 0.18s;
+}
+
+.mf-range input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent, #7c3aed);
+  cursor: pointer;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 10px rgba(124, 58, 237, 0.6);
+  transition: transform 0.15s ease;
+}
+
+.mf-range input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent, #7c3aed);
+  cursor: pointer;
+  border: 2px solid #ffffff;
+}
+
+.mf-range input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+
+.mf-range input[type="range"]:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-soft, rgba(124, 58, 237, 0.25));
+}
+
+/* ---- Removable filter chip ---- */
+.mf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 12px;
+  background: var(--accent-soft, rgba(124, 58, 237, 0.18));
+  border: 1px solid rgba(124, 58, 237, 0.35);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  max-width: 100%;
+}
+
+.mf-chip.mf-chip-static { padding-right: 12px; }
+
+.mf-chip > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-chip-remove {
+  cursor: pointer;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  font-size: 0.8rem;
+  line-height: 1;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.mf-chip-remove:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.25);
+}
+
+/* ---- Numbered pagination ---- */
+.mf-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mf-pagination-btn,
+.mf-pagination-page {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 40px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s, border-color 0.18s;
+}
+
+.mf-pagination-btn svg { width: 16px; height: 16px; }
+
+.mf-pagination-btn:hover:not(:disabled),
+.mf-pagination-page:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.mf-pagination-btn:disabled,
+.mf-pagination-page:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.mf-pagination-page.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  cursor: default;
+}
+
+.mf-pagination-ellipsis {
+  min-width: 24px;
+  text-align: center;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.mf-pagination-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.mf-pagination-jump input {
+  width: 64px;
+  height: 40px;
+  padding: 0 8px;
+  text-align: center;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+
+.mf-pagination-jump input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft, rgba(124, 58, 237, 0.15));
+}
+
+@media (max-width: 640px) {
+  /* Keep the pager usable on a phone: the numbers wrap, the jump box moves
+     onto its own line instead of squeezing the buttons. */
+  .mf-pagination-jump {
+    margin-left: 0;
+    width: 100%;
+    justify-content: center;
+    margin-top: 4px;
+  }
+  .mf-pagination-btn,
+  .mf-pagination-page {
+    min-width: 40px;
+    padding: 0 8px;
+  }
+}
+
+/* A radio wearing .chb-main. The class resets the native control and draws a
+   square box, which is right for a checkbox and wrong for a radio: a square
+   in a group where only one option can win reads as "tick several". Same
+   size, same states, round. Used by the Auto-Sync default column in
+   Settings -> Downloads. */
+input[type="radio"].chb-main { border-radius: 50%; }
+
+input[type="radio"].chb-main:checked::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: currentColor;
+}

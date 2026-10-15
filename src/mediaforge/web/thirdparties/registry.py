@@ -1,0 +1,2297 @@
+"""Shared registry third-party integrations use to plug into MediaForge's UI
+without any other file needing to change. Several independent axes, all
+optional and all fully dynamic:
+
+1. Sidebar placement -- a link under one of the existing sidebar categories
+   (Discover, Management, System). See ``section`` below and
+   :func:`resolve_menu_items`.
+2. Settings placement -- a card on one of the existing tabbed/pilled settings
+   pages (Integrations, Notifications). A card can either be appended into
+   an *existing* tab/pill (e.g. Integrations' "Third Party" tab, or
+   Notifications' "Discord" pill) or, if ``settings_tab`` names something
+   that page doesn't already render by hand, a brand-new tab/pill is
+   created for it automatically. See ``settings_host``/``settings_tab``
+   below and :func:`resolve_settings_cards` / :func:`resolve_dynamic_tabs`.
+3. Dashboard placement -- a widget on the home page. See
+   ``dashboard_widget_template`` below and :func:`resolve_dashboard_widgets`.
+4. Provider pills -- a small colored badge in the detail modal / browse
+   cards (the same slot Crunchyroll's and Fernsehserien.de's pills use).
+   See ``provider_pill_script`` below and
+   :func:`resolve_provider_pill_scripts`.
+5. Load/relative order -- ``priority`` and ``DEPENDS_ON`` (the latter read
+   directly off a thirdparty's ``__init__.py`` module by
+   ``web/thirdparties/__init__.py``, not through this function).
+6. Module metadata -- four more module-level constants
+   (``MODULE_NAME``/``MODULE_DESCRIPTION``/``MODULE_AUTHOR``/
+   ``MODULE_ENABLED_DEFAULT``), also read directly off ``__init__.py`` like
+   ``DEPENDS_ON``, purely descriptive plus one shipped default. They power
+   the admin Modulmanager page (:func:`resolve_extensions_overview`) and,
+   for ``MODULE_ENABLED_DEFAULT``, the one-time initial value of a newly
+   installed module's enable toggle (:func:`seed_default_enabled`).
+7. Version & store metadata -- ``MODULE_VERSION`` plus the compatibility
+   range (``MODULE_MIN_APP_VERSION`` / ``MODULE_MAX_APP_VERSION``) and the
+   future module store's identity fields (``MODULE_ID`` / ``MODULE_HOMEPAGE``
+   / ``MODULE_LICENSE``), read off ``__init__.py`` exactly like the metadata
+   above. The version is shown as a badge on the Modulmanager page next to
+   the module name; the compatibility range is checked against MediaForge's
+   own version at discovery time (:func:`check_app_compatibility`), and a
+   module declaring a range the running app falls outside of is skipped with
+   that reason instead of being registered -- see
+   ``web/thirdparties/__init__.py``'s ``_register_modules()``.
+
+An integration needs none of these axes -- a background-job-only
+integration can register with no ``endpoint`` and no card content beyond
+the master toggle, or skip registration entirely and just call
+``register(app)``'s ``app.register_blueprint(bp)``.
+
+A thirdparty's own ``__init__.py`` calls :func:`register_thirdparty` once,
+from its ``register(app)`` function -- see
+``web/thirdparties/anime_seasons/__init__.py`` for a full worked example.
+That single call is enough for every integration point: nothing in app.py,
+base.html, integrations.html, notifications.html or index.html needs to be
+touched to add a new one.
+
+``web/thirdparties/__init__.py``'s ``discover_and_register()`` also feeds
+:func:`record_module_status` for every discovered folder (not just ones
+that successfully call :func:`register_thirdparty`), so the admin
+Extensions overview page (:func:`resolve_extensions_overview`,
+``routes/extensions.py``) can show broken/skipped integrations too.
+"""
+
+import inspect
+import logging
+from importlib import import_module
+import threading
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+_ITEMS = []
+
+# Per-folder load status, keyed by thirdparties/<name>/ folder name -- see
+# record_module_status()'s docstring. Separate from _ITEMS because a folder
+# can fail before ever calling register_thirdparty() (import error, no
+# register(app), unmet DEPENDS_ON, ...), and the overview page wants to
+# show those failures too.
+_MODULES = {}
+
+# The sidebar categories a registered item's link can appear under -- see
+# base.html's "Discover" / "Management" / "SyncPlay" / "System" blocks. Kept
+# as a fixed set (rather than letting a plugin invent a brand-new sidebar
+# category) so the sidebar's overall shape stays predictable; settings
+# placement (below) is where free-form "new tab" dynamism lives instead.
+# "syncplay" entries only ever render while syncplay_enabled is on (see
+# base.html) — same as the built-in SyncPlay link itself.
+# "library" is where a module hangs a shelf of its own next to the built-in
+# ones (see web/media_kinds.py). It renders inside the sidebar's Library
+# sub-menu rather than as another top-level entry, so a manga or comic
+# module lands where a user already looks for that media.
+_SECTIONS = ("discover", "management", "syncplay", "system", "library")
+
+# Tab/pill ids each settings host already renders by hand in its own
+# template. A registered item whose settings_tab matches one of these is
+# appended into that existing tab/pill's panel (e.g. adding a card to
+# Integrations' "uptime" tab, or to Notifications' "discord" pill). A
+# settings_tab that matches neither is a request for a brand-new tab/pill,
+# which resolve_dynamic_tabs() surfaces so the template can render it.
+_KNOWN_TABS = {
+    "integrations": ("seerr", "mediaplayer", "cineinfo", "thirdparty", "syncplay", "uptime"),
+    "notifications": ("webpush", "telegram", "pushover", "ntfy", "discord", "whatsapp", "storage"),
+    "settings": ("overview", "general", "design", "sources", "downloads", "autosync", "network", "auth", "api", "privacy", "backup", "updates"),
+    # Monitoring has no hand-written tab a module could attach to: its four
+    # panels (overview/stats/history/uptime) are the page itself. A module here
+    # always gets a tab of its own -- see _placed_tab().
+    "monitoring": ("overview", "stats", "history", "uptime"),
+}
+
+# Where a module may ask for its settings to live.
+_SETTINGS_HOSTS = tuple(_KNOWN_TABS)
+
+# register_thirdparty()'s own settings_tab default. Named because _placed_tab()
+# has to tell "the module chose this tab" apart from "the module never thought
+# about placement", and those two want different answers.
+_DEFAULT_SETTINGS_TAB = "thirdparty"
+
+# One rule per host for *where on that host* a module's card ends up. This is
+# policy, not preference: a card that can land anywhere is a card you have to
+# hunt for, and "which tab did that module choose?" is not a question a user
+# should have to ask.
+#
+#   integrations  -> the Module Settings page under the Module Manager, same
+#                    as "settings". The Integrations page no longer renders
+#                    module cards at all: a module is installed, updated and
+#                    removed in the Module Manager, and having its settings
+#                    live somewhere else meant two pages to check and one to
+#                    forget. settings_tab is still normalised to "thirdparty"
+#                    (and still ignored) so nothing that reads the stored value
+#                    -- the Modulmanager's capability list, older tests --
+#                    trips over a host/tab pair it has never seen.
+#   notifications -> always a tab of its own, never appended to a built-in
+#                    channel's panel. Telegram's tab is Telegram's.
+#   monitoring    -> same, a tab of its own.
+#   settings      -> the Module Settings page under the Module Manager, which
+#                    ignores settings_tab entirely (resolve_module_settings()).
+#                    Kept as given so a module can still group its own tabs.
+_FORCED_TABS = {"integrations": "thirdparty"}
+_OWN_TAB_HOSTS = ("notifications", "monitoring")
+
+
+def _placed_tab(host, tab, item_id):
+    """The settings_tab a module actually gets on *host*, per the rules above.
+
+    Never raises: a module that asks for the "wrong" tab is not broken, it is
+    simply placed where that host puts modules. Raising would take a working
+    installation down over a cosmetic question.
+    """
+    forced = _FORCED_TABS.get(host)
+    if forced:
+        if tab and tab != forced:
+            logger.debug("[Registry] %s: settings_tab %r ignored, %s always uses %r",
+                         item_id, tab, host, forced)
+        return forced
+    if host in _OWN_TAB_HOSTS:
+        # A built-in channel's tab belongs to that channel. The *default* tab
+        # id is no better: it is what every module that never thought about
+        # placement carries, so honouring it would herd unrelated modules onto
+        # one shared tab. Either way the module gets a tab of its own, named
+        # after it. A genuinely custom id is kept, so one module can still
+        # group several of its own items on one tab.
+        if not tab or tab == _DEFAULT_SETTINGS_TAB or tab in _KNOWN_TABS.get(host, ()):
+            logger.debug("[Registry] %s: settings_tab %r not usable on %s, using an own tab",
+                         item_id, tab, host)
+            return "module_%s" % item_id
+    return tab
+
+
+# Field types _build_card()/the settings-card macro/the generic PUT route
+# understand for extra_settings entries. "toggle" is the original (and
+# still default) boolean checkbox; the rest render as a labelled input of
+# the matching HTML type plus a small inline Save button.
+_FIELD_TYPES = ("toggle", "text", "number", "secret", "select")
+
+# What the generic GET route returns in place of a "secret" field's actual
+# value, and the value the generic PUT route treats as "unchanged, keep what
+# is stored" (see register_generic_settings_routes). The point is that a
+# stored token/API key is never sent back to the browser at all -- the input
+# is a type="password" field, so its plaintext value was previously sitting in
+# the DOM of every admin page that rendered the card, readable by any script
+# on it. An empty string is still a real value (it clears the setting), so the
+# mask has to be a distinct sentinel rather than "".
+SECRET_MASK = "•" * 8
+
+# Access levels register_thirdparty's auth_required accepts -- just "admin"
+# for now (the app only distinguishes logged-in-user vs admin, see
+# auth.py's login_required/admin_required); None (the default) means no
+# stricter check than "logged in", same as any other page.
+_AUTH_LEVELS = ("admin",)
+
+# Generic placeholder icon for an auto-created tab/pill button when the
+# registering integration doesn't supply its own (settings_tab_icon_svg).
+# Only used by notifications.html's pill row; integrations.html's tab
+# buttons are plain text and don't render an icon at all.
+_DEFAULT_TAB_ICON_SVG = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+    'stroke-linecap="round" stroke-linejoin="round">'
+    '<rect x="7" y="7" width="10" height="10" rx="2"></rect>'
+    '<path d="M9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4"></path>'
+    '</svg>'
+)
+
+# Shown as a module's version badge on the Modulmanager page when it declares
+# no MODULE_VERSION at all -- every module predating the constant, and any
+# module whose author simply didn't bother, still renders a well-formed badge
+# instead of an empty gap.
+_UNKNOWN_VERSION = "0.0.0"
+
+# Version of the contract THIS file exposes to modules: register_thirdparty()'s
+# parameters, the recognized extra_settings field types, the lifecycle hooks
+# web/thirdparties/__init__.py calls, and the module-level MODULE_* constants
+# it reads. A module declares the API version it was written against as
+# MODULE_API_VERSION; see check_api_compatibility() for what happens when the
+# two don't line up.
+#
+# Deliberately separate from MediaForge's own version (see app_version()):
+# MediaForge can go to 2.0 for reasons that have nothing to do with modules,
+# and a module pinning MODULE_MAX_APP_VERSION out of caution would then have
+# to be re-released for no reason. Bumping *this* number is a deliberate act
+# that means exactly one thing -- "the module contract changed in a way older
+# modules can't be assumed to survive" -- so it's the number a module should
+# actually be pinning against. Bump it only for breaking changes; a purely
+# additive one (a new optional parameter, a new MODULE_* constant a module can
+# ignore) doesn't need it.
+REGISTRY_API_VERSION = 1
+
+# Prefix every setting a module owns lives under -- see module_setting_key().
+_MODULE_SETTING_PREFIX = "module:"
+
+# Key (under a module's own namespace) where the version last seen installed is
+# recorded, so the next start can tell a fresh install from an upgrade from an
+# unchanged module and fire the right lifecycle hook. Double underscore so it
+# can't collide with a setting key a module itself declares.
+_INSTALLED_VERSION_KEY = "__installed_version"
+
+
+def app_version():
+    """MediaForge's own version, as a plain comparable string ("1.1.0").
+
+    Deliberately the *base* version from package metadata rather than
+    version_info._get_display_version(): the latter appends a
+    "-dev+<sha>" suffix on git installs, which parses as a
+    pre-release/local version and would make a dev checkout of 1.1.0 count
+    as *older* than 1.1.0 for a module declaring
+    MODULE_MIN_APP_VERSION = "1.1.0" -- i.e. every dev install would refuse
+    to load modules that work perfectly well on it. The display version is
+    still what the Modulmanager page *shows* (see base.html's app_version);
+    this one is only ever used for the compatibility comparison.
+
+    Returns "" when the package isn't installed (running straight from a
+    source tree without an install), which check_app_compatibility() treats
+    as "can't tell, don't block".
+    """
+    from ..version_info import _get_version
+
+    return _get_version()
+
+
+def check_app_compatibility(min_app_version=None, max_app_version=None):
+    """Return None if the running MediaForge satisfies a module's declared
+    compatibility range, or a human-readable reason string if it doesn't.
+
+    Both bounds are optional and inclusive: MODULE_MIN_APP_VERSION = "1.1.0"
+    means "needs 1.1.0 or newer", MODULE_MAX_APP_VERSION = "1.9.9" means
+    "not tested past 1.9.9". A module declaring neither (i.e. every module
+    that existed before this constant did) is always compatible.
+
+    Anything that can't be compared cleanly -- no installed version to check
+    against, or a bound that isn't a valid version string -- is treated as
+    compatible rather than as a failure: a typo'd bound in one module must
+    not be able to keep that module (or, worse, its dependents) from loading
+    on an otherwise fine app. The mismatch is still visible in the log via
+    the caller.
+
+    The MIN bound is skipped entirely on a dev/source build (see
+    ``version_info.is_dev_or_source_build``): ``app_version()`` reads the
+    base package version, which on such a build stays pinned at the last
+    release tag until the next one is cut, so it would otherwise always look
+    "too old" for a MODULE_MIN_APP_VERSION written against that upcoming
+    release -- a checkout tracking main/a dev branch already carries
+    whatever that release will contain. MAX stays enforced regardless: it is
+    a ceiling ("not tested past X"), and a dev/source checkout that has
+    fallen behind main is exactly the case it exists to catch.
+    """
+    if not min_app_version and not max_app_version:
+        return None
+
+    from packaging.version import InvalidVersion, Version
+
+    current_raw = app_version()
+    if not current_raw:
+        return None
+    try:
+        current = Version(current_raw)
+    except InvalidVersion:
+        return None
+
+    from ..version_info import is_dev_or_source_build
+    skip_min = bool(min_app_version) and is_dev_or_source_build()
+
+    try:
+        if min_app_version and not skip_min and current < Version(str(min_app_version)):
+            return (f"requires MediaForge >= {min_app_version} "
+                    f"(running {current_raw})")
+        if max_app_version and current > Version(str(max_app_version)):
+            return (f"requires MediaForge <= {max_app_version} "
+                    f"(running {current_raw})")
+    except InvalidVersion:
+        return None
+    return None
+
+
+def check_api_compatibility(module_api_version):
+    """Return None if this MediaForge's registry API can serve a module written
+    against `module_api_version` (its MODULE_API_VERSION), or a reason string
+    if it can't.
+
+    Only a module asking for a *newer* API than REGISTRY_API_VERSION is
+    refused: it was written against a contract this MediaForge doesn't have,
+    and calling its register(app) would mean handing it a registry missing
+    whatever it's counting on. A module written against an *older* API is
+    accepted -- that's the whole point of only bumping REGISTRY_API_VERSION on
+    breaking changes, and of every MODULE_* constant having a fallback: an API
+    1 module keeps working on an API 1 MediaForge forever, and the day API 2
+    exists it's this function's job to say so out loud rather than let it fail
+    somewhere less obvious.
+
+    A module that declares no MODULE_API_VERSION at all (None) is treated as
+    "API 1" -- i.e. every module written before this constant existed.
+    """
+    if module_api_version in (None, ""):
+        return None
+    try:
+        requested = int(module_api_version)
+    except (TypeError, ValueError):
+        return f"invalid MODULE_API_VERSION {module_api_version!r}"
+    if requested > REGISTRY_API_VERSION:
+        return (f"needs registry API v{requested}, "
+                f"this MediaForge provides v{REGISTRY_API_VERSION}")
+    return None
+
+
+def module_setting_key(module_id, key):
+    """The app_settings key a module's setting `key` should live under:
+    ``module:<module_id>:<key>``.
+
+    Modules are free to keep using flat, unnamespaced keys (anime_seasons's
+    "anime_seasons_enabled" predates this and still works -- nothing here
+    rewrites or requires anything), but a module that wants to be
+    *uninstallable* by the module store should namespace everything it stores
+    through this helper: purge_module_settings() can then remove all of it in
+    one go when the module's folder is removed, instead of leaving orphaned
+    rows in app_settings forever. Namespacing is therefore a soft requirement
+    for store-published modules and a no-op for everything else.
+    """
+    return f"{_MODULE_SETTING_PREFIX}{module_id}:{key}"
+
+
+def purge_module_settings(module_id):
+    """Delete every namespaced setting belonging to `module_id` (see
+    module_setting_key()), returning how many rows were removed.
+
+    Called when a module is uninstalled (see web/thirdparties/__init__.py's
+    apply_pending_changes()). Un-namespaced keys a module wrote directly are
+    deliberately *not* touched -- there's no way to know which flat keys were
+    a module's without it telling us, and guessing by prefix-matching the
+    folder name would risk deleting a core setting that merely starts with the
+    same word.
+    """
+    from ..db import delete_settings_by_prefix
+
+    return delete_settings_by_prefix(f"{_MODULE_SETTING_PREFIX}{module_id}:")
+
+
+def installed_version(module_id):
+    """The MODULE_VERSION last recorded as installed for this module, or None
+    if it's never been seen on this install before (a fresh install).
+
+    This is what makes on_install/on_upgrade possible without the module
+    tracking its own state: the folder on disk says which version the *code*
+    is, this says which version the *data* (settings, DB tables, caches) was
+    last written by. See web/thirdparties/__init__.py's _run_lifecycle_hooks().
+    """
+    from ..db import get_setting
+
+    return get_setting(module_setting_key(module_id, _INSTALLED_VERSION_KEY), None)
+
+
+def record_installed_version(module_id, version):
+    """Persist `version` as the installed version of `module_id` -- called
+    right after a successful on_install/on_upgrade hook (or right after a
+    successful register(app) for a module with no hooks), so the next start
+    sees an unchanged module and fires nothing.
+    """
+    from ..db import set_setting
+
+    set_setting(module_setting_key(module_id, _INSTALLED_VERSION_KEY), str(version or ""))
+
+
+def module_data_dir(module_id, create=True):
+    """The one directory a module may write to:
+    ``~/.mediaforge/module_data/<module_id>/``.
+
+    A module's own folder is NOT a place to write. Two things make that a trap,
+    and both have already bitten:
+
+    * It is what the module's signature is computed over
+      (``signing.content_hash``) -- a cache, a downloaded file, a vendored
+      dependency dropped in there makes the module "modified" and drops it to
+      unverified, by running normally.
+    * The store replaces a module on upgrade by deleting the folder
+      (``store._unpack``'s rmtree) and unpacking the new one. Anything the
+      module put in there is gone on every update.
+
+    This directory has neither problem: outside every module folder, so it can't
+    touch a signature, and untouched by installs and upgrades. It survives an
+    upgrade on purpose -- it's the module's data, not its code. It is removed
+    only when the module is uninstalled (see purge_module_data()).
+
+    Namespaced by MODULE_ID rather than folder name, so a module keeps its data
+    across a folder rename, exactly like its settings (module_setting_key()).
+    """
+    from ...config import MEDIAFORGE_CONFIG_DIR
+
+    path = Path(MEDIAFORGE_CONFIG_DIR) / "module_data" / str(module_id)
+    if create:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            logger.exception("[Registry] Could not create module data dir %s", path)
+    return path
+
+
+def purge_module_data(module_id) -> bool:
+    """Delete a module's data directory -- called on uninstall, alongside
+    purge_module_settings(). Returns True if something was removed.
+
+    Uninstall is the only thing that removes it: an *upgrade* deliberately keeps
+    it (that is the entire difference between this directory and the module
+    folder), and a disabled module keeps its data so re-enabling it doesn't mean
+    starting from scratch.
+    """
+    import shutil
+
+    path = module_data_dir(module_id, create=False)
+    if not path.exists():
+        return False
+    try:
+        shutil.rmtree(path)
+        logger.info("[Registry] Removed module data dir %s", path)
+        return True
+    except Exception:
+        logger.warning("[Registry] Could not remove module data dir %s", path, exc_info=True)
+        return False
+
+
+def register_thirdparty(*, item_id, label, endpoint=None, icon_svg=None,
+                         enabled_setting_key, badges=None, description="",
+                         enable_label=None, enable_desc="",
+                         page_id=None, extra_settings=None,
+                         sensitive_settings=None, admin_endpoints=None,
+                         section="discover",
+                         settings_host="integrations", settings_tab=_DEFAULT_SETTINGS_TAB,
+                         settings_tab_label=None,
+                         settings_tab_icon_svg=None,
+                         overview_description=None,
+                         overview_icon_svg=None,
+                         priority=0,
+                         dashboard_widget_template=None,
+                         provider_pill_script=None,
+                         requires_enabled=None,
+                         auth_required=None,
+                         blueprint=None):
+    """Register (or replace) a third-party integration.
+
+    - item_id: unique key; re-registering the same id replaces it instead of
+      duplicating it (safe under the debug reloader).
+    - label: English source string for the sidebar link / card title,
+      translated at render time via flask_babel.gettext (same catalog as
+      the Jinja _() calls).
+    - endpoint / icon_svg: Flask endpoint name (blueprint-qualified, e.g.
+      "anime_seasons.anime_seasons_page") and raw <svg>...</svg> markup
+      (stroke="currentColor" so it inherits the sidebar's icon color) for
+      the sidebar link. Both optional together -- omit both for an
+      integration that has no page of its own (e.g. a settings-only
+      extension, such as an extra notification channel). Supplying only one
+      of the two raises ValueError.
+    - enabled_setting_key: app_settings key gating the sidebar link, the
+      dashboard widget, the provider-pill script and (indirectly) whatever
+      the integration's own routes check.
+    - badges: list of (text, css_color) tuples shown as small pills on the
+      settings card header, e.g. [("Jikan", "#2e51a2"), ("Menu", "#7c3aed")].
+    - description: hint text shown at the top of the settings card.
+    - enable_label / enable_desc: label/description for the card's enable
+      toggle row. enable_label defaults to "Enable {label}".
+    - page_id: value for the sidebar-link's data-page attribute (used to
+      highlight the active link). Defaults to item_id.
+    - extra_settings: optional list of additional setting rows shown below
+      the master enable toggle, e.g.
+      [{"key": "anime_seasons_show_adult", "label": "Show adult content",
+      "description": "...", "type": "toggle", "default": "0"}]. Each dict
+      needs "key" (the app_settings key this field reads/writes) and
+      "label"; "description" is optional. "type" defaults to "toggle" (a
+      checkbox) and can also be:
+        * "text" / "secret" -- a single-line input ("secret" renders as
+          type="password", for API keys/tokens). "placeholder" optional.
+          A "secret" field is additionally treated as a *sensitive* setting:
+          its value is stored encrypted (db.register_sensitive_keys(), same
+          encryption the core's own API keys/tokens use) and is never sent
+          back to the browser -- the generic GET route returns SECRET_MASK
+          once a value is set, and a PUT carrying that mask back is taken to
+          mean "unchanged" (send "" to clear the value).
+        * "number" -- an input[type=number]. "placeholder" optional.
+        * "select" -- a dropdown. Requires "options": a list of
+          (value, label) tuples (or plain strings, used as both).
+      "default" is the field's initial value if unset ("0"/"1" for
+      "toggle", "" otherwise unless given). All types are read and saved
+      generically by the same GET/PUT /api/settings/thirdparty/<item_id>
+      pair the master toggle uses (see register_generic_settings_routes) --
+      no per-integration route needed. An integration that needs something
+      even the "select"/"text" types can't express (a test-connection
+      button, dynamic option lists, ...) should still add its own routes
+      instead.
+    - sensitive_settings: optional list of *further* setting keys whose values
+      must be stored encrypted, on top of every extra_settings field of type
+      "secret" (which is registered as sensitive automatically). For a secret
+      the module manages itself and never renders as a card field -- an OAuth
+      refresh token, a session cookie. Full app_settings keys, so namespace
+      them like everything else:
+      sensitive_settings=(module_setting_key(MODULE_ID, "refresh_token"),).
+      Equivalent to the module-level MODULE_SENSITIVE_SETTINGS constant (see
+      web/thirdparties/__init__.py); use whichever is closer to hand.
+    - admin_endpoints: optional list of endpoint names that require the admin
+      role, for a Blueprint whose routes are NOT uniformly admin-only.
+      auth_required="admin" (below) is blueprint-wide, all-or-nothing: a module
+      where any logged-in user may read but only an admin may write has to
+      guard the write routes by hand -- and forgets exactly one of them, which
+      is how a non-admin ended up able to write global settings once already.
+      This is the per-route version: name the endpoints, in either
+      "blueprint.view" or plain "view" form (the blueprint is inferred from
+      this item's own), e.g.
+      admin_endpoints=("my_module.api_settings_put", "api_purge").
+      A route can equally well carry the exported @module_admin_required
+      decorator itself (see below) -- both end up in the same place, app.py's
+      wrapping pass, so use whichever reads better. The two compose: an
+      endpoint named here AND decorated is simply admin-only once.
+    - section: which sidebar category the link (if any) appears under --
+      one of "discover" (default), "management", "syncplay", "system" or
+      "library" (renders inside the Library sub-menu),
+      matching base.html's sidebar categories. A "syncplay" entry only ever
+      renders while SyncPlay itself is enabled (same gating as the built-in
+      SyncPlay link). Ignored if endpoint/icon_svg aren't set (no link to
+      place).
+    - settings_host: which page the settings card is shown on -- one of
+      _SETTINGS_HOSTS: "integrations" (default), "notifications",
+      "monitoring" or "settings". An unknown host raises.
+    - settings_tab: tab/pill id within settings_host. **Where the card ends
+      up is the host's decision, not the module's** -- see _placed_tab()
+      above for the rules and the reasoning. In short:
+        * "integrations" -> always the "Third Party" tab; settings_tab is
+          ignored (silently: a module written for the old behaviour keeps
+          working, its card just moves to where users look for it).
+        * "notifications" / "monitoring" -> always a tab of its own. A
+          built-in channel's id, or the default, gets replaced by
+          "module_<item_id>"; a genuinely custom id is kept, so one module
+          can group several of its own items on one tab.
+        * "settings" -> the Module Settings page under the Module Manager,
+          which ignores settings_tab entirely (resolve_module_settings()).
+      The value stored on the item is the *placed* one, so everything
+      downstream (resolve_settings_cards, resolve_dynamic_tabs) sees where
+      the card really is.
+    - settings_tab_label / settings_tab_icon_svg: label and (notifications
+      pill only) icon for the tab/pill button when settings_tab creates a
+      *new* tab/pill.
+      settings_tab_label defaults to label; settings_tab_icon_svg defaults
+      to a generic placeholder icon.
+    - overview_description / overview_icon_svg: description text and icon
+      shown on the module's tile in the Integrations/Settings *overview*
+      grid, and the icon used for its sub-menu/overview entry (the new
+      sub-menu + overview surface replaced the old tab bar). Both only
+      apply when settings_tab creates a *new* tab (a dynamic module tab,
+      see resolve_dynamic_tabs()). overview_description defaults to
+      description; overview_icon_svg defaults to settings_tab_icon_svg (and
+      then to the generic placeholder icon).
+    - priority: sort key (lower = earlier/higher up) used to order this
+      item relative to *other registered items* within the same sidebar
+      section, settings tab, or set of brand-new tabs/dashboard widgets.
+      Never reorders anything relative to MediaForge's own built-in
+      entries -- those always come first, registered items are always
+      appended after them in priority order. Defaults to 0; items with
+      equal priority keep their (dependency-resolved) registration order.
+    - dashboard_widget_template: optional Jinja template name/path
+      rendered as a widget on the home page (index.html), via
+      {% include %} -- e.g. a template from this integration's own
+      Blueprint template_folder. Only shown while enabled_setting_key is
+      "1". See :func:`resolve_dashboard_widgets`.
+      The widget is positioned on the same draggable/resizable Dashboard
+      board (home_panels.js) as MediaForge's own built-in cards and
+      register_home_panel() panels -- it gets a real .dash-card wrapper
+      with a header built from this item's label/icon_svg, and the grid
+      engine places/moves/resizes/hides it exactly like any other card.
+      Unlike register_home_panel(), it does NOT support multiple
+      instances: the template is included once, server-side, per page
+      load, and there is no live re-render path for its opaque markup.
+    - provider_pill_script: optional static URL (e.g. built with
+      url_for('your_blueprint.static', filename='pill.js')) to a small
+      JS file that self-registers a provider-pill resolver via the global
+      registerProviderPill(name, resolverFn) (see base.html / app.js).
+      Included as a <script> on every page while enabled_setting_key is
+      "1". See :func:`resolve_provider_pill_scripts`.
+    - requires_enabled: optional tuple of *other* registered item_ids this
+      one needs switched on to actually work, e.g.
+      requires_enabled=("mediacalendar",) for a module that reads Media
+      Kalender's data. Unlike DEPENDS_ON (web/thirdparties/__init__.py's
+      module-level constant, checked once at startup against whether the
+      other folder's register(app) succeeded at all), this is a live,
+      per-request check against the dependency's *current* enabled_setting_key*
+      toggle state -- see :func:`dependencies_satisfied`. resolve_menu_items()
+      already calls it (an item whose requires_enabled isn't currently met
+      simply doesn't show a sidebar link, same as if its own toggle were
+      off), and a module's own routes should call
+      ``registry.dependencies_satisfied(item_id)`` alongside their own
+      enabled check for the same reason -- e.g. a page route that should
+      404/redirect if a dependency got switched off after the page's own
+      toggle was turned on.
+    - auth_required: optional access level for every route this
+      integration's own Blueprint registers -- None (default, same as any
+      other logged-in page), or "admin" to require the admin role, mirroring
+      app.py's hardcoded _admin_only set but declaratively instead of
+      needing an entry added there by hand. Matched by blueprint name (the
+      part of a Flask endpoint before the dot), not by item_id, since one
+      folder's Blueprint can register several routes beyond the single
+      sidebar `endpoint` tracked here -- see
+      :func:`admin_required_blueprints`.
+    - blueprint: the Blueprint name auth_required should apply to. Defaults
+      to endpoint's own blueprint (endpoint.split(".")[0]) when endpoint is
+      set -- only needed explicitly for a settings-only integration that
+      has no sidebar endpoint/icon_svg but still registers its own
+      Blueprint/routes elsewhere.
+    """
+    if section not in _SECTIONS:
+        raise ValueError(f"register_thirdparty: unknown section {section!r}, must be one of {_SECTIONS}")
+    if settings_host not in _SETTINGS_HOSTS:
+        raise ValueError(
+            f"register_thirdparty: unknown settings_host {settings_host!r}, "
+            f"must be one of {_SETTINGS_HOSTS}")
+    settings_tab = _placed_tab(settings_host, settings_tab, item_id)
+    if bool(endpoint) != bool(icon_svg):
+        raise ValueError("register_thirdparty: endpoint and icon_svg must both be set or both omitted")
+    if auth_required is not None and auth_required not in _AUTH_LEVELS:
+        raise ValueError(
+            f"register_thirdparty: unknown auth_required {auth_required!r}, must be one of {_AUTH_LEVELS} or None")
+    resolved_blueprint = blueprint or (endpoint.split(".")[0] if endpoint else None)
+    if auth_required and not resolved_blueprint:
+        raise ValueError(
+            "register_thirdparty: auth_required needs a blueprint -- either endpoint/icon_svg "
+            "(blueprint inferred from it) or an explicit blueprint= name")
+
+    normalized_extra = []
+    for setting in extra_settings or []:
+        field_type = setting.get("type", "toggle")
+        if field_type not in _FIELD_TYPES:
+            raise ValueError(
+                f"register_thirdparty: extra_settings[{setting.get('key')!r}] has unknown "
+                f"type {field_type!r}, must be one of {_FIELD_TYPES}")
+        if field_type == "select" and not setting.get("options"):
+            raise ValueError(
+                f"register_thirdparty: extra_settings[{setting.get('key')!r}] is type='select' "
+                "but has no 'options'")
+        normalized = dict(setting)
+        normalized["type"] = field_type
+        normalized.setdefault("default", "0" if field_type == "toggle" else "")
+        normalized["options"] = [
+            (o, o) if isinstance(o, str) else (o[0], o[1])
+            for o in setting.get("options", [])
+        ]
+        normalized_extra.append(normalized)
+
+    # Every "secret" field is a sensitive setting by definition -- register it
+    # so db.set_setting() encrypts it at rest instead of storing an API
+    # key/token in plaintext in app_settings, and so any value already stored
+    # in plaintext (from before this module declared the field, or from before
+    # this mechanism existed) gets encrypted right now. This is what makes a
+    # module's own token as safe as a core one (notif_telegram_bot_token &
+    # co., db.SENSITIVE_KEYS) without a core release per module.
+    #
+    # A module with a secret it does NOT expose as an extra_settings field
+    # (something it stores itself, with no settings-card row) can name those
+    # keys in MODULE_SENSITIVE_SETTINGS instead -- see
+    # web/thirdparties/__init__.py.
+    secret_keys = [s["key"] for s in normalized_extra
+                   if s["type"] == "secret" and s.get("key")]
+    secret_keys += [str(k) for k in (sensitive_settings or ()) if k]
+    if secret_keys:
+        try:
+            from ..db import register_sensitive_keys
+
+            register_sensitive_keys(secret_keys)
+        except Exception:
+            # Never let this fail a registration: the field still works, it
+            # just stays in plaintext -- exactly the pre-existing behaviour.
+            logger.warning(
+                "[Registry] Could not mark secret field(s) of '%s' as sensitive: %s",
+                item_id, ", ".join(secret_keys), exc_info=True)
+
+    # Endpoint names are blueprint-qualified once Flask has them
+    # ("my_module.api_save"), so a module naming a bare view function gets it
+    # qualified with its own blueprint here -- writing the prefix out is
+    # boilerplate, and getting it wrong would silently mean "no admin check".
+    normalized_admin_endpoints = tuple(
+        e if "." in e else (f"{resolved_blueprint}.{e}" if resolved_blueprint else e)
+        for e in (str(x) for x in (admin_endpoints or ()))
+    )
+
+    global _ITEMS
+    _ITEMS = [i for i in _ITEMS if i["id"] != item_id]
+    _ITEMS.append({
+        "id": item_id,
+        "label": label,
+        "endpoint": endpoint,
+        "icon_svg": icon_svg,
+        "enabled_setting_key": enabled_setting_key,
+        "badges": list(badges or []),
+        "description": description,
+        "enable_label": enable_label or f"Enable {label}",
+        "enable_desc": enable_desc,
+        "page_id": page_id or item_id,
+        "extra_settings": normalized_extra,
+        "section": section,
+        "settings_host": settings_host,
+        "settings_tab": settings_tab,
+        "settings_tab_label": settings_tab_label or label,
+        "settings_tab_icon_svg": settings_tab_icon_svg or _DEFAULT_TAB_ICON_SVG,
+        # Info fields for the sub-menu + overview surface (see resolve_dynamic_tabs()).
+        "overview_description": overview_description or description or "",
+        "overview_icon_svg": overview_icon_svg or settings_tab_icon_svg or _DEFAULT_TAB_ICON_SVG,
+        "priority": priority,
+        "dashboard_widget_template": dashboard_widget_template,
+        "provider_pill_script": provider_pill_script,
+        "requires_enabled": tuple(requires_enabled or ()),
+        "auth_required": auth_required,
+        "admin_endpoints": normalized_admin_endpoints,
+        "blueprint": resolved_blueprint,
+    })
+
+
+def get_thirdparty(item_id):
+    for item in _ITEMS:
+        if item["id"] == item_id:
+            return item
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Notification channels & lifecycle event hooks
+# ---------------------------------------------------------------------------
+# Two related, but distinct, extension points a module can use from its own
+# register(app) -- neither requires app.py, notifications.py's notify_all()
+# call sites, or any built-in notification pill to change:
+#
+#   * register_notification_channel -- "I am another place to send the same
+#     title/body MediaForge already sends to WebPush/Telegram/Discord/...".
+#     notify_all() calls every registered channel exactly like its six
+#     built-in ones (own try/except, one channel's failure never blocks
+#     another).
+#   * register_event_hook -- "run my own code when this event happens",
+#     for anything that isn't itself a notification (auto-tagging, kicking
+#     off an external automation, ...). Same events notify_all() already
+#     knows about: on_completed, on_errors, on_cancelled, on_autosync,
+#     on_sync_hold, on_sync_resume (see web/notifications.py's module
+#     docstring for the authoritative list).
+#
+# Both are fired from web/notifications.py's notify_all(), so anything that
+# already triggers a notification (queue_worker.py, autosync_worker.py)
+# reaches modules for free -- no separate wiring per call site.
+_NOTIFICATION_CHANNELS = {}  # item_id -> send_fn
+_EVENT_HOOKS = {}  # event -> {item_id: callback}
+
+
+def register_notification_channel(item_id, send_fn) -> None:
+    """Register *send_fn* as another notification channel, fired by
+    ``web/notifications.py``'s ``notify_all()`` alongside WebPush/Telegram/
+    Pushover/ntfy/WhatsApp/Discord.
+
+    ``send_fn`` is called with the exact same keyword arguments ``notify_all``
+    itself receives: ``title, body, event, username=None, status=None,
+    episode_count=0, errors=None, is_movie=False``. Do your own enabled/pref
+    checks inside it (same as every built-in ``notify_*`` function) --
+    registering here does not imply "always on". A ``send_fn`` that raises is
+    logged and never blocks another channel; prefer sending asynchronously
+    (own thread) so a slow upstream can't delay the request that triggered
+    the notification, same as the built-in channels do.
+
+    ``item_id`` should match a ``register_thirdparty()`` id so
+    ``unregister_module()`` removes this automatically on disable/uninstall.
+    """
+    if not callable(send_fn):
+        raise ValueError("register_notification_channel: send_fn must be callable")
+    _NOTIFICATION_CHANNELS[item_id] = send_fn
+    logger.info("[Registry] Registered notification channel: %s", item_id)
+
+
+def unregister_notification_channel(item_id) -> None:
+    if _NOTIFICATION_CHANNELS.pop(item_id, None) is not None:
+        logger.info("[Registry] Unregistered notification channel: %s", item_id)
+
+
+def notification_channels() -> dict:
+    """Snapshot of {item_id: send_fn}. Used by web/notifications.py's notify_all()."""
+    return dict(_NOTIFICATION_CHANNELS)
+
+
+def register_event_hook(item_id, event, callback) -> None:
+    """Register *callback* to run whenever *event* fires (see the module
+    docstring above for the event list). Called with the same keyword
+    arguments as :func:`register_notification_channel`'s ``send_fn``. Use
+    this instead of a notification channel when the reaction isn't itself a
+    "send a message somewhere" -- e.g. triggering an external webhook,
+    updating your own module's state. A module can register more than one
+    hook for the same event (e.g. once per ``item_id``); all of them run,
+    each isolated by its own try/except.
+    """
+    if not callable(callback):
+        raise ValueError("register_event_hook: callback must be callable")
+    _EVENT_HOOKS.setdefault(event, {})[item_id] = callback
+    logger.info("[Registry] Registered event hook: %s -> %s", item_id, event)
+
+
+def unregister_event_hooks(item_id) -> None:
+    """Drop every hook *item_id* registered, across all events."""
+    removed_any = False
+    for event in list(_EVENT_HOOKS):
+        if _EVENT_HOOKS[event].pop(item_id, None) is not None:
+            removed_any = True
+        if not _EVENT_HOOKS[event]:
+            del _EVENT_HOOKS[event]
+    if removed_any:
+        logger.info("[Registry] Unregistered event hooks for: %s", item_id)
+
+
+def call_with_supported_kwargs(fn, **kwargs):
+    """Call *fn* with only the keyword arguments its signature accepts.
+
+    Notification channels and event hooks are documented with a fixed
+    argument list (see .examples/thirdparties/README.md), so a module written
+    against an older MediaForge has no ``**kwargs`` to swallow a newly added
+    one -- ``episode_range`` was the first such addition. Without this filter
+    every extension of the payload would break existing modules with a
+    TypeError. A callable that *does* declare ``**kwargs`` still gets
+    everything, so modules can opt into future fields for free.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+        if not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            kwargs = {k: v for k, v in kwargs.items() if k in params}
+    except (TypeError, ValueError):
+        # Builtins / C callables have no introspectable signature -- pass the
+        # full set rather than silently dropping arguments.
+        pass
+    return fn(**kwargs)
+
+
+def fire_event_hooks(event, **payload) -> None:
+    """Run every hook registered for *event*, in registration order, isolated
+    from one another and from the caller (never raises). Used by
+    web/notifications.py's notify_all()."""
+    for item_id, callback in list(_EVENT_HOOKS.get(event, {}).items()):
+        try:
+            call_with_supported_kwargs(callback, **payload)
+        except Exception:
+            logger.exception("[Registry] Event hook '%s' for event '%s' raised", item_id, event)
+
+
+def unregister_module(name):
+    """Remove every trace of thirdparties/<name>/ from the registry, live.
+
+    The counterpart of a module's register_thirdparty() call(s): its sidebar
+    link, settings card, dashboard widget and provider-pill script all come out
+    of _ITEMS, so dropping its entries here makes the module disappear from the
+    UI on the very next request — no restart, no template change. The recorded
+    folder status (_MODULES) goes too, so the Modulmanager stops listing it and
+    a later rescan would treat the folder as brand new again if it reappeared.
+
+    Returns the blueprint names the removed items owned. Flask cannot
+    *un*register a blueprint on a running app, so the caller (see
+    web/thirdparties/__init__.py's uninstall_module_live()) uses those names to
+    404 whatever routes are left behind until the next restart.
+
+    Purely a registry operation: it does not touch the module's files, settings
+    or hooks -- uninstall_module_live() orchestrates all of that.
+    """
+    global _ITEMS
+
+    entry = _MODULES.get(name) or {}
+    ids = set(entry.get("item_ids") or ())
+    blueprints = {
+        item.get("blueprint")
+        for item in _ITEMS
+        if item["id"] in ids and item.get("blueprint")
+    }
+    # Stop and forget any background worker these items registered, before their
+    # items disappear -- afterwards _worker_should_run() couldn't even find the
+    # item to know it should be off, and the thread would outlive the module.
+    for item_id in ids:
+        unregister_background_worker(item_id)
+        unregister_notification_channel(item_id)
+        unregister_event_hooks(item_id)
+    # Same idea for a registered content source / search source / CineInfo
+    # source / mirror list / uptime entry / image host (see
+    # providers.register_provider, search.register_search_source,
+    # cineinfo.registry.register_cineinfo_source, mirrors.register_site_mirrors,
+    # uptime_monitor.register_monitor_site, routes.image_proxy.register_image_hosts) --
+    # lazy imports, both to avoid a core -> web import at module load time and
+    # because a module that never called one of these leaves nothing to clean up.
+    try:
+        from ...home_feed import unregister_home_feed_source
+        from ...home_panels import unregister_home_panel
+        from ...providers import unregister_provider
+        from ...search import unregister_search_source
+        from ...extractors import unregister_hoster
+        from ...mirrors import unregister_site_mirrors
+        from ...subtitle_sources import unregister_subtitle_source
+        from ..uptime_monitor import unregister_monitor_site
+        from ..cineinfo.registry import unregister_cineinfo_owner
+        from ..routes.image_proxy import unregister_image_hosts
+        for item_id in ids:
+            unregister_provider(item_id)
+            unregister_home_feed_source(item_id)
+            unregister_home_panel(item_id)
+            unregister_search_source(item_id)
+            unregister_hoster(item_id)
+            unregister_site_mirrors(item_id)
+            unregister_subtitle_source(item_id)
+            unregister_monitor_site(item_id)
+            unregister_cineinfo_owner(item_id)
+            unregister_image_hosts(item_id)
+    except Exception:
+        logger.exception("[Registry] Failed to clean up content/search/cineinfo/hoster/mirror/uptime/image-host sources for module '%s'", name)
+    _ITEMS = [item for item in _ITEMS if item["id"] not in ids]
+    _MODULES.pop(name, None)
+    return sorted(blueprints)
+
+
+# ---------------------------------------------------------------------------
+# What a module actually registered
+# ---------------------------------------------------------------------------
+# The Modulmanager used to show a module's *identity* (version, author,
+# signature) but never what it does to the app. That is the more useful
+# question for anything you did not write yourself: a sidebar entry is
+# harmless, an event hook runs on every download.
+#
+# Ownership is read the same way unregister_module() cleans up: every
+# secondary registry (providers, search sources, CineInfo sources, home feed
+# sources, hosters, mirrors, uptime
+# monitors, notification channels, event hooks, background workers, image
+# hosts) is keyed
+# by the module's own item_id, which is the documented convention. A module
+# that registers a provider under an id it never passed to
+# register_thirdparty() is invisible here for the same reason it is invisible
+# to the cleanup -- see the module README's "Content sources" section.
+#
+# `hot` marks the capabilities that reach into MediaForge's own work rather
+# than just adding UI: those are the ones worth seeing on an unsigned module.
+
+def module_capabilities(name) -> list:
+    """[{kind, count, hot}] describing what thirdparties/<name>/ registered."""
+    entry = _MODULES.get(name) or {}
+    ids = [i for i in (entry.get("item_ids") or ())]
+    if not ids:
+        return []
+    id_set = set(ids)
+
+    menus = cards = widgets = pills = 0
+    for item in _ITEMS:
+        if item["id"] not in id_set:
+            continue
+        if item.get("endpoint"):
+            menus += 1
+        if item.get("settings_host") or item.get("extra_settings"):
+            cards += 1
+        if item.get("dashboard_widget_template"):
+            widgets += 1
+        if item.get("provider_pill_script"):
+            pills += 1
+
+    workers = sum(1 for i in ids if i in _WORKERS)
+    channels = sum(1 for i in ids if i in _NOTIFICATION_CHANNELS)
+    hooks = sum(1 for handlers in _EVENT_HOOKS.values() for i in ids if i in handlers)
+
+    # Lazy + individually guarded: a core <- web import at module load time
+    # would be a cycle, and one unavailable registry must not blank the whole
+    # line on the page.
+    def _count(modpath, func):
+        try:
+            mod = import_module(modpath, __package__)
+            return sum(1 for i in ids if i in getattr(mod, func)())
+        except Exception:
+            logger.debug("[Registry] capability count via %s.%s failed", modpath, func)
+            return 0
+
+    # CineInfo is the one registry where a single item may legitimately own more
+    # than one source (a catalog with a bulk and a per-item endpoint is two), so
+    # it is counted by source rather than by owning item like the rest.
+    def _count_cineinfo():
+        try:
+            mod = import_module("..cineinfo.registry", __package__)
+            by_item = mod.thirdparty_cineinfo_sources_by_item()
+            return sum(len(by_item.get(i) or ()) for i in ids)
+        except Exception:
+            logger.debug("[Registry] CineInfo capability count failed")
+            return 0
+
+    providers = _count("...providers", "thirdparty_provider_ids")
+    searches = _count("...search", "thirdparty_search_source_ids")
+    feed_sources = _count("...home_feed", "thirdparty_home_feed_source_ids")
+    panels = _count("...home_panels", "thirdparty_home_panel_ids")
+    hosters = _count("...extractors", "thirdparty_hoster_ids")
+    mirrors = _count("...mirrors", "thirdparty_mirror_ids")
+    subtitle_sources = _count("...subtitle_sources", "thirdparty_subtitle_source_ids")
+    monitors = _count("..uptime_monitor", "thirdparty_monitor_ids")
+    cineinfo_sources = _count_cineinfo()
+    image_hosts = _count("..routes.image_proxy", "thirdparty_image_host_ids")
+
+    out = []
+    for kind, count, hot in (
+        ("menu", menus, False),
+        ("settings_card", cards, False),
+        ("dashboard_widget", widgets, False),
+        ("provider_pill", pills, False),
+        ("provider", providers, True),
+        ("search_source", searches, True),
+        ("cineinfo_source", cineinfo_sources, True),
+        ("home_feed_source", feed_sources, False),
+        ("home_panel", panels, False),
+        ("subtitle_source", subtitle_sources, True),
+        ("hoster", hosters, True),
+        ("mirrors", mirrors, False),
+        ("monitor", monitors, False),
+        ("notification_channel", channels, True),
+        ("event_hook", hooks, True),
+        ("background_worker", workers, True),
+        # Widens which hosts the server will fetch on behalf of a client
+        # (see register_image_hosts) -- worth flagging on an unsigned module
+        # like the other "hot" capabilities, even though is_safe_url()'s
+        # SSRF check still applies to every host regardless of who added it.
+        ("image_host", image_hosts, True),
+    ):
+        if count:
+            out.append({"kind": kind, "count": count, "hot": hot})
+    return out
+
+
+def item_ids():
+    """Current snapshot of registered item ids. Used by
+    web/thirdparties/__init__.py's discover_and_register() to diff
+    before/after a module's register(app) call, so it knows which item_ids
+    that particular folder just registered (for record_module_status /
+    the Extensions overview page) without every integration having to
+    report that itself.
+    """
+    return {item["id"] for item in _ITEMS}
+
+
+def known_module_names() -> set:
+    """Every thirdparties/<name>/ folder name already seen by a prior
+    discover_and_register() or rescan_new_modules() call (successfully or
+    not -- a folder that failed to import is still "known", so a rescan
+    doesn't keep retrying it forever without a code fix). Used by
+    web/thirdparties/__init__.py's rescan_new_modules() to figure out
+    which folders currently on disk are genuinely new."""
+    return set(_MODULES)
+
+
+def registered_module_names() -> set:
+    """Folder names whose register(app) already ran successfully in this
+    process. Used by rescan_new_modules() as the starting point for
+    DEPENDS_ON resolution, so a brand-new module can depend on a folder
+    that was registered back at original startup, not just on another
+    brand-new one discovered in the same rescan."""
+    return {name for name, mod in _MODULES.items() if mod.get("registered")}
+
+
+def record_module_status(name, **fields):
+    """Track the load status of one thirdparties/<name>/ folder, called
+    from web/thirdparties/__init__.py's discover_and_register() at each
+    phase (import, dependency check, register(app) call). Only keys
+    explicitly passed (and not None) are updated, so partial updates from
+    different phases layer instead of clobbering each other -- e.g. the
+    import phase sets imported=True, and the later register phase sets
+    registered=True/False without needing to re-pass imported=.
+
+    Recognized fields: imported (bool), registered (bool), error (str),
+    depends_on (tuple of folder names), item_ids (list of item ids this
+    folder registered -- set once, after diffing item_ids() before/after
+    its register(app) call), module_name/description/description_de/
+    description_en/author/enabled_default (the MODULE_* constants read off
+    the module -- see web/thirdparties/__init__.py's import phase;
+    module_name falls back to the folder name, description/description_de/
+    description_en/author to "", enabled_default to False when a module
+    doesn't declare them, so older/minimal modules with no MODULE_*
+    constants at all keep working unchanged). description_de/description_en
+    are optional per-language overrides of description -- see
+    resolve_extensions_overview()'s _localized_module_description(), which
+    picks between them by the current UI language at render time; plain
+    description is still what's stored/shown when neither is declared.
+
+    Also recognized, from the same import phase: version (MODULE_VERSION,
+    falling back to _UNKNOWN_VERSION), min_app_version/max_app_version (the
+    MediaForge compatibility range, see check_app_compatibility()),
+    api_version (MODULE_API_VERSION, see check_api_compatibility()),
+    requirements (MODULE_REQUIREMENTS, the pip distributions the module needs
+    -- checked, not installed) and the module store's identity fields
+    module_id/homepage/license (MODULE_ID -- the stable store id, falling back
+    to the folder name -- plus MODULE_HOMEPAGE/MODULE_LICENSE, both "").
+    None of them are required: they're descriptive, except
+    min/max_app_version, api_version and requirements, which
+    web/thirdparties/__init__.py checks before calling register(app).
+
+    This exists purely for the admin Modulmanager / Extensions overview
+    (resolve_extensions_overview) -- nothing else reads _MODULES.
+    """
+    entry = _MODULES.setdefault(name, {
+        "name": name, "depends_on": (), "imported": None, "registered": None,
+        "error": None, "item_ids": [],
+        "module_name": name, "description": "", "description_de": "", "description_en": "",
+        "author": "", "enabled_default": False,
+        "version": _UNKNOWN_VERSION, "min_app_version": "", "max_app_version": "",
+        "module_id": name, "homepage": "", "license": "",
+        "api_version": None, "requirements": (),
+        # The subset of `requirements` that isn't satisfied right now (see
+        # deps.missing_requirements()). Non-empty = the Modulmanager shows this
+        # module as "needs a dependency" with an Install button, instead of a
+        # module that mysteriously isn't there.
+        "missing_requirements": (),
+        # Result of signing.verify_module() -- see its docstring. The default is
+        # what an unsigned module gets, which is most of them: perfectly loadable,
+        # just not vouched for by anybody.
+        "signature": {"tier": "unverified", "signed": False, "valid": False,
+                      "signer": "", "key_id": "", "reason": "not signed"},
+    })
+    for key, value in fields.items():
+        if value is not None:
+            entry[key] = value
+
+
+def module_entry(name):
+    """The raw recorded status of one thirdparties/<name>/ folder (see
+    record_module_status), or None. Used by the store client
+    (web/thirdparties/store.py) to compare an installed module's version and
+    module_id against what the store offers, without re-deriving either.
+    """
+    entry = _MODULES.get(name)
+    return dict(entry) if entry else None
+
+
+def module_entries():
+    """Every recorded folder, keyed by folder name -- the store client's
+    "what's installed" snapshot. Copies, so a caller can't mutate _MODULES.
+    """
+    return {name: dict(entry) for name, entry in _MODULES.items()}
+
+
+def module_name_for_item(item_id):
+    """The thirdparties/<name>/ folder that registered `item_id`, or None.
+
+    The registered items and the folders that registered them are tracked
+    separately on purpose (see _MODULES' docstring), but the enable/disable
+    toggle only knows an item_id -- and the lifecycle hooks
+    (on_enable/on_disable) live on the *module*. This is the bridge.
+    """
+    for name, mod in _MODULES.items():
+        if item_id in (mod.get("item_ids") or ()):
+            return name
+    return None
+
+
+def seed_default_enabled(new_item_ids, enabled_default):
+    """Called once, right after a module's register(app) has registered
+    new_item_ids (see web/thirdparties/__init__.py), to apply its
+    MODULE_ENABLED_DEFAULT -- but *only* the very first time each item is
+    ever seen. get_setting(key, None) is None exactly when nothing has
+    ever been written for that key (no row in app_settings), which is how
+    this tells "never configured" apart from "user explicitly turned it
+    off" -- a module shipping enabled_default=True must never re-flip a
+    setting a user (or a previous run) already decided.
+    """
+    if not enabled_default or not new_item_ids:
+        return
+    from ..db import get_setting, set_setting
+
+    for item_id in new_item_ids:
+        item = get_thirdparty(item_id)
+        if not item:
+            continue
+        key = item["enabled_setting_key"]
+        if get_setting(key, None) is None:
+            set_setting(key, "1")
+
+
+def _localized_module_description(mod):
+    """Pick MODULE_DESCRIPTION_DE/_EN for the admin's current UI language,
+    falling back to the plain (language-agnostic) MODULE_DESCRIPTION when
+    the specific-language variant isn't declared. Both are optional --
+    a module that only sets MODULE_DESCRIPTION keeps showing exactly that,
+    unchanged, in either language.
+
+    This is deliberately NOT routed through gettext/.po files like
+    register_thirdparty()'s description/enable_desc are (see _build_card()):
+    MODULE_DESCRIPTION is a plain constant read once off a module's
+    __init__.py at import time (web/thirdparties/__init__.py's discovery
+    phase), long before there's a request/locale to translate for, and
+    wiring up pybabel extraction + a .po msgid for a single ad-hoc string
+    per module would be a lot of machinery for very little benefit -- an
+    explicit German/English pair the module author fills in directly is
+    simpler and needs no compile step."""
+    from flask_babel import get_locale
+    lang = str(get_locale() or "en")
+    if lang == "de" and mod.get("description_de"):
+        return mod["description_de"]
+    if lang == "en" and mod.get("description_en"):
+        return mod["description_en"]
+    return mod.get("description") or ""
+
+
+def resolve_extensions_overview():
+    """Combine per-folder load status (_MODULES) with per-item placement
+    info (_ITEMS) into one list for the admin Extensions overview page
+    (routes/extensions.py, templates/extensions.html). Includes folders
+    that failed to import/register, not just healthy ones -- that's the
+    whole point of this page: a place to see why an integration isn't
+    showing up, without reading the server log.
+    """
+    from ..db import get_setting
+
+    out = []
+    for name in sorted(_MODULES):
+        mod = _MODULES[name]
+        registered_items = []
+        for item_id in mod["item_ids"]:
+            item = get_thirdparty(item_id)
+            if not item:
+                continue
+            registered_items.append({
+                "id": item["id"],
+                "label": item["label"],
+                "enabled": get_setting(item["enabled_setting_key"], "0") == "1",
+                "section": item["section"] if item["endpoint"] else None,
+                "settings_host": item["settings_host"],
+                "settings_tab": item["settings_tab"],
+                "has_dashboard_widget": bool(item["dashboard_widget_template"]),
+                "has_provider_pill": bool(item["provider_pill_script"]),
+                # requires_enabled (see register_thirdparty) -- shown on the
+                # Modulmanager row so an admin can see *why* an enabled
+                # module might not actually be doing anything yet.
+                "requires_enabled": item["requires_enabled"],
+                "requires_enabled_ok": dependencies_satisfied(item["id"]),
+            })
+        out.append({
+            "name": mod["name"],
+            "imported": mod["imported"],
+            "registered": mod["registered"],
+            "error": mod["error"],
+            "depends_on": mod["depends_on"],
+            # The four MODULE_* constants (see web/thirdparties/__init__.py
+            # and this module's "Module metadata" docs) -- module_name is
+            # what the Modulmanager page displays as the card title
+            # instead of the raw folder name, when a module declares one.
+            "module_name": mod["module_name"],
+            "description": _localized_module_description(mod),
+            "author": mod["author"],
+            "enabled_default": mod["enabled_default"],
+            # Version & store metadata (see this module's docstring, axis 7).
+            # compatible is recomputed here rather than read back off the
+            # recorded error string, so the page states it as a fact of the
+            # *current* app version rather than of whatever version was
+            # running when the module was first discovered -- the two only
+            # differ across an in-place upgrade, but that's exactly the case
+            # this row exists for.
+            "version": mod["version"],
+            "min_app_version": mod["min_app_version"],
+            "max_app_version": mod["max_app_version"],
+            "incompatible_reason": check_app_compatibility(
+                mod["min_app_version"], mod["max_app_version"]),
+            "module_id": mod["module_id"],
+            "homepage": mod["homepage"],
+            # What this module hung into the app (see module_capabilities).
+            "capabilities": module_capabilities(name),
+            "license": mod["license"],
+            "api_version": mod["api_version"] or REGISTRY_API_VERSION,
+            "requirements": tuple(mod["requirements"] or ()),
+            # Dependencies: what's missing, and whether this build can install it
+            # (a PyInstaller build has no pip -- see deps.pip_available()). The
+            # card turns into "needs a dependency" + an Install button rather
+            # than a module that was silently skipped.
+            "missing_requirements": tuple(mod.get("missing_requirements") or ()),
+            "deps_installable": _deps_installable(),
+            # Trust, as *derived from the signature in the module* (signing.py)
+            # -- never as claimed by a store's index or by the module's own
+            # constants. An unsigned module is "unverified"; a signed one whose
+            # files were touched afterwards is "unverified" *and* loudly says so
+            # via signature.reason, which the card renders in red.
+            "trust": mod["signature"]["tier"],
+            "signature": dict(mod["signature"]),
+            # Named registered_items, not items -- a plain dict's own
+            # .items() method shadows a same-named key under Jinja's
+            # attribute-then-subscript lookup (ext.items would silently
+            # return the dict method, not this list).
+            "registered_items": registered_items,
+        })
+
+    # One state per module, decided here rather than re-derived in the template:
+    # the Modulmanager uses it for the state column, the tally, the filter
+    # buttons *and* the sort order, and four copies of the same if-chain is how
+    # they drift apart.
+    for ext in out:
+        ext["state"] = _module_state(ext)
+    # Problems first. A module manager's job is "what is not working" -- the
+    # healthy ones are the ones you do not need to look at. Alphabetical within
+    # each group, which is the order they arrived in.
+    out.sort(key=lambda e: (_STATE_RANK.get(e["state"], 9), e["name"]))
+    return out
+
+
+# Worst first: an unusable module outranks a merely skipped one, which outranks
+# anything that is actually doing its job.
+_STATE_RANK = {"error": 0, "skipped": 1, "ok": 2, "off": 3}
+
+
+def _module_state(ext) -> str:
+    """"error" | "skipped" | "ok" | "off" for one resolve_extensions_overview() row.
+
+    Deliberately coarse. The old header carried up to eight badges that mixed
+    three different questions (is it loaded? is it on? who signed it?), and the
+    answer people actually scan for is one of these four:
+
+      error    -- it cannot run at all: the import itself failed, a signature
+                  that does not check out, or a missing pip dependency.
+      skipped  -- it could run, but was not registered this start: unmet
+                  DEPENDS_ON, an incompatible registry API, or an app-version
+                  range this build is outside of.
+
+    Note what is deliberately NOT part of the error test: a non-empty ``error``
+    on its own. discover_and_register() records a *skip reason* in that same
+    field ("unmet DEPENDS_ON: anime_seasons"), so treating any error string as
+    a failure would report every waiting module as broken.
+      ok       -- registered *and* at least one of its items switched on.
+      off      -- registered and available, but nothing of it is switched on.
+
+    A module with no registered items at all (a background-job-only module, or
+    one whose register(app) did nothing) counts as "ok" once it registered
+    without error -- there is no toggle for it to be off.
+    """
+    sig = ext.get("signature") or {}
+    if (ext.get("imported") is False
+            or (sig.get("signed") and not sig.get("valid"))
+            or ext.get("missing_requirements")):
+        return "error"
+    if ext.get("registered") is False or ext.get("incompatible_reason"):
+        return "skipped"
+    items = ext.get("registered_items") or ()
+    if items and not any(i.get("enabled") for i in items):
+        return "off"
+    return "ok"
+
+
+def _deps_installable() -> bool:
+    """Whether the Install button can do anything in this build -- see
+    deps.pip_available(). Cached per process: it shells out to pip, and the
+    overview is rendered on every page load."""
+    global _DEPS_INSTALLABLE
+
+    if _DEPS_INSTALLABLE is None:
+        try:
+            from .deps import pip_available
+
+            _DEPS_INSTALLABLE = bool(pip_available()[0])
+        except Exception:
+            logger.warning("[Registry] Could not determine pip availability", exc_info=True)
+            _DEPS_INSTALLABLE = False
+    return _DEPS_INSTALLABLE
+
+
+_DEPS_INSTALLABLE = None
+
+
+def dependencies_satisfied(item_id):
+    """True if every item this item's requires_enabled names is itself
+    currently switched on (its own enabled_setting_key == "1").
+
+    Deliberately separate from DEPENDS_ON (web/thirdparties/__init__.py's
+    module-level constant): DEPENDS_ON is a one-time, import-time check
+    ("did that other folder's register(app) succeed at startup") used to
+    decide load order and whether to attempt registration at all.
+    requires_enabled is a live, per-request check against the dependency's
+    *current* toggle state, so a dependency switched off later (no restart
+    needed) is reflected immediately -- resolve_menu_items() below already
+    calls this for every sidebar entry, and a module's own routes should
+    call it too alongside their own enabled check wherever DEPENDS_ON alone
+    wouldn't catch a dependency that's merely disabled rather than absent.
+
+    An item_id that isn't currently registered at all is treated as
+    "nothing to check" (True) rather than blocking the caller -- this
+    function only ever tightens an item's own enabled_setting_key check, it
+    never invents a new failure mode for a caller that didn't register any
+    requires_enabled.
+    """
+    from ..db import get_setting
+
+    item = get_thirdparty(item_id)
+    if not item:
+        return True
+    for dep_id in item.get("requires_enabled", ()):
+        dep = get_thirdparty(dep_id)
+        if not dep or get_setting(dep["enabled_setting_key"], "0") != "1":
+            return False
+    return True
+
+
+def admin_required_blueprints():
+    """Set of Blueprint names whose routes should be wrapped with
+    admin_required instead of the default login_required -- every
+    registered item's auth_required="admin" resolved to its blueprint (see
+    register_thirdparty's auth_required/blueprint params). Consulted by
+    app.py's endpoint-wrapping pass (see _admin_only) so a thirdparty module
+    can declare this instead of needing an entry hand-added to app.py's
+    hardcoded set.
+    """
+    return {item["blueprint"] for item in _ITEMS if item.get("auth_required") == "admin" and item.get("blueprint")}
+
+
+# Endpoints a module marked admin-only *per route*, either declaratively
+# (register_thirdparty's admin_endpoints=) or by decorating the view with
+# @module_admin_required. Blueprint-wide auth_required="admin" is still a
+# separate, coarser thing (admin_required_blueprints() above) -- this is for
+# the common case it can't express: a Blueprint where reading is fine for any
+# logged-in user and only the writes are admin's business.
+_ADMIN_ENDPOINTS = set()
+
+# What the decorator marks a view function with. app.py's wrapping pass reads
+# the attribute off the view function rather than the name, because a decorated
+# view can be registered under an endpoint name the module never told us about.
+_ADMIN_ATTR = "_mediaforge_admin_required"
+
+
+def module_admin_required(view):
+    """Mark one route as admin-only. The per-route counterpart of
+    register_thirdparty(auth_required="admin"), for a module whose Blueprint
+    isn't uniformly admin-only::
+
+        from ..registry import module_admin_required
+
+        @bp.route("/api/my_module/settings", methods=["PUT"])
+        @module_admin_required
+        def api_settings_put():
+            ...
+
+    This does *not* wrap the view itself -- it flags it, and app.py's single
+    endpoint-wrapping pass applies the real admin_required check to it along
+    with everything else. Which means the check can't be bypassed by the order
+    decorators happen to be stacked in, and a module can't accidentally end up
+    with admin_required *inside* login_required (i.e. never reached).
+
+    Being a marker also makes it honest about what it can't do: a decorator
+    that ran at import time couldn't see Flask's session at all.
+    """
+    setattr(view, _ADMIN_ATTR, True)
+    return view
+
+
+def is_admin_view(view) -> bool:
+    """True if `view` carries @module_admin_required. Used by app.py's wrapping
+    pass, which is the only thing that enforces it."""
+    return bool(getattr(view, _ADMIN_ATTR, False))
+
+
+def admin_required_endpoints():
+    """Every endpoint name declared admin-only via register_thirdparty's
+    admin_endpoints= (blueprint-qualified). app.py adds the ones marked with
+    @module_admin_required to this on its own, by inspecting the view
+    functions -- see is_admin_view()."""
+    out = set(_ADMIN_ENDPOINTS)
+    for item in _ITEMS:
+        out.update(item.get("admin_endpoints") or ())
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Background workers
+# ---------------------------------------------------------------------------
+#
+# Every module with a bot, a poller or a sync loop used to rebuild the same
+# machinery: a thread, a lock, a "has the config changed?" poll every N seconds,
+# and a restart path -- which is where the bugs live (discord_request_bot held
+# its own lock across a thread join and deadlocked itself on every restart).
+#
+# So the core owns the lifecycle instead. A module says "here is how you start
+# me and how you stop me"; MediaForge decides *when*:
+#
+#   * enabled at startup            -> start
+#   * master toggle switched on/off -> start / stop
+#   * a setting the module owns changed -> stop, then start (against the new
+#     value -- which is what the polling was for)
+#   * module uninstalled, or MediaForge shutting down -> stop
+#
+# One lock per worker, held only around that worker's own start/stop, so two
+# saves in a row can't overlap and nothing else in the app can be blocked by a
+# module's slow shutdown.
+_WORKERS = {}
+_WORKERS_LOCK = threading.Lock()
+_WORKER_APP = None
+
+
+def register_background_worker(item_id, start, stop, restart_on_settings=True):
+    """Hand MediaForge a background worker's start/stop, and stop hand-rolling
+    its lifecycle::
+
+        def register(app):
+            register_thirdparty(item_id="my_bot", ...)
+            register_background_worker("my_bot", start=_start_bot, stop=_stop_bot)
+
+    ``start(app)`` and ``stop(app)`` are called with the Flask app, never
+    concurrently for the same worker, and never from a request thread (a
+    settings change dispatches them onto a short-lived thread of their own --
+    see web/thirdparties/__init__.py's _on_setting_changed()). Both must be
+    idempotent-ish and must not raise into the caller; whatever they do raise is
+    logged and swallowed, exactly like a lifecycle hook.
+
+    ``stop(app)`` MUST NOT be a "stop and wait forever": it is what runs on
+    shutdown and on uninstall. Join with a timeout; do not take a lock the
+    worker thread itself needs to exit.
+
+    - item_id: the registered item this worker belongs to. Its enable toggle is
+      what gates the worker -- an item that is off, or whose requires_enabled
+      isn't satisfied, has no running worker, and nothing needs to check that in
+      the module.
+    - restart_on_settings: restart the worker when any setting the module owns
+      (``module:<module_id>:*``) changes. True is what a bot wants (the token or
+      the channel changed -- reconnect). Set False for a worker that reads its
+      settings on every tick anyway and would rather not be bounced.
+    """
+    if not callable(start) or not callable(stop):
+        raise ValueError("register_background_worker: start and stop must be callables")
+    with _WORKERS_LOCK:
+        _WORKERS[item_id] = {
+            "start": start,
+            "stop": stop,
+            "restart_on_settings": bool(restart_on_settings),
+            "running": False,
+            "lock": threading.Lock(),
+        }
+    logger.debug("[Registry] Registered background worker for '%s'", item_id)
+
+
+def unregister_background_worker(item_id):
+    """Drop a worker from the registry, stopping it first if it's running --
+    called when a module is unregistered/uninstalled (see unregister_module())."""
+    with _WORKERS_LOCK:
+        worker = _WORKERS.pop(item_id, None)
+    if worker:
+        _stop_worker(item_id, worker)
+
+
+def _worker_should_run(item_id) -> bool:
+    """A worker runs exactly when its item is enabled and its requires_enabled
+    dependencies are actually on -- the same condition that decides whether the
+    item's sidebar link is shown, so "visible" and "running" can't disagree.
+
+    Unlike item_enabled(), an *unknown* item_id means "no worker should run":
+    a worker whose item disappeared has nothing left to gate it.
+    """
+    if not get_thirdparty(item_id):
+        return False
+    return item_enabled(item_id)
+
+
+# Short-lived cache for item_enabled(). The gate now runs on hot paths -- the
+# image proxy is hit once per poster on a library grid, the uptime API once per
+# site per request -- and each miss is a get_setting(), i.e. an open/read/close
+# on SQLite. A one-second window is short enough that a toggle still feels
+# immediate (the enable/disable edge clears it outright, see
+# _invalidate_enabled_cache) and long enough to collapse a page's worth of
+# lookups into one.
+_ENABLED_TTL = 1.0
+_enabled_cache: dict = {}   # item_id -> (expires_at, value)
+_enabled_cache_lock = threading.Lock()
+
+
+def _invalidate_enabled_cache() -> None:
+    """Drop the cache. Called on the enable/disable edge so a toggle takes
+    effect on the very next request rather than up to _ENABLED_TTL later."""
+    with _enabled_cache_lock:
+        _enabled_cache.clear()
+
+
+def item_enabled(item_id) -> bool:
+    """Is the module capability registered under *item_id* currently active?
+
+    The single answer to "should this module-provided thing be used right now",
+    shared by every secondary registry (providers, uptime/DNS targets, search
+    sources, hosters, mirrors, subtitle sources, CineInfo sources, image-host
+    allowlist entries, background workers). It is the same condition
+    resolve_menu_items() uses for the sidebar, so a module that looks off in the
+    UI is genuinely off everywhere else too.
+
+    Why this exists at all: _register_modules() calls a module's register(app)
+    regardless of its enabled flag, so a module that is switched off -- at
+    startup or later from the Modulmanager -- still has its provider, uptime
+    target and image hosts sitting in those registries. Detaching them on the
+    disable *edge* would not help a module that was already off at boot, so the
+    gate lives at the point of use instead, where it holds in both cases.
+
+    Fail-open for an id that is not in _ITEMS: those are ids a module registered
+    a capability under without ever passing them to register_thirdparty(), plus
+    anything the core itself registered. Neither has an enabled flag to read,
+    and refusing to serve them would break working setups. See the module
+    README's "Content sources" section -- such ids are invisible to
+    unregister_module()'s cleanup for the same reason.
+    """
+    import time as _t
+
+    from ..db import get_setting
+
+    item = get_thirdparty(item_id)
+    if not item:
+        return True
+
+    now = _t.monotonic()
+    with _enabled_cache_lock:
+        cached = _enabled_cache.get(item_id)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    try:
+        value = (get_setting(item["enabled_setting_key"], "0") == "1"
+                 and dependencies_satisfied(item_id))
+    except Exception:
+        # A transient DB hiccup must not silently disable half the app --
+        # and must not be cached either, or one bad moment would keep
+        # answering from a wrong value.
+        logger.exception("[Registry] item_enabled('%s') failed", item_id)
+        return True
+
+    with _enabled_cache_lock:
+        _enabled_cache[item_id] = (now + _ENABLED_TTL, value)
+    return value
+
+
+def item_enabled_strict(item_id) -> bool:
+    """item_enabled(), but every uncertain case answers False.
+
+    For gates where being wrong in the permissive direction is a security
+    problem rather than a broken feature -- currently the image proxy's host
+    allowlist, which decides where the server will make outbound requests. An
+    unregistered item id answers False here (it has no toggle, so nothing could
+    ever switch it off) and so does an error.
+
+    Shares item_enabled()'s cache, so a hot path can call it per request.
+    """
+    import time as _t
+
+    from ..db import get_setting
+
+    item = get_thirdparty(item_id)
+    if not item:
+        return False
+
+    now = _t.monotonic()
+    with _enabled_cache_lock:
+        cached = _enabled_cache.get(item_id)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    try:
+        value = (get_setting(item["enabled_setting_key"], "0") == "1"
+                 and dependencies_satisfied(item_id))
+    except Exception:
+        logger.exception("[Registry] item_enabled_strict('%s') failed", item_id)
+        return False
+
+    with _enabled_cache_lock:
+        _enabled_cache[item_id] = (now + _ENABLED_TTL, value)
+    return value
+
+
+def _start_worker(item_id, worker, app):
+    with worker["lock"]:
+        if worker["running"]:
+            return
+        try:
+            worker["start"](app)
+            worker["running"] = True
+            logger.info("[Registry] Started background worker '%s'", item_id)
+        except Exception:
+            logger.exception("[Registry] Background worker '%s' failed to start", item_id)
+
+
+def _stop_worker(item_id, worker, app=None):
+    with worker["lock"]:
+        if not worker["running"]:
+            return
+        try:
+            worker["stop"](app if app is not None else _WORKER_APP)
+            logger.info("[Registry] Stopped background worker '%s'", item_id)
+        except Exception:
+            logger.exception("[Registry] Background worker '%s' failed to stop", item_id)
+        finally:
+            # Marked stopped even if stop() raised: a worker whose stop is broken
+            # must not be un-stoppable forever -- the next start() gets a clean
+            # slate, and the exception is in the log.
+            worker["running"] = False
+
+
+def _selected_workers(module_name=None, item_id=None):
+    with _WORKERS_LOCK:
+        items = list(_WORKERS.items())
+    out = []
+    for wid, worker in items:
+        if item_id and wid != item_id:
+            continue
+        if module_name and module_name_for_item(wid) != module_name:
+            continue
+        out.append((wid, worker))
+    return out
+
+
+def sync_workers(app, module_name=None, item_id=None, restart=False):
+    """Bring every (selected) worker's running state in line with its item's
+    enable toggle. The single entry point for all four lifecycle triggers --
+    startup, the master toggle, a settings change, shutdown.
+
+    restart=True additionally bounces workers that are running *and* should
+    still be running (restart_on_settings), which is what a settings change
+    means: the worker is holding the old value.
+    """
+    global _WORKER_APP
+
+    _WORKER_APP = app
+    for wid, worker in _selected_workers(module_name, item_id):
+        should_run = _worker_should_run(wid)
+        if not should_run:
+            _stop_worker(wid, worker, app)
+            continue
+        if worker["running"]:
+            if restart and worker["restart_on_settings"]:
+                _stop_worker(wid, worker, app)
+                _start_worker(wid, worker, app)
+            continue
+        _start_worker(wid, worker, app)
+
+
+def start_workers(app, module_name=None):
+    """Start the workers of every enabled module -- called once at the end of
+    discover_and_register(), and again for a single module that came up live
+    (a store install, a dependency install)."""
+    sync_workers(app, module_name=module_name, restart=False)
+
+
+def stop_workers(module_name=None):
+    """Stop workers -- one module's, or (no argument) all of them, which is what
+    runs at shutdown via atexit. Never raises: this is the last thing that
+    happens on the way out."""
+    for wid, worker in _selected_workers(module_name):
+        try:
+            _stop_worker(wid, worker)
+        except Exception:
+            logger.exception("[Registry] Error stopping worker '%s'", wid)
+
+
+def resolve_menu_items(section):
+    """Return the currently-enabled sidebar entries for one sidebar
+    category ("discover", "management", "syncplay" or "system"), ready for
+    base.html's per-category loop: [{url, label, icon, page, module_name},
+    ...], sorted by priority (registration order among ties). Called from
+    app.py's context processors on every request.
+
+    Every entry this returns came from a thirdparties/ module's
+    register_thirdparty() call -- base.html's built-in links are hardcoded
+    separately and never go through here -- so base.html renders a small
+    "M" pill (see shell.css's .sidebar-module-pill) next to every one of
+    these, using module_name as its tooltip, to visually tell a module's
+    sidebar entry apart from MediaForge's own.
+    """
+    from flask import url_for
+    from flask_babel import gettext as _gt
+    from ..db import get_setting
+
+    out = []
+    for item in sorted(_ITEMS, key=lambda i: i["priority"]):
+        if item["section"] != section or not item["endpoint"]:
+            continue
+        try:
+            if get_setting(item["enabled_setting_key"], "0") != "1":
+                continue
+            if not dependencies_satisfied(item["id"]):
+                continue
+            out.append({
+                "url": url_for(item["endpoint"]),
+                "label": _gt(item["label"]),
+                "icon": item["icon_svg"],
+                "page": item["page_id"],
+                "module_name": module_name_for_item(item["id"]) or item["id"],
+            })
+        except Exception:
+            # A missing endpoint or a transient DB hiccup should never break
+            # the sidebar for every other page.
+            continue
+    return out
+
+
+def resolve_discover_menu_items():
+    """Back-compat alias for resolve_menu_items("discover") -- kept in case
+    anything outside app.py still imports the original name.
+    """
+    return resolve_menu_items("discover")
+
+
+def _build_card(item):
+    from flask_babel import gettext as _gt
+
+    return {
+        "id": item["id"],
+        "title": _gt(item["label"]),
+        "badges": [(_gt(text), color) for text, color in item["badges"]],
+        # Which module put this card here, or None for a built-in integration.
+        # The sidebar has said so with an "M" pill since the menu rework;
+        # every settings card built from this shape can now say it too, so a
+        # card on a shared tab (Third Party, Notifications) is not mistaken
+        # for something the core ships.
+        "module_name": module_name_for_item(item["id"]),
+        "description": _gt(item["description"]) if item["description"] else "",
+        "enable_label": _gt(item["enable_label"]),
+        "enable_desc": _gt(item["enable_desc"]) if item["enable_desc"] else "",
+        "extra_settings": [
+            {
+                "key": s["key"],
+                "label": _gt(s["label"]),
+                "description": _gt(s["description"]) if s.get("description") else "",
+                "type": s["type"],
+                "placeholder": _gt(s["placeholder"]) if s.get("placeholder") else "",
+                # The declared default, so the template can render it as the
+                # field's initial value. It used to be left out, which meant a
+                # field showed nothing at all until the async GET landed -- and
+                # a numeric stepper with an empty box looks like a control with
+                # no default rather than one that is still loading. Not
+                # translated: a default is a value, not a label.
+                "default": s.get("default", ""),
+                "options": [(value, _gt(label)) for value, label in s["options"]],
+            }
+            for s in item.get("extra_settings", [])
+        ],
+    }
+
+
+def resolve_card(item_id):
+    """The same "card" shape resolve_settings_cards() builds, for exactly
+    one item -- so a page that isn't itself a settings_host/settings_tab
+    (the Modulmanager / Extensions overview, templates/extensions.html)
+    can still reuse _settings_card_macro.html's render_settings_card() to
+    show a fully working, in-place enable toggle (and any extra_settings
+    fields) for a registered item, without duplicating that markup/JS.
+    Returns None if item_id isn't currently registered.
+    """
+    item = get_thirdparty(item_id)
+    return _build_card(item) if item else None
+
+
+def viewer_is_admin() -> bool:
+    """Whether the account rendering this page may change instance settings.
+
+    Read from the session rather than the DB because this is called per
+    template render, and the role in the session is refreshed by auth.py on
+    every request anyway. In no-auth mode the pseudo-user is an admin, so this
+    is True and nothing is hidden -- which is the point of that mode.
+
+    Outside a request context there is no viewer to judge, and the caller is a
+    module or a background job asking what is registered. Those get the
+    unfiltered answer: this function guards a *page*, not the data.
+    """
+    try:
+        from flask import has_request_context, session
+        if not has_request_context():
+            return True
+        return str(session.get("user_role") or "") == "admin"
+    except Exception:
+        return False
+
+
+def resolve_settings_cards(host="integrations", tab="thirdparty"):
+    """Return every *enabled* registered card targeting a given
+    (settings_host, settings_tab) pair, ready for that tab/pill's template
+    to render -- e.g. resolve_settings_cards("notifications", "module_x").
+    Sorted by priority (registration order among ties).
+
+    Note that ("integrations", "thirdparty") is no longer rendered anywhere:
+    module cards moved to Module Settings wholesale (see
+    resolve_module_settings() and the _FORCED_TABS comment above). The call
+    still answers correctly -- templates.notifications/monitoring use this
+    function for their own hosts, and a module that queries it should not
+    start getting an exception.
+
+    Disabled modules are filtered out here (checked live, per request --
+    same read this module uses everywhere else, e.g. resolve_menu_items()):
+    the Modulmanager /extensions overview (resolve_extensions_overview(),
+    which lists every module regardless of state) is the canonical place
+    to see and re-enable a disabled module, so a module turned off there
+    disappearing from this tab too avoids a module you just disabled still
+    cluttering a settings tab with nothing left to configure -- its own
+    toggle (still shown by render_settings_card()) would otherwise be the
+    only way back, when Modulmanager already covers that. Re-enabling a
+    module (from Modulmanager or, while it's still visible here, from its
+    own toggle) makes it reappear on the next request.
+    Cards are admin-only. Every control on one writes an instance-wide
+    setting through GET/PUT /api/settings/thirdparty/<id>, which is an admin
+    endpoint -- so rendering the card for anyone else produced a page of
+    toggles that answer 403 the moment they are touched. Monitoring and
+    Notifications are the two pages a non-admin can open that render these,
+    which is exactly why the mismatch was not obvious.
+    """
+    from ..db import get_setting
+    if not viewer_is_admin():
+        return []
+    items = sorted(
+        (i for i in _ITEMS if i["settings_host"] == host and i["settings_tab"] == tab
+         and get_setting(i["enabled_setting_key"], "0") == "1"),
+        key=lambda i: i["priority"],
+    )
+    return [_build_card(item) for item in items]
+
+
+
+def resolve_module_settings():
+    """Every *enabled* registered item whose settings target the main Settings
+    page (settings_host="settings"), regardless of settings_tab. Returns the
+    same "card" shape as resolve_settings_cards().
+
+    Menu rework: module settings no longer render inside the Settings page's
+    own tabs (the get_dynamic_tabs("settings") sidebar sub-menu is gone).
+    They are collected here and shown on the dedicated "Module Settings"
+    page under the Module Manager (admin-only) instead. Both variants a
+    module can use -- a brand-new settings_tab (previously a dynamic tab) and
+    a card attached to a built-in Settings tab -- end up here, so nothing a
+    module registers for settings_host="settings" is lost.
+
+    It no longer stops there. A module that deliberately hangs its card on an
+    existing page -- Integrations, Notifications -- used to be missing from
+    this page entirely, which made "Module Settings" a page that showed *some*
+    module settings and gave no hint that others existed somewhere else. Every
+    enabled item with settings is now collected here, grouped by where its card
+    also lives, so this page is the one complete list.
+
+    For settings_host="integrations" this page is the ONLY place the card
+    exists: the Integrations page stopped rendering module cards (see the
+    _FORCED_TABS comment). "notifications"/"monitoring" do still keep a card of
+    their own, and both copies drive the same generic
+    /api/settings/thirdparty/<id> API, so editing either one is the same edit
+    -- module_settings.html says so for those two groups only.
+
+    Returns groups rather than a flat list::
+
+        [{"host": "settings", "label": "...", "cards": [...]}, ...]
+
+    Sorted by priority within a group (registration order among ties); disabled
+    modules are filtered out live, exactly like resolve_settings_cards().
+
+    Called lazily from module_settings.html (the context processor hands over
+    the *function*, not its result) -- this walks every registered item and
+    reads a setting per item, and the context processor runs on every single
+    template render, including the pages that never look at this.
+    """
+    from ..db import get_setting
+    from flask_babel import gettext as _gt
+
+    # "Own" first: a module that brought its own settings home is the least
+    # surprising thing on this page. The rest follow in the order their pages
+    # appear in the sidebar. "other" catches a host nobody anticipated (a
+    # future settings page, a typo in a module) so its cards are still shown
+    # rather than silently swallowed.
+    labels = [
+        ("settings", _gt("Own settings")),
+        ("integrations", _gt("Integrations")),
+        ("notifications", _gt("Notifications")),
+        ("other", _gt("Other")),
+    ]
+    known = {host for host, _ in labels}
+
+    # One pass, one get_setting per item: the enabled check is a DB read, and
+    # bucketing per host in a loop would multiply it by the number of groups.
+    buckets = {host: [] for host, _ in labels}
+    for item in _ITEMS:
+        if get_setting(item["enabled_setting_key"], "0") != "1":
+            continue
+        host = item["settings_host"] if item["settings_host"] in known else "other"
+        buckets[host].append(item)
+
+    groups = []
+    for host, label in labels:
+        items = sorted(buckets[host], key=lambda i: (i["priority"], i["settings_host"] or ""))
+        if items:
+            groups.append({"host": host, "label": label,
+                           "cards": [_build_card(item) for item in items]})
+    return groups
+
+
+def resolve_dynamic_tabs(host):
+    """Return the extra sub-menu/overview entries a settings page needs to
+    render on top of its own hand-written ones, for items whose settings_tab
+    isn't one of that host's _KNOWN_TABS. One entry per distinct new tab id,
+    sorted by the lowest priority among the items targeting it (ties break by
+    first-registered order):
+
+        [{id, label, icon_svg, description, module_name, is_module}, ...]
+
+    The template renders, for each entry: a sidebar sub-menu link (with the
+    module "M" pill, since is_module is always True here), an overview tile
+    (using description/icon_svg) and a content panel, which it populates via
+    resolve_settings_cards(host, entry.id).
+
+    icon_svg/description come from the item's overview_icon_svg/
+    overview_description (see register_thirdparty); module_name is the folder
+    that registered the representative item, for the pill's tooltip.
+
+    Admin-only for the same reason resolve_settings_cards() is: a tab whose
+    only content is cards that admin-only endpoint drives would otherwise
+    render for a non-admin as an empty panel with a working sidebar link.
+    """
+    if not viewer_is_admin():
+        return []
+    known = _KNOWN_TABS.get(host, ())
+    tabs = {}
+    for item in _ITEMS:
+        if item["settings_host"] != host:
+            continue
+        tab = item["settings_tab"]
+        if tab in known:
+            continue
+        existing = tabs.get(tab)
+        if existing is None or item["priority"] < existing["priority"]:
+            tabs[tab] = {
+                "id": tab,
+                "label": item["settings_tab_label"],
+                "icon_svg": item["overview_icon_svg"],
+                "description": item["overview_description"],
+                # Folder that registered this item -> the pill's tooltip.
+                "module_name": module_name_for_item(item["id"]) or item["label"],
+                "priority": item["priority"],
+            }
+    ordered = sorted(tabs.values(), key=lambda t: t["priority"])
+    return [{"id": t["id"], "label": t["label"], "icon_svg": t["icon_svg"],
+             "description": t["description"], "module_name": t["module_name"],
+             # Dynamic tabs always come from a registered module/integration.
+             "is_module": True} for t in ordered]
+
+
+def resolve_dashboard_widgets():
+    """Return the currently-enabled home-page widgets, sorted by priority:
+    [{id, template, label, icon_svg}, ...]. index.html includes each entry's
+    template inside its own container -- a proper .dash-card on the
+    Dashboard grid, built from label/icon_svg the same way home_panels.js
+    builds one for a built-in or register_home_panel() card. See
+    dashboard_widget_template above.
+
+    ponytail: no `multi` flag here (unlike register_home_panel()'s panels).
+    Each entry is rendered once, server-side, as one Jinja {% include %} per
+    page load -- there is no live "spawn another instance" story for opaque,
+    server-rendered markup the way there is for the JSON-based panels, which
+    re-render from a cached payload on demand. Upgrade path if that is ever
+    needed: give the template its own per-instance render endpoint instead
+    of an inline include.
+    """
+    from flask_babel import gettext as _gt
+
+    from ..db import get_setting
+
+    out = []
+    for item in sorted(_ITEMS, key=lambda i: i["priority"]):
+        if not item["dashboard_widget_template"]:
+            continue
+        try:
+            if get_setting(item["enabled_setting_key"], "0") != "1":
+                continue
+        except Exception:
+            continue
+        out.append({
+            "id": item["id"],
+            "template": item["dashboard_widget_template"],
+            "label": _gt(item["label"]),
+            "icon_svg": item["icon_svg"],
+        })
+    return out
+
+
+def resolve_provider_pill_scripts():
+    """Return the static URLs of currently-enabled provider-pill scripts,
+    sorted by priority, ready for base.html to render as <script> tags.
+    See provider_pill_script above.
+    """
+    from ..db import get_setting
+
+    out = []
+    for item in sorted(_ITEMS, key=lambda i: i["priority"]):
+        if not item["provider_pill_script"]:
+            continue
+        try:
+            if get_setting(item["enabled_setting_key"], "0") != "1":
+                continue
+        except Exception:
+            continue
+        out.append(item["provider_pill_script"])
+    return out
+
+
+# Telemetry one-shot guard: flag.extensions / detail.extensions describe the
+# module set this install loaded at startup, so they are submitted exactly once
+# per process even though register_generic_settings_routes() is defensively
+# callable more than once.
+_extensions_telemetry_lock = threading.Lock()
+_extensions_telemetry_done = False
+
+
+def _report_extensions_loaded():
+    """Submit flag.extensions + detail.extensions once, after the startup
+    module load finished.
+
+    flag.extensions is a pure counter ("at least one third-party extension is
+    loaded") -- build_feature_flag_event() takes no metadata, so the number and
+    the folder names go into detail.extensions instead, which the registry
+    explicitly allows to carry them ("Die Namen der geladenen
+    Drittanbieter-Erweiterungsordner (nicht deren Inhalt)"). Nothing is sent
+    when no module registered successfully: an install with no extensions is
+    not an install that "uses extensions".
+
+    These two keys are the ONLY telemetry that ever concerns third-party
+    modules, and they are reported by the core *about* the loaded module set
+    (how many, and their folder names) -- never by a module about itself.
+    Modules deliberately get no telemetry interface at all: no data_key of
+    their own, no submit helper handed to them, and none is to be added (see
+    the hard rule in telemetry/registry.py's module docstring). Module code
+    can be written by the user, so its errors and its usage are not this
+    project's business to collect or report.
+
+    Telemetry is imported lazily and the whole body is guarded, so neither an
+    import cycle nor a telemetry bug can affect module loading.
+    """
+    global _extensions_telemetry_done
+    try:
+        with _extensions_telemetry_lock:
+            if _extensions_telemetry_done:
+                return
+            _extensions_telemetry_done = True
+        names = sorted(registered_module_names())
+        if not names:
+            return
+        from ...telemetry import client as telemetry_client
+        from ...telemetry import events as telemetry_events
+        telemetry_client.submit(telemetry_events.build_feature_flag_event("flag.extensions"))
+        telemetry_client.submit(telemetry_events.build_feature_detail_event(
+            "detail.extensions", action="load", status="success",
+            metadata={"count": len(names), "names": names},
+        ))
+    except Exception:
+        logger.debug("[Telemetry] failed to build/submit extensions events", exc_info=True)
+
+
+def register_generic_settings_routes(app):
+    """One shared GET/PUT pair covering every extra_settings field type
+    (see register_thirdparty's docstring) plus the master enable toggle
+    every registered thirdparty gets for free. An integration that needs
+    more than these field types (a test button, dynamic option lists, ...)
+    can still add its own additional routes in its own routes.py -- this
+    generic pair only ever touches enabled_setting_key and this item's own
+    declared extra_settings keys.
+    """
+    from flask import jsonify, request
+    from ..db import get_setting, is_sensitive_key, set_setting
+
+    # Telemetry: web/thirdparties/__init__.py's discover_and_register() calls
+    # this exactly once, directly after every discovered module's register(app)
+    # has run -- i.e. the moment the startup module load is complete and the
+    # loaded set is known. Guarded + one-shot inside the helper.
+    _report_extensions_loaded()
+
+    @app.route("/api/settings/thirdparty/<item_id>", methods=["GET"])
+    def api_thirdparty_settings_get(item_id):
+        item = get_thirdparty(item_id)
+        if not item:
+            return jsonify({"error": "unknown"}), 404
+        extra = {}
+        for s in item.get("extra_settings", []):
+            value = get_setting(s["key"], s.get("default", "0"))
+            # A "secret" is write-only over this API: the browser only learns
+            # *whether* one is set, never what it is. Anything else would put
+            # the plaintext token straight into the DOM of the settings page
+            # (the field is type="password", which hides it from the user's
+            # eyes but not from any script on the page).
+            #
+            # is_sensitive_key() is checked as well, so a key a module declared
+            # via MODULE_SENSITIVE_SETTINGS (or registered with
+            # register_sensitive_keys) stays masked even when its card field
+            # was declared as plain "text". A value that is encrypted at rest
+            # must never leave the server in clear text just because the field
+            # type says otherwise.
+            if s["type"] == "secret" or is_sensitive_key(s["key"]):
+                value = SECRET_MASK if value else ""
+            extra[s["key"]] = value
+        return jsonify({"enabled": get_setting(item["enabled_setting_key"], "0"), "extra": extra})
+
+    @app.route("/api/settings/thirdparty/<item_id>", methods=["PUT"])
+    def api_thirdparty_settings_put(item_id):
+        item = get_thirdparty(item_id)
+        if not item:
+            return jsonify({"error": "unknown"}), 404
+        data = request.get_json(silent=True) or {}
+        if "enabled" in data:
+            was_enabled = get_setting(item["enabled_setting_key"], "0") == "1"
+            now_enabled = str(data["enabled"]) == "1"
+            set_setting(item["enabled_setting_key"], "1" if now_enabled else "0")
+            # Lifecycle hooks: on_enable(app)/on_disable(app) fire only on an
+            # actual state *change*, so a module can treat them as edges
+            # (start/stop a worker, clear a cache) rather than having to
+            # de-duplicate repeated saves of the same value itself. Imported
+            # lazily -- web/thirdparties/__init__.py imports this module, so a
+            # top-level import here would be circular.
+            if was_enabled != now_enabled:
+                # Before anything else: the gate that decides whether this
+                # module's provider, uptime target and image hosts are used
+                # caches for a second, and a toggle should be visible on the
+                # next request, not the one after.
+                _invalidate_enabled_cache()
+
+                from . import fire_module_hook
+
+                # Audit: the "module" category was defined when the audit log
+                # was written and never once used, which meant a module being
+                # switched off -- changing which providers, uptime targets and
+                # image hosts the app uses -- left no trace at all.
+                try:
+                    from ..audit_hooks import record_module
+
+                    record_module("module_enabled" if now_enabled else "module_disabled",
+                                  module_name_for_item(item_id) or item_id,
+                                  item_id=item_id)
+                except Exception:
+                    logger.debug("[Registry] Audit hook failed", exc_info=True)
+
+                fire_module_hook(module_name_for_item(item_id),
+                                 "on_enable" if now_enabled else "on_disable", app)
+                # ...and the core half of the same edge: a registered background
+                # worker is started/stopped to match, so a module doesn't have to
+                # do it from its own on_enable/on_disable (and doesn't have to get
+                # the locking right). No-op for a module without one.
+                sync_workers(app, item_id=item_id)
+
+        # Only ever writes keys this item itself registered via
+        # extra_settings -- an unrecognized key in the "extra" payload is
+        # silently ignored rather than allowing an arbitrary app_settings
+        # write from client input. Coercion/validation depends on the
+        # field's declared type.
+        fields_by_key = {s["key"]: s for s in item.get("extra_settings", [])}
+        for key, value in (data.get("extra") or {}).items():
+            field = fields_by_key.get(key)
+            if not field:
+                continue
+            field_type = field["type"]
+            if field_type == "toggle":
+                set_setting(key, "1" if str(value).lower() in ("true", "1") else "0")
+            elif field_type == "number":
+                # A whole number is stored WITHOUT a decimal point. str(float())
+                # turned a timeout of 20 into "20.0", and a module doing the
+                # obvious int(get_setting(...)) on its own key then got a
+                # ValueError -- the field validated fine and broke the module
+                # that declared it. Fractional values (a 0..1 threshold) keep
+                # their decimals.
+                try:
+                    if value in (None, ""):
+                        set_setting(key, "")
+                    else:
+                        num = float(value)
+                        set_setting(key, str(int(num)) if num.is_integer() else str(num))
+                except (TypeError, ValueError):
+                    continue
+            elif field_type == "select":
+                valid_values = {v for v, _label in field["options"]}
+                if value in valid_values:
+                    set_setting(key, str(value))
+            elif field_type == "secret":
+                # The GET route hands the browser SECRET_MASK instead of the
+                # stored value, so a save of a card the user never touched
+                # sends the mask straight back -- that means "leave it as it
+                # is", not "overwrite my token with eight bullets". An empty
+                # string is still honoured and clears the setting.
+                if str(value) != SECRET_MASK:
+                    set_setting(key, str(value))
+            else:  # "text"
+                # Same masking rule as the GET: a registered-sensitive key
+                # rendered as a text field gets the mask back, and the mask
+                # means "unchanged".
+                if is_sensitive_key(key) and str(value) == SECRET_MASK:
+                    continue
+                set_setting(key, str(value).strip())
+        return jsonify({"ok": True})

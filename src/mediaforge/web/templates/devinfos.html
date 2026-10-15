@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ _('Dev Infos') }} — MediaForge{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='devinfos.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="devinfos-page">
+  <div class="page-header devinfos-header">
+    <div>
+      <h1 class="page-title">{{ _('Dev Infos') }}</h1>
+      <p class="page-subtitle">{{ _('Latest news, fixes and known issues from the developers') }}</p>
+    </div>
+  </div>
+
+  {# data-settings-updates-url: static/devinfos.js rebuilds these cards on every
+     refresh and needs the same deep link the server-rendered ones use. Passed
+     as data instead of hardcoded in the script. #}
+  <div class="devinfos-list" id="devinfosList"
+       data-settings-updates-url="{{ url_for('settings_page') }}#updates">
+    {% if posts %}
+      {% for post in posts %}
+      <div class="devinfo-card{% if post.is_read %} devinfo-card-read{% endif %}" data-type="{{ post.type or 'announcement' }}" data-id="{{ post.id }}">
+        <div class="devinfo-card-head">
+          <span class="devinfo-tag devinfo-tag-{{ post.type or 'announcement' }}">
+            {% if post.type == 'feature' %}{{ _('Feature') }}
+            {% elif post.type == 'fix' %}{{ _('Fix') }}
+            {% elif post.type == 'warning' %}{{ _('Warning') }}
+            {% elif post.type == 'important' %}{{ _('Important') }}
+            {% elif post.type == 'release' %}{{ _('Release') }}
+            {% else %}{{ _('Announcement') }}
+            {% endif %}
+          </span>
+          <span class="devinfo-meta">
+            {% if post.author %}<span class="devinfo-author">{{ post.author }}</span>{% endif %}
+            <span class="devinfo-time" data-ts="{{ post.remote_created_at or '' }}">{{ post.formatted_time or post.remote_created_at or '' }}</span>
+            <button type="button" class="devinfo-mark-read-btn" data-id="{{ post.id }}" {% if post.is_read %}disabled{% endif %}>
+              {% if post.is_read %}✓ {{ _('Read') }}{% else %}{{ _('Mark as read') }}{% endif %}
+            </button>
+          </span>
+        </div>
+        <h3 class="devinfo-title">{{ post.title }}</h3>
+        {% if post.release_tag %}
+        <div class="devinfo-release-head">
+          <span class="devinfo-release-version">{{ post.release_name or post.release_tag }}</span>
+          {% if post.release_name and post.release_tag and post.release_name != post.release_tag %}
+          <span class="devinfo-release-tag">{{ post.release_tag }}</span>
+          {% endif %}
+          {% if post.release_published %}<span class="devinfo-release-date">{{ post.release_published }}</span>{% endif %}
+          <a class="devinfo-release-btn-sm" href="{{ url_for('settings_page') }}#updates">{{ _('Go to updates') }}</a>
+        </div>
+        {% endif %}
+        {# body_html is the bleach-sanitised render of the (untrusted) remote
+           feed body -- see web/markdown_utils.py. There used to be a
+           |default(post.body, true) fallback here, which substituted the RAW
+           body and then marked it safe whenever the sanitised HTML came back
+           falsy: i.e. exactly when bleach had stripped everything, which is
+           the case where empty is the correct output. index.html renders the
+           same field without a fallback. #}
+        <div class="devinfo-body devinfo-markdown">{{ post.body_html|safe }}</div>
+        {# The release notes, collapsed by default: GitHub release bodies are
+           often long and this is a feed, not a changelog page. <details> does
+           the open/close natively -- no JS, and it keeps working in the list
+           that static/devinfos.js re-renders wholesale every 60s. #}
+        {% if post.release_notes_html %}
+        <details class="devinfo-changelog">
+          <summary class="devinfo-changelog-summary">
+            {{ _('Changelog') }} <span class="devinfo-changelog-version">{{ post.release_tag }}</span>
+          </summary>
+          <div class="devinfo-changelog-body devinfo-markdown">{{ post.release_notes_html|safe }}</div>
+          {% if post.release_url %}
+          <a class="devinfo-changelog-link" href="{{ post.release_url }}" target="_blank" rel="noopener noreferrer">{{ _('Open release page') }}</a>
+          {% endif %}
+        </details>
+        {% endif %}
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="devinfos-empty" id="devinfosEmpty">{{ _('No dev infos yet.') }}</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='devinfos.js') }}"></script>
+{% endblock %}

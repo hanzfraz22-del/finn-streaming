@@ -1,0 +1,1018 @@
+"""Scraping helpers for AniWorld/s.to search, browse, and homepage sections.
+
+Covers: keyword search and random-pick on aniworld.to/serienstream.to, the
+"new/popular" homepage sections used by the WebUI's browse page, and thin
+pass-through wrappers around the MegaKino and hanime.tv scraper modules
+(``models/megakino_to/scraper.py``, ``models/hanime_tv/scraper.py``).
+
+:func:`search` and :func:`_curses_menu` are a leftover interactive,
+curses-based CLI picker from before the WebUI-only refactor (see
+``arguments.py``); they are not called anywhere in the current app and are
+only reachable by running this module directly or importing it manually.
+"""
+
+try:
+    import curses
+except ImportError:
+    curses = None
+import html as html_module
+import os
+import random
+import re
+
+try:
+    from .config import GLOBAL_SESSION, logger
+except ImportError:
+    from mediaforge.config import GLOBAL_SESSION, logger
+
+SEARCH_URL = "https://aniworld.to/ajax/search"
+RANDOM_URL = "https://aniworld.to/ajax/randomGeneratorSeries"
+NEW_EPISODES_URL = "https://aniworld.to/neue-episoden"
+HOME_URL = "https://aniworld.to"
+
+import threading as _threading
+import time as _time
+
+_homepage_cache = None        # cached HTML string
+_homepage_cache_at = 0.0      # unix timestamp of last successful fetch
+_homepage_cache_ttl = 3600.0  # 1 hour
+_homepage_refreshing = False   # background refresh in progress
+_homepage_lock = _threading.Lock()
+_series_html_content = None
+_series_lock = _threading.Lock()
+
+
+def random_anime():
+    """Fetch a random anime series from Aniworld and return its URL.
+
+    Used by: the browse route (``web/routes/browse.py``) "surprise me" action
+    and by :func:`search` when ``MEDIAFORGE_RANDOM_ANIME=1``.
+    """
+    data = {"productionStart": "all", "productionEnd": "all", "genres[]": "all"}
+
+    try:
+        response = GLOBAL_SESSION.post(RANDOM_URL, data=data)
+        response.raise_for_status()
+        result = response.json()
+
+        if not result:
+            logger.error("Random anime response is empty")
+            return None
+
+        # Pick a random anime from the list
+        series = random.choice(result)
+        link = series.get("link")
+        if link:
+            return f"https://aniworld.to/anime/stream/{link}"
+        else:
+            logger.error("No link found in selected random anime")
+            return None
+
+    except Exception as e:
+        logger.error(f"Failed to fetch random anime: {e}")
+        return None
+
+
+def query(keyword):
+    """Send a search request to Aniworld with given keyword.
+
+    Returns the raw JSON list of matches (or None on invalid JSON).
+    Used by: ``web/routes/search.py`` and ``web/routes/autosync.py`` (imported
+    there as ``aniworld_query``).
+    """
+    response = GLOBAL_SESSION.post(SEARCH_URL, data={"keyword": keyword}, timeout=10)
+    try:
+        return response.json()  # Returns a list of dicts
+    except ValueError:
+        return None
+
+
+def fetch_new_episodes():
+    """Fetch the latest episodes from mediaforge.to/neue-episoden.
+
+    Returns a deduplicated list of episode dicts (grouped by URL, languages merged),
+    or None on error.
+    """
+    try:
+        response = GLOBAL_SESSION.get(NEW_EPISODES_URL)
+        response.raise_for_status()
+        html = response.text
+    except Exception as e:
+        logger.error(f"Failed to fetch new episodes: {e}")
+        return None
+
+    # Try to narrow scope to the newEpisodeList block
+    block_match = re.search(r'class="newEpisodeList">(.*)', html, re.DOTALL)
+    search_html = block_match.group(1) if block_match else html
+
+    # Find all episode links with their surrounding context
+    episode_pattern = re.compile(
+        r'<a\s+href="(/anime/stream/[^"]+/staffel-(\d+)/episode-(\d+))"[^>]*>'
+        r"(.*?)</a>"
+        r'(.*?(?=<a\s+href="/anime/stream/|$))',
+        re.DOTALL,
+    )
+
+    seen = {}
+    ordered_urls = []
+
+    for m in episode_pattern.finditer(search_html):
+        path, season_str, episode_str, inner, after = m.groups()
+        url = f"https://aniworld.to{path}"
+        season = int(season_str)
+        episode = int(episode_str)
+
+        # Extract title from <strong>
+        title_match = re.search(r"<strong>(.*?)</strong>", inner)
+        title = html_module.unescape(title_match.group(1).strip()) if title_match else ""
+
+        # Extract date from elementFloatRight span or last span
+        date_match = re.search(
+            r'<span[^>]*class="[^"]*elementFloatRight[^"]*"[^>]*>(.*?)</span>',
+            inner,
+        )
+        date = date_match.group(1).strip() if date_match else ""
+
+        # Extract language from flag image data-src
+        context = inner + after
+        flag_match = re.search(r'data-src="[^"]*?/(\w[\w-]*)\.svg"', context)
+        language = flag_match.group(1) if flag_match else ""
+
+        if url not in seen:
+            seen[url] = {
+                "title": title,
+                "url": url,
+                "season": season,
+                "episode": episode,
+                "date": date,
+                "languages": [],
+            }
+            ordered_urls.append(url)
+
+        if language and language not in seen[url]["languages"]:
+            seen[url]["languages"].append(language)
+
+    return [seen[url] for url in ordered_urls]
+
+
+def _fetch_homepage():
+    """Return cached homepage HTML with TTL + stale-while-revalidate."""
+    global _homepage_cache, _homepage_cache_at, _homepage_refreshing
+
+    # 1 + 2: single lock acquisition — compute `now` inside so _homepage_cache_at
+    # is always compared to a timestamp taken under the same lock.
+    with _homepage_lock:
+        now = _time.time()
+        if _homepage_cache is not None and (now - _homepage_cache_at) < _homepage_cache_ttl:
+            return _homepage_cache
+
+        # Stale but present — kick off a background refresh, return stale data now
+        if _homepage_cache is not None:
+            if not _homepage_refreshing:
+                _homepage_refreshing = True
+
+                def _bg_refresh():
+                    global _homepage_cache, _homepage_cache_at, _homepage_refreshing
+                    try:
+                        resp = GLOBAL_SESSION.get(HOME_URL)
+                        resp.raise_for_status()
+                        with _homepage_lock:
+                            _homepage_cache = resp.text
+                            _homepage_cache_at = _time.time()
+                    except Exception as exc:
+                        logger.warning(f"Homepage background refresh failed: {exc}")
+                    finally:
+                        with _homepage_lock:
+                            _homepage_refreshing = False
+
+                _threading.Thread(target=_bg_refresh, daemon=True,
+                                  name="homepage-refresh").start()
+            return _homepage_cache
+
+    # 3. Cold start — fetch synchronously (lock re-acquired after stale check)
+    with _homepage_lock:
+        if _homepage_cache is not None:
+            return _homepage_cache
+        try:
+            response = GLOBAL_SESSION.get(HOME_URL)
+            response.raise_for_status()
+            _homepage_cache = response.text
+            _homepage_cache_at = _time.time()
+            return _homepage_cache
+        except Exception as e:
+            logger.error(f"Failed to fetch homepage: {e}")
+            return None
+
+
+def _extract_cover_list(html, heading):
+    """Extract a list of anime cover items from a homepage section.
+
+    Finds the section identified by the <h2> heading text, then extracts
+    coverListItem entries until the next section.
+    """
+    # Find the heading position
+    heading_pattern = re.compile(rf"<h2>\s*{re.escape(heading)}\s*</h2>", re.IGNORECASE)
+    heading_match = heading_pattern.search(html)
+    if not heading_match:
+        logger.warning(f"Homepage section '{heading}' not found")
+        return []
+
+    # Slice from heading to the next <h2> or end
+    start = heading_match.end()
+    next_h2 = re.search(r"<h2>", html[start:])
+    section_html = html[start : start + next_h2.start()] if next_h2 else html[start:]
+
+    # Extract items — anchor on /anime/stream/ links with cover structure
+    item_pattern = re.compile(
+        r'<a\s+href="(/anime/stream/[^"]+)"[^>]*title="([^"]*)"[^>]*>'
+        r"(.*?)</a>",
+        re.DOTALL,
+    )
+
+    results = []
+    seen_urls = set()
+
+    for m in item_pattern.finditer(section_html):
+        path, link_title, inner = m.groups()
+        url = f"https://aniworld.to{path}"
+
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+
+        # Prefer the img alt text over the <h3> title: alt is more reliable
+        # when the displayed title text is truncated in the markup.
+        img_match = re.search(r'<img[^>]+alt="([^"]+)"', inner)
+        img_alt_text = img_match.group(1).strip() if img_match else ""
+        img_alt_text = re.sub(r'(?i)\s+Cover.*$', '', img_alt_text).strip()
+        img_alt_text = html_module.unescape(img_alt_text)
+            
+        h3_match = re.search(r"<h3>(.*?)</h3>", inner, re.DOTALL)
+        h3_text = re.sub(r"<[^>]+>", "", h3_match.group(1)).strip() if h3_match else ""
+        h3_text = html_module.unescape(h3_text)
+        
+        # Prefer img_alt_text since it's the most reliable clean title
+        title = img_alt_text if img_alt_text else h3_text
+
+        # Genre from <small>
+        small_match = re.search(r"<small>(.*?)</small>", inner, re.DOTALL)
+        genre = (
+            re.sub(r"<[^>]+>", "", small_match.group(1)).strip() if small_match else ""
+        )
+
+        # Poster from data-src on img
+        img_match = re.search(r'data-src="([^"]+)"', inner)
+        poster_url = ""
+        if img_match:
+            poster_path = img_match.group(1)
+            poster_url = (
+                poster_path
+                if poster_path.startswith("http")
+                else f"https://aniworld.to{poster_path}"
+            )
+
+        results.append(
+            {
+                "title": title,
+                "url": url,
+                "genre": genre,
+                "poster_url": poster_url,
+            }
+        )
+
+    return results
+
+
+def fetch_new_animes():
+    """Fetch the 'Neue Animes' section from the homepage.
+
+    Returns a list of anime dicts or None on error.
+    """
+    html = _fetch_homepage()
+    if html is None:
+        return None
+    return _extract_cover_list(html, "Neue Animes")
+
+
+def fetch_popular_animes():
+    """Fetch the 'Derzeit beliebt' section from the homepage.
+
+    Returns a list of anime dicts or None on error.
+    """
+    html = _fetch_homepage()
+    if html is None:
+        return None
+    return _extract_cover_list(html, "Derzeit beliebt")
+
+
+def _fetch_series_homepage():
+    """Fetch the s.to popular series page, using a simple module-level cache."""
+    global _series_html_content
+    if _series_html_content is not None:
+        return _series_html_content
+    with _series_lock:
+        if _series_html_content is not None:  # double-check after acquiring lock
+            return _series_html_content
+        try:
+            response = GLOBAL_SESSION.get("https://serienstream.to/beliebte-serien")
+            response.raise_for_status()
+            _series_html_content = response.text
+            return _series_html_content
+        except Exception as e:
+            logger.error(f"Failed to fetch s.to popular series page: {e}")
+            return None
+
+
+def _extract_series_cards(section_html):
+    """Extract series cards from an s.to HTML section.
+
+    Parses <a> tags linking to /serie/ paths and extracts title from the
+    <img> alt attribute and poster from src/data-src. Deduplicates by slug.
+    """
+    results = []
+    seen_slugs = set()
+
+    # Match <a> tags with /serie/ hrefs — deliberately loose on class to
+    # survive class-name changes; we only require the href pattern.
+    link_pattern = re.compile(
+        r'<a\s[^>]*href="(/serie/[^"]+)"[^>]*>(.*?)</a>',
+        re.DOTALL,
+    )
+
+    for m in link_pattern.finditer(section_html):
+        path, inner = m.groups()
+
+        # Normalise to the base series slug (strip /staffel-N etc.)
+        parts = path.strip("/").split("/")
+        # Expected: ["serie", "slug"] or ["serie", "slug", "staffel-8"]
+        if len(parts) < 2:
+            continue
+        series_slug = parts[1]
+
+        if series_slug in seen_slugs:
+            continue
+        seen_slugs.add(series_slug)
+
+        url = f"https://serienstream.to/serie/{series_slug}"
+
+        # --- Title: try img alt, then link title attr, then alt on any tag ---
+        title = ""
+        for pat in [
+            r'<img[^>]+\balt="([^"]+)"',
+            r'\btitle="([^"]+)"',
+        ]:
+            t = re.search(pat, inner)
+            if t:
+                title = html_module.unescape(t.group(1).strip())
+                break
+
+        # --- Poster: try data-src first (lazy-loaded real URL), then src ---
+        poster_url = ""
+        for pat in [
+            r'<img[^>]+\bdata-src="(/[^"]+)"',
+            r'<img[^>]+\bsrc="(/[^"]+)"',
+            r'<img[^>]+\bsrc="(https?://[^"]+)"',
+        ]:
+            p = re.search(pat, inner)
+            if p:
+                raw = p.group(1).strip()
+                poster_url = raw if raw.startswith("http") else f"https://serienstream.to{raw}"
+                break
+
+        if title or poster_url:
+            results.append({
+                "title": title,
+                "url": url,
+                "genre": "",
+                "poster_url": poster_url,
+            })
+
+    return results
+
+
+def _find_series_section(full_html, heading_hints, fallback_index):
+    """Locate an s.to section and extract its series cards.
+
+    Tries to find the section by heading text patterns first (resilient to
+    surrounding markup changes), then falls back to the Nth mb-5 div by
+    positional index.
+    """
+    section_html = None
+
+    # strat 1: find by heading text inside an <h2> (avoids meta tags)
+    for hint in heading_hints:
+        h2_pattern = re.compile(
+            r"<h2[^>]*>[^<]*" + hint, re.IGNORECASE | re.DOTALL
+        )
+        match = h2_pattern.search(full_html)
+        if match:
+            start = match.start()
+            # Grab content from the heading to the next mb-5 section or end
+            rest = full_html[start:]
+            next_section = re.search(
+                r'<div[^>]*class="[^"]*\bmb-5\b', rest[50:]
+            )
+            section_html = rest[: next_section.start() + 50] if next_section else rest
+            break
+
+    # strat 2: split by mb-5 divs and pick by index
+    if section_html is None:
+        mb5_starts = [
+            m.start()
+            for m in re.finditer(r'<div[^>]*class="[^"]*\bmb-5\b', full_html)
+        ]
+        if fallback_index < len(mb5_starts):
+            start = mb5_starts[fallback_index]
+            end = (
+                mb5_starts[fallback_index + 1]
+                if fallback_index + 1 < len(mb5_starts)
+                else len(full_html)
+            )
+            section_html = full_html[start:end]
+
+    if not section_html:
+        return []
+
+    return _extract_series_cards(section_html)
+
+
+def fetch_new_series():
+    """Fetch the 'Neue Staffeln diese Woche' section from s.to.
+
+    Returns a list of series dicts or None on error.
+    """
+    html = _fetch_series_homepage()
+    if html is None:
+        return None
+    return _find_series_section(
+        html,
+        heading_hints=[r"Neue\s+Staffeln", r"Neue\s+Serien", r"\U0001f970"],
+        fallback_index=0,
+    )
+
+
+def fetch_popular_series():
+    """Fetch the 'Meistgesehen gerade' section from s.to.
+
+    Returns a list of series dicts or None on error.
+    """
+    html = _fetch_series_homepage()
+    if html is None:
+        return None
+    return _find_series_section(
+        html,
+        heading_hints=[r"Meistgesehen", r"Beliebt", r"\U0001f525"],
+        fallback_index=1,
+    )
+
+
+def _curses_menu(stdscr, options):
+    """Display a simple curses menu to select an option with scrolling support."""
+    curses.curs_set(0)
+    curses.start_color()
+    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
+
+    selected = 0
+    top = 0
+
+    while True:
+        stdscr.clear()
+        h, w = stdscr.getmaxyx()
+        display_height = h - 2  # leave room for borders
+
+        # Adjust top for scrolling
+        if selected < top:
+            top = selected
+        elif selected >= top + display_height:
+            top = selected - display_height + 1
+
+        # Display visible options
+        for idx in range(top, min(top + display_height, len(options))):
+            option = options[idx]
+            title = (
+                option.get("title", "Unknown Title")
+                .replace("<em>", "")
+                .replace("</em>", "")
+            )
+            title = title[: w - 4]  # clip to width
+            y = idx - top + 1
+            x = 2
+            if idx == selected:
+                stdscr.attron(curses.color_pair(1))
+                stdscr.addstr(y, x, title)
+                stdscr.attroff(curses.color_pair(1))
+            else:
+                stdscr.addstr(y, x, title)
+
+        stdscr.refresh()
+        key = stdscr.getch()
+
+        if key in [curses.KEY_UP, ord("k")]:
+            selected = (selected - 1) % len(options)
+        elif key in [curses.KEY_DOWN, ord("j")]:
+            selected = (selected + 1) % len(options)
+        elif key in [curses.KEY_ENTER, ord("\n")]:
+            return options[selected]
+
+
+def _normalize_s_to_link(link: str) -> str:
+    """
+    Normalize s.to links to the canonical form used by our provider patterns:
+    - /serie/<slug>
+    Also accepts /serie/stream/<slug> and converts it back.
+    """
+    if not link:
+        return link
+
+    link = link.strip()
+
+    # Convert /serie/stream/<slug> -> /serie/<slug>
+    if link.startswith("/serie/stream/"):
+        slug = link[len("/serie/stream/") :].strip("/")
+        return f"/serie/{slug}" if slug else link
+
+    # Keep canonical /serie/<slug>
+    if link.startswith("/serie/"):
+        # ensure it doesn't include extra path segments
+        slug = link[len("/serie/") :].strip("/").split("/", 1)[0]
+        return f"/serie/{slug}" if slug else link
+
+    return link
+
+
+def query_s_to(keyword):
+    """Search s.to for the given keyword and return a list of matching series with their URLs.
+
+    Used by: ``web/routes/search.py`` and ``web/routes/autosync.py``.
+    """
+    # Use query params to ensure proper URL encoding (spaces, umlauts, etc.)
+    url = "https://serienstream.to/api/search/suggest"
+    response = GLOBAL_SESSION.get(url, params={"term": keyword}, timeout=10)
+
+    data = response.json()
+    shows = data.get("shows", []) or []
+
+    results = []
+    for show in shows:
+        title = show.get("name", "Unknown Title")
+        link = _normalize_s_to_link(show.get("url", "") or "")
+        if link:
+            results.append({"title": title, "link": link})
+
+    return results
+
+
+def search(is_aniworld=None):
+    """Prompt user for a search keyword and return a single series URL using a curses menu.
+
+    Legacy interactive-CLI helper from before the WebUI-only refactor (see
+    ``arguments.py``): the WebUI does its own search UI and does not call
+    this function. Kept for manual/debug use (``python -m mediaforge.search``).
+    """
+    use_random = os.getenv("MEDIAFORGE_RANDOM_ANIME", "0") == "1"
+
+    if is_aniworld is None:
+        is_aniworld = os.getenv("MEDIAFORGE_USE_STO_SEARCH", "0") != "1"
+
+    base_url = "https://aniworld.to" if is_aniworld else "https://serienstream.to"
+    query_fn = query if is_aniworld else query_s_to
+
+    if use_random:
+        result = random_anime()
+        if result:
+            logger.debug(f"Random anime selected: {result}")
+            return result
+        else:
+            logger.error("Failed to get random anime. Please try again.")
+            return None
+
+    while True:
+        keyword = input("\nSearch for a series: ").strip()
+        if not keyword:
+            logger.error("No keyword entered, aborting search.")
+            return None
+
+        results = query_fn(keyword)
+
+        if not results:
+            logger.error("No results found. Please try again.")
+            continue
+
+        if isinstance(results, dict):
+            results = [results]
+        elif isinstance(results, str):
+            return results
+
+        logger.debug(results)
+
+        if is_aniworld:
+            stream_pattern = re.compile(
+                r"^/anime/stream/[a-zA-Z0-9\-]+/?$", re.IGNORECASE
+            )
+        else:
+            stream_pattern = re.compile(
+                r"^/serie/(stream/)?[a-zA-Z0-9\-]+/?$", re.IGNORECASE
+            )
+
+        stream_results = [
+            item for item in results if stream_pattern.match(item.get("link") or "")
+        ]
+
+        if not stream_results:
+            logger.error("No streamable series found. Please try again.")
+            continue
+
+        if len(stream_results) == 1:
+            selected_item = stream_results[0]
+            title = selected_item.get("title") or selected_item.get(
+                "name", "Unknown Title"
+            )
+            logger.debug(f"Auto-selected: {title}")
+            return f"{base_url}{selected_item['link']}"
+
+        def menu_wrapper(stdscr):
+            curses.start_color()
+            curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
+            selected_item = _curses_menu(stdscr, stream_results)
+            return f"{base_url}{selected_item['link']}"
+
+        return curses.wrapper(menu_wrapper)
+
+
+
+# ---------------------------------------------------------------------------
+# MegaKino (megakino.to) — thin wrappers around the model-package scraper
+# ---------------------------------------------------------------------------
+def _megakino_scraper():
+    """Lazily import the megakino scraper module (avoids a hard dependency
+    at package-import time for a site most installs won't use)."""
+    from .models.megakino_to import scraper
+    return scraper
+
+
+def megakino_search(keyword):
+    """Search megakino and return a list of {title, url, poster_url, ...}.
+
+    Used by: ``web/routes/search.py`` and ``web/routes/autosync.py``.
+    """
+    return _megakino_scraper().search(keyword)
+
+
+def fetch_megakino_new_movies():
+    """Fetch MegaKino's 'new movies' homepage section.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _megakino_scraper().fetch_new_movies()
+
+
+def fetch_megakino_popular_movies():
+    """Fetch MegaKino's 'popular movies' homepage section.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _megakino_scraper().fetch_popular_movies()
+
+
+def fetch_megakino_new_series():
+    """Fetch MegaKino's 'new series' homepage section.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _megakino_scraper().fetch_new_series()
+
+
+def fetch_megakino_popular_series():
+    """Fetch MegaKino's 'popular series' homepage section.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _megakino_scraper().fetch_popular_series()
+
+
+# ---------------------------------------------------------------------------
+# filmo.to — thin wrappers around the model-package scraper
+# ---------------------------------------------------------------------------
+def _filmo_scraper():
+    """Lazily import the filmo.to scraper module (avoids a hard dependency
+    at package-import time for a site most installs won't use)."""
+    from .models.filmo_to import scraper
+    return scraper
+
+
+def filmo_search(keyword):
+    """Search filmo.to and return a list of {title, url, poster_url, ...}.
+
+    Used by: ``web/routes/search.py`` and ``web/routes/autosync.py``.
+    """
+    return _filmo_scraper().search(keyword)
+
+
+def fetch_filmo_new_movies():
+    """Fetch filmo.to's 'new movies' homepage section.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _filmo_scraper().fetch_new_movies()
+
+
+def fetch_filmo_popular_movies():
+    """Fetch filmo.to's 'popular movies' homepage section.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _filmo_scraper().fetch_popular_movies()
+
+
+# ---------------------------------------------------------------------------
+# 9anime.or.at (English-only, opt-in) — thin wrappers around the
+# model-package scraper
+# ---------------------------------------------------------------------------
+def _nineanime_scraper():
+    """Lazily import the 9anime.or.at scraper module (opt-in source, avoids a
+    hard dependency at package-import time for installs that never enable it)."""
+    from .models.nineanime_to import scraper
+    return scraper
+
+
+def nineanime_search(keyword):
+    """Search 9anime.or.at and return a list of {title, url, poster_url, ...}.
+
+    Used by: ``web/routes/search.py`` and ``web/routes/autosync.py``.
+    """
+    return _nineanime_scraper().search(keyword)
+
+
+def fetch_nineanime_new():
+    """Fetch 9anime.or.at's 'newest' homepage listing.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _nineanime_scraper().fetch_new()
+
+
+def fetch_nineanime_popular():
+    """Fetch 9anime.or.at's 'trending' homepage listing.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _nineanime_scraper().fetch_popular()
+
+
+# ---------------------------------------------------------------------------
+# aniwaves.ru (English-only, opt-in) — thin wrappers around the
+# model-package scraper
+# ---------------------------------------------------------------------------
+def _aniwaves_scraper():
+    """Lazily import the aniwaves.ru scraper module (opt-in source, avoids a
+    hard dependency at package-import time for installs that never enable it)."""
+    from .models.aniwaves_ru import scraper
+    return scraper
+
+
+def aniwaves_search(keyword):
+    """Search aniwaves.ru and return a list of {title, url, poster_url, ...}.
+
+    Used by: ``web/routes/search.py`` and ``web/routes/autosync.py``.
+    """
+    return _aniwaves_scraper().search(keyword)
+
+
+def fetch_aniwaves_new():
+    """Fetch aniwaves.ru's 'newest' homepage listing.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _aniwaves_scraper().fetch_new()
+
+
+def fetch_aniwaves_popular():
+    """Fetch aniwaves.ru's 'trending' homepage listing.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _aniwaves_scraper().fetch_popular()
+
+
+# ---------------------------------------------------------------------------
+# hanime.tv (adult / 18+) — thin wrappers around the model-package scraper
+# ---------------------------------------------------------------------------
+def _hanime_scraper():
+    """Lazily import the hanime.tv scraper module (adult content is
+    gated/disabled by default in the UI, so avoid loading it eagerly)."""
+    from .models.hanime_tv import scraper
+    return scraper
+
+
+def hanime_search(keyword):
+    """Search hanime and return a list of franchise cards.
+
+    Used by: ``web/routes/search.py`` and ``web/routes/autosync.py``.
+    """
+    return _hanime_scraper().search(keyword)
+
+
+def fetch_hanime_new(show_censored=True, show_uncensored=True):
+    """Fetch hanime.tv's 'new' listing, optionally filtering censored/uncensored.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _hanime_scraper().fetch_new(show_censored=show_censored, show_uncensored=show_uncensored)
+
+
+def fetch_hanime_trending(show_censored=True, show_uncensored=True):
+    """Fetch hanime.tv's 'trending' listing, optionally filtering censored/uncensored.
+
+    Used by: the browse route (``web/routes/browse.py``).
+    """
+    return _hanime_scraper().fetch_trending(show_censored=show_censored, show_uncensored=show_uncensored)
+
+
+# ---------------------------------------------------------------------------
+# Third-party search sources
+# ---------------------------------------------------------------------------
+# ``web/routes/search.py``'s ``api_search()`` dispatches POST /api/search by a
+# ``site`` string (today: "aniworld"/"sto" (default branch), "filmpalast",
+# "megakino", "hanime"). A third-party module adding a new content source
+# (see ``providers.register_provider`` for the URL-resolution half of the
+# same feature) registers its own site id here so ``api_search()`` picks it
+# up automatically -- no change to that route needed.
+_EXTRA_SEARCH_SOURCES: dict = {}  # item_id -> see register_search_source()
+
+# A site id ends up as a settings key suffix, a DOM data attribute and part of
+# a CSS class, so it is validated once at registration instead of escaped at
+# every use site.
+_SITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,39}$")
+
+
+def register_search_source(item_id: str, site_id: str, search_fn, label: str | None = None,
+                           adult: bool = False, enabled_key: str | None = None,
+                           media_types=None) -> None:
+    """Register a keyword search function for a third-party content source.
+
+    - ``item_id``: the id the module already passed to ``register_thirdparty()``
+      -- lets ``web/thirdparties/registry.py``'s ``unregister_module()`` remove
+      this registration automatically when the module is disabled/uninstalled.
+    - ``site_id``: the value the frontend will send as ``site`` in
+      ``POST /api/search``. Must not collide with a built-in id
+      (``"aniworld"``, ``"sto"``, ``"filmpalast"``, ``"megakino"``,
+      ``"hanime"``) or another registered one.
+    - ``search_fn(keyword: str) -> list[dict]``: called with the raw search
+      keyword, must return a list of ``{"title": str, "url": str}`` dicts (the
+      same shape every built-in search returns) -- ``url`` should be
+      resolvable by :func:`mediaforge.providers.resolve_provider` (i.e. match
+      the ``Provider`` this module registered via ``register_provider``).
+      Exceptions are the caller's (``api_search()``'s) responsibility to
+      catch, same as any built-in source failing upstream.
+    - ``label``: human-readable name. Shown to the user -- it is the heading
+      above this source's results, its chip under the search field and its row
+      in Settings -> Sources -- and used in logs. Defaults to ``site_id``.
+    - ``adult``: mark the source 18+. It then behaves like the built-in adult
+      source everywhere: hidden entirely from an age-limited session and never
+      searched by one (see ``web/source_policy.py``).
+    - ``enabled_key``: the ``app_settings`` key holding this source's on/off
+      state, if the module already owns one. Defaults to the
+      ``source_enabled_<site_id>`` convention, which the Sources settings tab
+      writes for module sources automatically -- pass this only to reuse an
+      existing key. Either way the source defaults to *on*: it was installed
+      on purpose.
+    - ``media_types``: what this source publishes -- any of ``"movies"``,
+      ``"series"``, ``"adult"``. Optional; omitting it means "both films and
+      series", which is the safe default (a source asked about something it
+      does not have simply returns nothing, whereas a source left out of a
+      lookup looks broken). Used where a lookup already knows what it is after
+      and should not spend a request on a source that cannot have it -- the
+      Seerr page asks only movie sources about a movie request. Declare it if
+      your source is one-sided; it saves your site a request per search.
+
+    Registering the search half is what puts a module's content source into
+    the *normal search box*: ``GET /api/search/sources`` lists it and the
+    WebUI fans every keyword out to everything on that list. A module that
+    only calls ``providers.register_provider()`` stays reachable by pasted URL
+    but is never asked a keyword -- the two halves are deliberately separate,
+    since a site can be resolvable without offering a keyword search.
+    """
+    if not callable(search_fn):
+        raise ValueError("register_search_source: search_fn must be callable")
+    reserved = {"aniworld", "sto", "filmpalast", "megakino", "hanime"}
+    if site_id in reserved:
+        raise ValueError(f"register_search_source: {site_id!r} is a built-in site id")
+    # The id travels into DOM attributes, settings keys and CSS selectors, so
+    # it is constrained to the shape all of those tolerate rather than being
+    # escaped at each of the (currently five) places it is rendered.
+    if not _SITE_ID_RE.match(site_id or ""):
+        raise ValueError(
+            f"register_search_source: invalid site id {site_id!r} "
+            "(allowed: a-z, 0-9, _ and -, 2-40 chars)")
+    for existing_id, entry in _EXTRA_SEARCH_SOURCES.items():
+        if entry["site_id"] == site_id and existing_id != item_id:
+            raise ValueError(f"register_search_source: site id already registered: {site_id!r}")
+    _clean_types = tuple(
+        t for t in (media_types or ()) if t in ("movies", "series", "adult"))
+    _EXTRA_SEARCH_SOURCES[item_id] = {
+        "site_id": site_id,
+        "search_fn": search_fn,
+        "label": label or site_id,
+        "adult": bool(adult),
+        "enabled_key": enabled_key or None,
+        # () means "not declared" -- source_policy.source_media_types() turns
+        # that into the both-types default rather than storing the default
+        # here, so a later change of mind about the default reaches sources
+        # that were registered before it.
+        "media_types": _clean_types,
+    }
+    logger.info("[Search] Registered third-party search source: %s (%s)", site_id, item_id)
+
+
+def unregister_search_source(item_id: str) -> None:
+    """Drop a search source previously added via :func:`register_search_source`."""
+    removed = _EXTRA_SEARCH_SOURCES.pop(item_id, None)
+    if removed:
+        logger.info("[Search] Unregistered third-party search source: %s (%s)", removed["site_id"], item_id)
+
+
+def thirdparty_search_source_ids() -> set:
+    """item_ids that currently own a third-party search source.
+
+    Read-only counterpart of :func:`unregister_register_search_source` -- the Modulmanager uses
+    it to report what a module registered without reaching into this
+    module's private dict.
+    """
+    return set(_EXTRA_SEARCH_SOURCES)
+
+
+def thirdparty_search_sources() -> list:
+    """Every registered third-party search source as a plain dict
+    (``site_id``/``label``/``adult``/``enabled_key``) -- no ``search_fn``, so
+    the result is safe to hand to a JSON response.
+
+    Read-only view for ``web/source_policy.py``'s :func:`search_sources`,
+    which merges these with the built-ins into the one list the WebUI fans
+    its searches out to.
+
+    Sources belonging to a switched-off module are left out -- see
+    module_gate.py for why the enabled check lives at the point of use.
+    """
+    from .module_gate import filter_enabled
+
+    return [
+        {
+            "site_id": e["site_id"],
+            "label": e.get("label") or e["site_id"],
+            "adult": bool(e.get("adult")),
+            "enabled_key": e.get("enabled_key"),
+            "media_types": list(e.get("media_types") or ()),
+        }
+        for e in filter_enabled(_EXTRA_SEARCH_SOURCES).values()
+    ]
+
+
+def get_search_source(site_id: str):
+    """Return the ``{"site_id", "search_fn", "label"}`` entry for *site_id*, or
+    ``None``. Used by ``web/routes/search.py``'s ``api_search()``.
+
+    Returns None for a source whose module is switched off, so a client that
+    still has the old site id (a stale tab, a saved filter) cannot keep the
+    module scraping after it was disabled.
+    """
+    from .module_gate import module_item_enabled
+
+    for item_id, entry in list(_EXTRA_SEARCH_SOURCES.items()):
+        if entry["site_id"] == site_id and module_item_enabled(item_id):
+            return entry
+    return None
+
+
+def drop_unresolvable(results, site_id: str) -> list:
+    """Drop third-party search hits whose URL no registered provider owns.
+
+    :func:`register_search_source` documents that a hit's ``url`` must match
+    the ``Provider`` the module registered via ``register_provider``, but the
+    two halves are registered separately and can drift apart. Such a hit looks
+    like any other result card and only fails when it is clicked or synced,
+    where the answer is a bare "Unsupported URL" that reads like a MediaForge
+    bug -- so it is never offered, and the warning below names the module.
+
+    Built-in sources are deliberately not filtered: their search functions and
+    URL patterns ship together, so a mismatch there is a bug to fix rather
+    than a result to hide.
+    """
+    from .providers import resolve_provider
+
+    kept = []
+    for item in results or []:
+        url = (item or {}).get("url") or (item or {}).get("link") or ""
+        try:
+            resolve_provider(url)
+        except Exception:
+            logger.warning(
+                "[Search] source '%s' returned a URL no provider resolves, "
+                "dropped: %r", site_id, url)
+            continue
+        kept.append(item)
+    return kept
+
+
+if __name__ == "__main__":
+    print("New series:", fetch_new_series())
+    print("Popular series:", fetch_popular_series())

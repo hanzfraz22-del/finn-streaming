@@ -1,0 +1,354 @@
+/* ===================================================================
+   MediaForge — shared_modals.html partial (series detail extras)
+   Season accordion spacing and the "paste a direct link" mini-modal,
+   both part of the series-detail/download modal markup that lives in
+   templates/shared_modals.html and is pulled into two different pages
+   via {% include %}. Most of that modal's own styling (buttons,
+   episode rows, language-availability pills, etc.) is intentionally
+   left in style.css because those same classes are reused by other
+   pages' custom modals (Seerr, Library) that don't include this
+   partial.
+   Used by: templates/index.html, templates/advanced_search.html
+            (both via {% include "shared_modals.html" %})
+   =================================================================== */
+
+.season-accordion {
+  margin-bottom: 12px;
+}.season-episodes {
+  padding: 4px 0;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}.directlink-modal {
+    position: relative;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-modal);
+    width: 100%;
+    max-width: 750px;
+    padding: 28px 24px 22px;
+    margin: 0 auto;
+    animation: modal-in 0.2s ease;
+  }.directlink-modal>.close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 6px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background var(--transition), color var(--transition);
+  }.directlink-modal>.close:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }.dl-title {
+    margin: 0 0 4px;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-shadow: 1px 1px 1px BLACK;
+  }.dl-hint {
+    margin: 0 0 16px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }.dl-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }.dl-input-row input[type="text"] {
+    flex: 1;
+    height: 44px;
+    border-radius: var(--radius-md);
+    padding: 0 14px;
+    font-size: 0.9rem;
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    color: var(--text-primary);
+    font-family: inherit;
+    transition: border-color var(--transition);
+    width: auto;
+  }.dl-input-row input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent);
+  }.dl-input-row input[type="text"]::placeholder {
+    color: var(--text-muted);
+  }.dl-input-row #directLinkSearchBtn {
+    flex-shrink: 0;
+    height: 44px;
+    padding: 0 20px;
+    border-radius: var(--radius-md);
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    border: none;
+    white-space: nowrap;
+    transition: background var(--transition);
+    display: inline-block;
+    width: auto;
+  }.dl-input-row #directLinkSearchBtn:hover {
+    background: var(--accent-hover);
+  }/* toggled visible via JS on a failed direct-link lookup; note the red here
+     is a one-off (#e05555 / rgb(220,53,53)) rather than the shared --error
+     token (#ef4444) */
+  .dl-error {
+    display: none;
+    margin-top: 10px;
+    padding: 10px 14px;
+    background: rgba(220, 53, 53, 0.12);
+    border: 1px solid rgba(220, 53, 53, 0.35);
+    border-radius: var(--radius-md);
+    color: #e05555;
+    font-size: 0.85rem;
+  }@media (max-width: 560px) {.dl-input-row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .dl-input-row #directLinkSearchBtn {
+      width: 100%;
+    }
+  }/* Trailer (YouTube embed) and "more like this" recommendations sections
+     within the series-detail modal; not just the directlink mini-modal
+     described in the file header above. */
+.modal-trailer {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #000; /* letterbox fallback while the iframe loads */
+  box-shadow: var(--shadow-lg);
+}.modal-trailer iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}.modal-recommendations {
+  width: 100%;
+}.trailer-header,
+.recommendations-header {
+  padding: 10px 10px;
+}
+
+/* ===================================================================
+   Direct Link: format-picker + finalize modals (issue #8 — generic
+   yt-dlp direct-link support with a quality picker before the usual
+   filename/save-location step). Overlay show/hide (display:none/grid)
+   lives in modals.css alongside .directlink-overlay; this is just the
+   feature-specific inner layout.
+   =================================================================== */
+.dl-format-spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 0;
+}
+.dl-spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.08);
+  border-top-color: var(--accent);
+  animation: dl-spin 0.85s linear infinite;
+}
+@keyframes dl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.dl-format-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+.dl-format-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  transition: border-color var(--transition), background var(--transition);
+}
+.dl-format-row:hover {
+  border-color: var(--accent);
+}
+.dl-format-row input[type="radio"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.dl-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.dl-modal-actions button {
+  width: 100%;
+}
+.dl-finalize-field {
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dl-finalize-field label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.dl-finalize-field input[type="text"],
+.dl-finalize-field select {
+  height: 44px;
+  border-radius: var(--radius-md);
+  padding: 0 14px;
+  font-size: 0.9rem;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  color: var(--text-primary);
+  font-family: inherit;
+  box-sizing: border-box;
+  width: 100%;
+}
+.dl-finalize-field input[type="text"]:focus,
+.dl-finalize-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+/* ===================================================================
+   Cross-provider search modal (#aniSearchModalOverlay in
+   templates/shared_modals.html, opened by app.js's openAniSearchModal).
+
+   REGRESSION FIX, July 2026: these five rules used to live at the top of
+   advanced_search.css and were lost when that file was split up. Without
+   them .adv-search-overlay has no styling at all, so
+   `modal.style.display = "flex"` turned the overlay into a plain block in
+   the normal document flow — the modal rendered far below the result grid
+   instead of on top of the page, which looked exactly like "clicking
+   Search does nothing".
+
+   They belong here, not in advanced_search.css: the partial is included by
+   index.html, seerr.html and advanced_search.html, and openAniSearchModal
+   is also called from the Anime Seasons and Media Calendar modules — none
+   of which load advanced_search.css.
+   =================================================================== */
+
+.adv-search-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 2rem;
+  animation: mf-modal-fade-in 0.2s ease;
+}
+
+.ani-search-modal {
+  background: var(--bg-card);
+  width: 100%;
+  max-width: 900px;
+  max-height: calc(100vh - 4rem);
+  border-radius: var(--radius-lg, 16px);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: mf-modal-scale-in 0.2s ease;
+}
+
+.ani-search-close {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.25rem;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 10;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.ani-search-close:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.ani-search-container {
+  padding: 2rem;
+  overflow-y: auto;
+}
+
+.ani-search-container h2 {
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+  font-size: 1.4rem;
+  color: var(--text-primary);
+  font-weight: 700;
+  padding-right: 3rem;
+}
+
+.results-poster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 1.25rem;
+}
+
+@keyframes mf-modal-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes mf-modal-scale-in {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@media (max-width: 640px) {
+  .adv-search-overlay { padding: 0; }
+
+  .ani-search-modal {
+    max-width: none;
+    max-height: 100dvh;
+    height: 100dvh;
+    border-radius: 0;
+    border: none;
+  }
+
+  .ani-search-container { padding: 1.25rem; }
+  .ani-search-container h2 { font-size: 1.15rem; }
+
+  .results-poster-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.75rem;
+  }
+}

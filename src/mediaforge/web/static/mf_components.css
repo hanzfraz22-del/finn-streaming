@@ -1,0 +1,1214 @@
+/* ===================================================================
+   MediaForge — shared layout components (mf-*)
+   -------------------------------------------------------------------
+   The building blocks the July 2026 redesign is made of. They live
+   here rather than in a page stylesheet so every page — and every
+   third-party module — can use the same vocabulary:
+
+     .mf-search        search field with a leading icon and clear button
+     .mf-toolbar       page toolbar with a deliberate row rhythm
+     .mf-poster-grid   responsive 2:3 poster grid
+     .mf-poster-card   poster + corner flag + scrim + attribution foot
+     .mf-avatar        initials disc, "who asked for this"
+     .mf-timeline      continuous time rail with stops and gaps
+     .mf-progress      request/job progress track
+
+   forms.css keeps the *form control* vocabulary (.chb-main,
+   .mf-segmented, .mf-multiselect, …); this file keeps the *layout and
+   content* vocabulary. Both are documented in
+   .examples/thirdparties/README.md and shown live in the
+   example_ui_components module.
+
+   Not loaded globally — link it on the pages that use it.
+   =================================================================== */
+
+/* ===================================================================
+   Search field
+   -------------------------------------------------------------------
+   NOTE the `input.mf-search-input` selector. forms.css styles inputs
+   via `input[type="search"]` (specificity 0,1,1), which beats any bare
+   class (0,1,0) — a plain `.my-input { padding: … }` is silently
+   ignored app-wide. Qualifying the class with the element matches that
+   specificity and, loading later, wins. Same trick applies anywhere
+   you need to restyle an input.
+   =================================================================== */
+.mf-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.mf-search-icon {
+  position: absolute;
+  left: 13px;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+input.mf-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-family: inherit;
+  padding: 10px 40px 10px 39px;
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+input.mf-search-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* A search box that is switched off (e.g. a placeholder view with nothing to
+   search) has to look switched off, or the empty result reads as a bug. */
+input.mf-search-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The UA's own clear affordance would sit next to ours. */
+input.mf-search-input::-webkit-search-cancel-button { display: none; }
+
+.mf-search-clear {
+  position: absolute;
+  right: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.15rem;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.mf-search-clear:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.mf-search-clear[hidden] { display: none; }
+
+/* ===================================================================
+   Toolbar
+   -------------------------------------------------------------------
+   Two rows with different jobs, so controls stop competing: row one is
+   where you *find* things (search), row two is where you *shape* the
+   view (filters left, view options right). A single flex row of five
+   equal-weight control groups is what made the old toolbars read as
+   noise.
+   =================================================================== */
+.mf-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 14px 12px 15px;
+  margin-bottom: 18px;
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 15px;
+}
+
+/* .mobile-topbar (shell.css) is position: fixed at the top of the viewport
+   below 769px, so anything stuck to top: 0 slides underneath it and loses
+   its first line. Stick below the bar instead. Set here rather than once in
+   shell.css because shell.css loads first and would lose the tie to this
+   file's own `top: 0`. */
+@media (max-width: 768px) {
+  .mf-toolbar { top: var(--topbar-height, 56px); }
+}
+
+.mf-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Pushes everything after it to the right edge. */
+.mf-toolbar-gap { margin-left: auto; }
+
+/* A hairline between filter groups reads quieter than a gap alone. */
+.mf-toolbar-sep {
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.mf-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  flex-shrink: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition),
+              border-color var(--transition);
+}
+
+.mf-icon-btn svg { width: 16px; height: 16px; }
+
+.mf-icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.mf-icon-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.mf-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Count badge inside a segmented filter button. */
+.mf-facet {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.mf-segmented-btn.active .mf-facet {
+  background: rgba(255, 255, 255, 0.2);
+  color: inherit;
+}
+
+.mf-facet[hidden] { display: none; }
+
+/* A class that sets `display` beats the user-agent `[hidden]` rule, so every
+   toolbar block a page may hide via the `hidden` attribute needs its own
+   opt-out — otherwise `el.hidden = true` silently does nothing. Same guard as
+   .mf-pagination-bar[hidden] further down. */
+.mf-toolbar[hidden],
+.mf-toolbar-row[hidden],
+.mf-segmented[hidden],
+.mf-segmented-btn[hidden],
+.mf-toolbar-sep[hidden],
+.mf-search[hidden],
+.mf-icon-btn[hidden] { display: none; }
+
+/* ===================================================================
+   Poster grid & card
+   -------------------------------------------------------------------
+   Artwork is the content of a media app, so it gets the space. The
+   card carries three pieces of information without a single pill:
+   status in the corner flag, title and figures over the image, and the
+   person who asked in the foot — that last one stays *outside* the
+   hover overlay on purpose, because attribution is what you scan the
+   page for, and because there is no hover on touch.
+   =================================================================== */
+.mf-poster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));
+  gap: 18px;
+}
+
+.mf-poster-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+}
+
+.mf-poster-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.mf-poster-art {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-elevated) center / 42% no-repeat url("/static/placeholder.svg");
+  transition: transform var(--transition), box-shadow var(--transition);
+}
+
+.mf-poster-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.mf-poster-card:hover .mf-poster-art,
+.mf-poster-card:focus-visible .mf-poster-art {
+  transform: translateY(-4px);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
+}
+
+.mf-poster-card.is-selected .mf-poster-art {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Corner flag — status without adding another pill to the pile. */
+.mf-poster-flag {
+  position: absolute;
+  top: 20px;
+  left: -31px;
+  width: 122px;
+  padding: 4px 0;
+  transform: rotate(-45deg);
+  text-align: center;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.mf-poster-flag--pending { background: var(--warning); color: #14140c; }
+.mf-poster-flag--approved { background: var(--accent); color: #fff; }
+.mf-poster-flag--partial { background: var(--info); color: #fff; }
+.mf-poster-flag--done { background: var(--success); color: #06210f; }
+
+.mf-poster-scrim {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 12px;
+  background: linear-gradient(to top,
+      rgba(6, 6, 12, 0.94) 20%, rgba(6, 6, 12, 0.35) 54%, transparent);
+}
+
+.mf-poster-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.mf-poster-title {
+  margin: 2px 0 0;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.25;
+  color: #fff;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Attribution foot: always visible, never behind a hover. */
+.mf-poster-foot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 2px 0;
+  min-width: 0;
+}
+
+.mf-poster-who {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-poster-who b { color: var(--text-primary); font-weight: 600; }
+
+.mf-poster-when {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+/* Action overlay — secondary, because the foot already answers "whose".
+   It is a *sibling* of .mf-poster-art, never a child, so that on touch it can
+   flow below the artwork as a normal row. On hover-capable pointers it is
+   pulled back over the artwork by pinning it to the top of the card and
+   repeating the artwork's aspect ratio, which reproduces the artwork's box
+   without having to know its pixel height. */
+.mf-poster-actions {
+  position: absolute;
+  inset: 0 0 auto 0;
+  aspect-ratio: 2 / 3;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 7px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: rgba(10, 8, 20, 0.9);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity var(--transition), transform var(--transition);
+}
+
+.mf-poster-card:hover .mf-poster-actions,
+.mf-poster-card:focus-within .mf-poster-actions { opacity: 1; }
+
+/* The artwork lifts on hover/focus — the overlay has to travel with it, or it
+   sits 4px low and lets a strip of poster show above it. */
+.mf-poster-card:hover .mf-poster-actions,
+.mf-poster-card:focus-visible .mf-poster-actions { transform: translateY(-4px); }
+
+/* No hover on touch: the actions are always visible, as a row under the art. */
+@media (hover: none) {
+  .mf-poster-actions {
+    position: static;
+    aspect-ratio: auto;
+    opacity: 1;
+    background: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    padding: 8px 0 0;
+    flex-direction: row;
+  }
+  .mf-poster-actions > * { flex: 1; }
+}
+
+/* Selection checkbox, mirroring .seerr-card-select's behaviour. */
+.mf-poster-select {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  z-index: 3;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+}
+
+body.mf-select-mode .mf-poster-select,
+.mf-poster-card.is-selected .mf-poster-select { display: inline-flex; }
+
+/* ===================================================================
+   Type pill + Volume tag
+   -------------------------------------------------------------------
+   Generic content-type (Series/Movie) and source-location markers.
+   Not poster-grid specific — any module that lists titles pulled from
+   more than one storage location (a "volume") can drop these into a
+   card, a list row, or a detail header. Introduced for the Library
+   modernization but intentionally kept here, not in the per-shelf CSS.
+   =================================================================== */
+.mf-type-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.mf-type-pill--series {
+  color: #60a5fa;
+  background: rgba(96, 165, 250, 0.14);
+  border-color: rgba(96, 165, 250, 0.32);
+}
+
+.mf-type-pill--movie {
+  color: var(--film, #e8914a);
+  background: rgba(232, 145, 74, 0.14);
+  border-color: rgba(232, 145, 74, 0.32);
+}
+
+.mf-type-pill--outline {
+  color: var(--text-secondary);
+  background: transparent;
+  border-color: var(--border);
+}
+
+.mf-vol-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  max-width: 130px;
+  vertical-align: middle;
+}
+
+.mf-vol-tag svg {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+
+.mf-vol-tag span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "Recently added" corner flag — reuses .mf-poster-flag's geometry. */
+.mf-poster-flag--new { background: var(--accent); color: #fff; }
+
+/* ===================================================================
+   Poster-level progress / watched badge
+   -------------------------------------------------------------------
+   A thin playback-progress bar along the bottom edge of a poster card,
+   plus a small "watched" checkmark badge. Generic — any module that
+   eagerly knows a single completion percentage for a card (not just
+   Library movies) can reuse these instead of inventing a new bar.
+   =================================================================== */
+.mf-poster-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+
+.mf-poster-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+
+.mf-poster-card.is-watched .mf-poster-progress-fill { background: var(--success); }
+
+.mf-poster-watched {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(6, 6, 12, 0.75);
+}
+
+.mf-poster-watched svg {
+  width: 11px;
+  height: 11px;
+  stroke: var(--success, #22c55e);
+  stroke-width: 3;
+  fill: none;
+}
+
+/* ===================================================================
+   Avatar
+   =================================================================== */
+.mf-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  border: 1px solid rgba(124, 58, 237, 0.4);
+  color: var(--accent);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.mf-avatar--sm { width: 18px; height: 18px; font-size: 0.58rem; }
+
+/* ===================================================================
+   Timeline
+   -------------------------------------------------------------------
+   A calendar's job is to show distance in time, so the rail is
+   continuous and the gaps are labelled: a week with nothing scheduled
+   reads as a week with nothing scheduled, not as two adjacent cards.
+   =================================================================== */
+.mf-timeline {
+  position: relative;
+  padding-left: 116px;
+}
+
+.mf-timeline::before {
+  content: "";
+  position: absolute;
+  left: 80px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background: linear-gradient(to bottom,
+      var(--accent), var(--accent-soft) 22%, var(--border) 45%);
+}
+
+.mf-stop {
+  position: relative;
+  padding-bottom: 26px;
+}
+
+.mf-stop:last-child { padding-bottom: 4px; }
+
+.mf-stop-when {
+  position: absolute;
+  left: -116px;
+  width: 68px;
+  padding-top: 3px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.mf-stop-rel {
+  display: block;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.mf-stop-day {
+  display: block;
+  font-size: 1.35rem;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.mf-stop-mon {
+  display: block;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.mf-stop-dot {
+  position: absolute;
+  left: -40px;
+  top: 11px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--bg-base);
+  border: 2px solid var(--text-muted);
+}
+
+.mf-stop.is-now .mf-stop-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 5px var(--accent-soft);
+}
+
+.mf-stop.is-now .mf-stop-day,
+.mf-stop.is-now .mf-stop-rel { color: var(--accent); }
+
+.mf-stop-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  /* Without a ceiling the episode badge drifts to the far right edge on a
+     wide screen and stops reading as part of the same entry. */
+  max-width: 720px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.mf-stop-item + .mf-stop-item { margin-top: 3px; }
+.mf-stop-item:hover { background: var(--bg-elevated); }
+
+.mf-stop-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Source is a 3px spine rather than another coloured word. */
+.mf-stop-source {
+  align-self: stretch;
+  width: 3px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+
+.mf-stop-thumb {
+  width: 36px;
+  height: 52px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--bg-elevated) center / 60% no-repeat url("/static/placeholder.svg");
+}
+
+.mf-stop-text { flex: 1; min-width: 0; }
+
+.mf-stop-title {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-stop-sub {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-stop-badge {
+  flex-shrink: 0;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.mf-stop-count {
+  position: absolute;
+  left: -116px;
+  width: 68px;
+  top: 62px;
+  text-align: right;
+  font-size: 0.66rem;
+  color: var(--text-muted);
+}
+
+/* A real gap in the schedule, stated instead of collapsed away. */
+.mf-timeline-gap {
+  margin: -10px 0 18px;
+  padding-left: 12px;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+/* ===================================================================
+   Progress track
+   -------------------------------------------------------------------
+   For anything that moves through fixed stages. Reads left to right,
+   so the order of the stages is part of the answer — unlike two status
+   pills side by side, where nothing says which comes first.
+   =================================================================== */
+.mf-progress {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mf-progress-step {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+}
+
+.mf-progress-bar {
+  display: block;
+  height: 4px;
+  margin-bottom: 6px;
+  border-radius: 2px;
+  background: var(--bg-hover);
+}
+
+.mf-progress-label {
+  display: block;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mf-progress-step.is-done .mf-progress-bar { background: var(--accent); }
+.mf-progress-step.is-done .mf-progress-label { color: var(--text-secondary); }
+
+.mf-progress-step.is-active .mf-progress-bar { background: var(--warning); }
+.mf-progress-step.is-active .mf-progress-label { color: var(--warning); }
+
+/* ===================================================================
+   Empty state
+   =================================================================== */
+.mf-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  padding: 56px 24px;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+
+.mf-empty p { margin: 0; }
+.mf-empty a { color: var(--accent); }
+.mf-empty-icon { width: 40px; height: 40px; opacity: 0.5; }
+.mf-empty-hint { font-size: 0.82rem; max-width: 46ch; opacity: 0.85; }
+.mf-empty.is-error { color: var(--error); border-color: rgba(239, 68, 68, 0.4); }
+/* `display: flex` above outranks the user-agent `[hidden]` rule — without this
+   every caller has to repeat an id-based guard to make `el.hidden = true` work
+   (the old library.css did exactly that). Fixed once, here. */
+.mf-empty[hidden] { display: none; }
+
+/* ===================================================================
+   Pagination bar — "Showing X–Y of Z" count + the numbered
+   .mf-pagination pager (forms.css) + a results-per-page <select>, all in
+   one row below a list/grid. Markup-only, same convention as
+   .mf-pagination: the caller rebuilds the count/pager on every page or
+   filter change and wires the per-page <select> itself (see
+   library_core.js/libRenderPagination for the reference implementation).
+   =================================================================== */
+.mf-pagination-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+  margin-top: 18px; padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.mf-pagination-bar[hidden] { display: none; }
+.mf-pagination-count { font-size: 0.82rem; color: var(--text-muted); white-space: nowrap; }
+.mf-pagination-perpage {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 0.82rem; color: var(--text-muted); white-space: nowrap;
+}
+.mf-pagination-perpage select { width: auto; min-width: 72px; }
+
+/* ===================================================================
+   Responsive
+   =================================================================== */
+@media (max-width: 720px) {
+  .mf-toolbar-row > .mf-segmented { flex: 1 1 100%; }
+  .mf-toolbar-row > .mf-segmented .mf-segmented-btn { flex: 1; }
+  .mf-toolbar-sep { display: none; }
+  .mf-toolbar-gap { margin-left: 0; }
+
+  .mf-timeline { padding-left: 68px; }
+  .mf-timeline::before { left: 46px; }
+  .mf-stop-when { left: -68px; width: 40px; }
+  .mf-stop-rel { font-size: 0.55rem; letter-spacing: 0.06em; }
+  .mf-stop-day { font-size: 1.1rem; }
+  .mf-stop-dot { left: -25px; }
+  .mf-stop-count { display: none; }
+  .mf-stop-item { max-width: none; }
+}
+
+@media (max-width: 480px) {
+  .mf-poster-grid { grid-template-columns: repeat(auto-fill, minmax(138px, 1fr)); gap: 12px; }
+  .mf-poster-title { font-size: 0.84rem; }
+
+  /* Only the poster scrim is too cramped for the volume label -- there the
+     icon alone has to do. In the list row and the detail header the label is
+     the sole indicator of which disk a title lives on, and a title attribute
+     is unreachable on touch, so it stays visible there. */
+  .mf-poster-meta .mf-vol-tag span { display: none; }
+  .mf-poster-meta .mf-vol-tag { max-width: none; }
+  .lib-row-pills .mf-vol-tag { max-width: 100%; }
+
+  .mf-pagination-bar { justify-content: center; }
+  .mf-pagination-count { width: 100%; text-align: center; order: -1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mf-poster-art,
+  .mf-poster-actions,
+  .mf-stop-item,
+  .mf-icon-btn { transition: none; }
+  .mf-poster-card:hover .mf-poster-art,
+  .mf-poster-card:hover .mf-poster-actions,
+  .mf-poster-card:focus-visible .mf-poster-actions { transform: none; }
+}
+
+/* ===================================================================
+   Reorderable list (.mf-order-*)
+   A list whose order is the setting: drag a row, or use the two arrow
+   buttons, and optionally switch each entry on or off. Built for the
+   Start Page settings (which rows the home page shows, in which order)
+   and kept here rather than in that page's stylesheet so a module can
+   use the same object for its own ordered lists.
+
+   Markup:
+     <div class="mf-order-list">
+       <div class="mf-order-row" draggable="true">
+         <span class="mf-order-handle">…grip svg…</span>
+         <label class="chb-main-wrap"><input class="chb-main" type="checkbox"></label>
+         <span class="mf-order-label">Title <small class="mf-order-hint">source</small></span>
+         <span class="mf-order-actions"><button class="mf-order-btn">↑</button>…</span>
+       </div>
+     </div>
+   =================================================================== */
+
+.mf-order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Two labelled groups inside ONE list (Start Page settings splits rows into
+   "Discover rows" and "Dashboard widgets" -- see static/start_page.js). The
+   group label itself is .sp-sublabel (that page's own subheading style, both
+   in settings_rows.css and the home page's .sp-modal override); this only
+   adds a touch of breathing room around the group hint line since it sits
+   directly among the list's rows rather than under a group heading outside
+   the list. */
+.mf-order-group-hint { margin: -2px 0 2px; }
+
+.mf-order-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-elevated, var(--bg-card));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
+  transition: border-color var(--transition, .15s ease),
+              box-shadow var(--transition, .15s ease),
+              opacity var(--transition, .15s ease);
+}
+
+.mf-order-row.is-off { opacity: 0.55; }
+.mf-order-row.dragging { opacity: 0.5; border-color: var(--accent); }
+.mf-order-row.drag-over { border-color: var(--accent); box-shadow: 0 -2px 0 0 var(--accent) inset; }
+
+.mf-order-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  cursor: grab;
+  flex-shrink: 0;
+  touch-action: none;
+}
+
+.mf-order-handle:active { cursor: grabbing; }
+
+.mf-order-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.mf-order-hint {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.mf-order-hint a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.mf-order-hint a:hover { color: var(--accent); }
+
+/* Optional per-row picker (the Dashboard card list uses it to move a card
+   to another column). Sits between the label and the up/down buttons and
+   drops to its own line on a phone, where the row wraps anyway. */
+.mf-order-col {
+  flex: 0 0 auto;
+  max-width: 45%;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border);
+  background: var(--input-bg, var(--bg-surface));
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.mf-order-col:focus-visible { border-color: var(--accent); outline: none; }
+
+.mf-order-actions {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.mf-order-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+
+.mf-order-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); border-color: var(--accent); }
+.mf-order-btn:disabled { opacity: 0.35; cursor: default; }
+
+@media (max-width: 560px) {
+  .mf-order-row { gap: 8px; padding: 9px 10px; }
+  .mf-order-label { font-size: 0.85rem; }
+  /* The grip is a mouse affordance; on touch the arrows are the control. */
+  .mf-order-handle { display: none; }
+}
+
+/* ===================================================================
+   Format badge
+   -------------------------------------------------------------------
+   A short uppercase chip naming a file format (EPUB, MOBI, PDF). Used
+   wherever one logical item exists as several files, so the reader can
+   see at a glance which shapes are on disk without opening anything.
+   `.is-locked` marks a format that is recognised but cannot be opened
+   (DRM) -- it stays visible on purpose, because a book that silently
+   disappeared would read as a scanning bug.
+   =================================================================== */
+.mf-format-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.mf-format-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.mf-format-badge.is-locked {
+  border-style: dashed;
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+
+/* A chip that only labels something and cannot be removed -- the
+   read-only sibling of .mf-chip in forms.css. */
+.mf-chip-static {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Skeletons and empty states
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Every page used to invent its own waiting state: a spinner here, the word
+   "Loading…" there, a blank area somewhere else. Three problems with that,
+   in increasing order of how much they cost:
+
+   1. It looks like three different applications.
+   2. A blank area is indistinguishable from "there is nothing here", so the
+      user cannot tell whether to wait or to go away.
+   3. Content arriving into an empty box makes the page jump. A skeleton the
+      shape of the thing that is coming does not.
+
+   So: one set of blocks, used everywhere. .mf-skeleton is the primitive;
+   .mf-skeleton-card / -row / -text are the shapes the app actually shows.
+
+   The shimmer is a background-position animation on a gradient, not an
+   opacity pulse. Pulsing dozens of boxes in step reads as a fault light;
+   a sweep reads as progress -- and it is one composited property either way.
+   ─────────────────────────────────────────────────────────────────────── */
+
+.mf-skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.06));
+}
+
+.mf-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.07) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: mf-skeleton-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes mf-skeleton-sweep {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+/* Respect the setting. A sweeping gradient is exactly the kind of motion
+   people turn this on to avoid, and a still skeleton still does its job:
+   it holds the shape and says "not empty, waiting". */
+@media (prefers-reduced-motion: reduce) {
+  .mf-skeleton::after { animation: none; }
+}
+
+/* --- shapes ------------------------------------------------------------- */
+
+/* A poster card, matching .browse-card / .mf-poster-art proportions so the
+   real card drops into exactly the space the skeleton held. */
+.mf-skeleton-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mf-skeleton-card .mf-skeleton-art {
+  aspect-ratio: 2 / 3;
+  width: 100%;
+  border-radius: var(--radius-lg, 12px);
+}
+
+.mf-skeleton-text {
+  height: 0.72rem;
+  border-radius: 5px;
+}
+
+.mf-skeleton-text.is-short { width: 45%; }
+.mf-skeleton-text.is-medium { width: 70%; }
+
+/* A list row: queue entries, history lines, audit lines. */
+.mf-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mf-skeleton-row:last-child { border-bottom: none; }
+
+.mf-skeleton-row .mf-skeleton-dot {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  flex-shrink: 0;
+}
+
+.mf-skeleton-row .mf-skeleton-lines {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mf-skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 14px;
+}
+
+/* --- empty state -------------------------------------------------------- */
+/* The other half of the same problem. An empty area says nothing; this says
+   what is missing and, where there is one, what to do about it. */
+
+.mf-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 44px 20px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.mf-empty-icon {
+  width: 40px;
+  height: 40px;
+  opacity: 0.45;
+  stroke-width: 1.5;
+}
+
+.mf-empty-title {
+  font-size: 0.95rem;
+  color: var(--text-secondary, var(--text-muted));
+}
+
+.mf-empty-hint {
+  font-size: 0.82rem;
+  max-width: 42ch;
+  line-height: 1.55;
+}
+
+.mf-empty-action { margin-top: 6px; }
+
+@media (max-width: 720px) {
+  .mf-skeleton-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .mf-empty { padding: 32px 16px; }
+}

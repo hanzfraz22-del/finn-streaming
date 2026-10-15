@@ -1,0 +1,2273 @@
+{# Library sub-menu labels/icons come from one place so the sidebar and the
+   hub can never disagree about what a media kind is called. #}
+{% import "_library_nav.html" as libnav %}
+<!doctype html>
+<html lang="{{ ui_language }}" data-theme="dark">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#7c3aed" />
+  <title>{% block title %}MediaForge{% endblock %}</title>
+  <link rel="manifest" href="/static/manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <!-- Former style.css, split by function for easier editing (see style.css
+       itself for the full breakdown). Order matters: variables first (everything
+       else references var(--...)), base second (reset that others build on). -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='variables.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='base.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='appearance.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='shell.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='forms.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='buttons.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='cards.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tabs-badges.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='modals.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='tables.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='feedback.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='detail-page.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='queue.css') }}" />
+  {# mf_components.css used to be linked per page. The queue hub (one window for
+     downloads/encoding/upscaling, further down in this file) sits on EVERY page
+     and uses .mf-progress / .mf-facet, so the sheet is loaded globally now.
+     Every selector in it is .mf-* scoped, so nothing else changes; the extra
+     per-page <link>s that still exist are harmless duplicates. #}
+  <link rel="stylesheet" href="{{ url_for('static', filename='mf_components.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='player.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='reader.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='utilities.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='autosync_filter.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='selfupdate.css') }}" />
+  {% block styles %}{% endblock %}
+  {# Theme pack (web/themes.py). Loaded LAST among stylesheets so a theme's
+     component overrides win the cascade against every core sheet above; the
+     built-in tokens in variables.css remain the fallback for everything a
+     theme does not define. The instance default is rendered server-side so
+     the very first paint is already themed; a user's personal override
+     (localStorage 'aw-themepack') is applied by the synchronous script below
+     before paint — same no-FOUC pattern as the dark/light bootstrap. #}
+  {# Shared HTML escaping (window.mfEscape / window.mfSafeUrl). In <head> and
+     before every other script so inline blocks can use it too. #}
+  <script src="{{ url_for('static', filename='mf_escape.js') }}"></script>
+  <!-- Shared skeleton / empty-state markup (window.MFSkeleton). Loaded here,
+       next to mf_escape.js, so it is available to every page and to inline
+       blocks -- the whole point is that there is one shape, not one per
+       page. Styles live in mf_components.css, which is already global. -->
+  <script src="{{ url_for('static', filename='mf_skeleton.js') }}"></script>
+  {# Visibility-aware polling (window.mfPoll) — see static/mf_poll.js. #}
+  <script src="{{ url_for('static', filename='mf_poll.js') }}"></script>
+  {# Shared .mf-multiselect dropdown behaviour (window.mfMultiSelect) — see static/mf_multiselect.js. #}
+  <script src="{{ url_for('static', filename='mf_multiselect.js') }}"></script>
+  {% if active_theme_pack %}
+  <link rel="stylesheet" id="themePackCss" data-theme-folder="{{ active_theme_pack.folder }}"
+    href="{{ url_for('theme_bundle_css', folder=active_theme_pack.folder) }}?v={{ active_theme_pack.version }}" />
+  {% endif %}
+  <script>
+    // Theme pack override bootstrap. The personal choice is:
+    //   missing/''  -> follow the instance default (server-rendered link above)
+    //   'default'   -> force the built-in MediaForge look (drop the link)
+    //   '<folder>'  -> use that installed theme instead
+    // Runs synchronously in <head> so the swap happens before first paint.
+    //
+    // Source of truth is the ACCOUNT (user_ui_prefs, see db.get_user_ui_prefs
+    // and /api/user/preferences) — it is rendered right here, so the correct
+    // theme is in place on the first paint of every browser the user logs in
+    // from. localStorage stays as a mirror: it is what a logged-out page (the
+    // login screen) and an offline PWA start have to go on.
+    window._THEME_PACKS = {{ installed_theme_packs | tojson }};
+    window._THEME_DEFAULT = {{ (active_theme_pack.folder if active_theme_pack else '') | tojson }};
+    window._USER_PREFS = {{ (user_ui_prefs or {}) | tojson }};
+    window._APPEARANCE_DEFAULTS = {{ (appearance_defaults or {}) | tojson }};
+    (function () {
+      // Three levels, in this order: what THIS account picked, what the admin
+      // set as the instance default, and the built-in look. The middle one is
+      // new -- before it, an account that had never touched the theme fell
+      // straight through to the hardcoded dark/violet no matter what the
+      // instance was set up to look like.
+      try {
+        var acc = window._USER_PREFS || {};
+        var def = window._APPEARANCE_DEFAULTS || {};
+        if (typeof acc.theme_pack === 'string') localStorage.setItem('aw-themepack', acc.theme_pack);
+        var mode = acc.theme_mode || def.theme_mode || '';
+        if (mode) localStorage.setItem('aw-theme', mode);
+        var accent = acc.accent || def.accent || '';
+        if (accent) localStorage.setItem('aw-accent', accent);
+      } catch (e) { }
+      try {
+        var ov = localStorage.getItem('aw-themepack');
+        if (!ov) return;
+        // Folder names are validated server-side at install; re-checked here
+        // anyway so a tampered localStorage value can never build markup.
+        if (!/^[A-Za-z0-9._-]+$/.test(ov)) return;
+        var link = document.getElementById('themePackCss');
+        if (ov === (window._THEME_DEFAULT || '')) return;
+        if (ov === 'default') { if (link) link.parentNode.removeChild(link); return; }
+        var t = null;
+        for (var i = 0; i < (window._THEME_PACKS || []).length; i++) {
+          if (window._THEME_PACKS[i].folder === ov) { t = window._THEME_PACKS[i]; break; }
+        }
+        if (!t) return; // stale override (theme uninstalled) -> instance default
+        var href = '/themes/' + encodeURIComponent(ov) + '/bundle.css?v=' + encodeURIComponent(t.version);
+        if (link) {
+          link.setAttribute('href', href);
+          link.setAttribute('data-theme-folder', ov);
+        } else {
+          // document.write is deliberate: it blocks parsing, so the sheet is
+          // in place before <body> renders — no flash of the default look.
+          document.write('<link rel="stylesheet" id="themePackCss" data-theme-folder="'
+            + ov + '" href="' + href + '" />');
+        }
+      } catch (e) { }
+    })();
+  </script>
+  <script>
+    // Prevent flash: apply saved theme (and collapsed-sidebar state) before paint.
+    // 'aw-theme' was just refreshed from the account by the script above, so
+    // this reads the user's real choice even on a browser they've never used.
+    (function () {
+      try {
+        var t = localStorage.getItem('aw-theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) { }
+      try {
+        // Restore the mini/collapsed sidebar. CSS gates the effect to
+        // min-width:769px, so setting it here is a no-op on mobile.
+        if (localStorage.getItem('sidebar-mini') === 'true') {
+          document.documentElement.classList.add('sidebar-mini');
+        }
+      } catch (e) { }
+    })();
+  </script>
+  <script>
+    // Show loader immediately before any paint
+    document.documentElement.setAttribute('data-page-loading', '');
+  </script>
+  <script>
+    // ===== Global body scroll lock =====
+    // Used by the off-canvas menus (mobile sidebar, floating side-menu
+    // drawer) so the page behind an open menu cannot be scrolled. Plain
+    // `overflow: hidden` on <body> is not enough on mobile browsers: touch
+    // scrolling still chains to the document, which moves the page behind the
+    // overlay and makes the URL/toolbar collapse, causing layout glitches.
+    // Locking with `position: fixed` plus a preserved scroll offset stops
+    // that reliably and restores the exact position on unlock.
+    // Reference counted so nested locks (menu + modal) behave correctly.
+    window.MFScrollLock = (function () {
+      var depth = 0;
+      var savedY = 0;
+      function lock() {
+        if (depth++ > 0) return;
+        savedY = window.scrollY || document.documentElement.scrollTop || 0;
+        document.body.style.top = (-savedY) + 'px';
+        document.body.classList.add('mf-scroll-locked');
+      }
+      function unlock(force) {
+        if (depth === 0) return;
+        depth = force ? 0 : depth - 1;
+        if (depth > 0) return;
+        document.body.classList.remove('mf-scroll-locked');
+        document.body.style.top = '';
+        window.scrollTo(0, savedY);
+      }
+      return {
+        lock: lock,
+        unlock: function () { unlock(false); },
+        reset: function () { unlock(true); },
+        get locked() { return depth > 0; }
+      };
+    })();
+  </script>
+  <script>
+    // Provider-pill extension registry shim — defined here, as early as
+    // possible, so a registered extension's provider_pill_script (see
+    // web/thirdparties/registry.py) can always call registerProviderPill()
+    // safely no matter the <script> tag order relative to app.js (which
+    // owns the actual resolution chain — see its _extensionProviderPill).
+    window._providerPillResolvers = window._providerPillResolvers || [];
+    window.registerProviderPill = window.registerProviderPill || function (name, resolverFn) {
+      window._providerPillResolvers.push({ name: name, resolverFn: resolverFn });
+    };
+  </script>
+  {# Provider-pill scripts from enabled extensions (see
+     register_thirdparty(provider_pill_script=...) in
+     web/thirdparties/registry.py) — each one just calls
+     registerProviderPill() at load time, using the shim above, regardless
+     of whether app.js has loaded yet. Included on every page since pills
+     can render on any page with browse cards or a detail modal. #}
+  {% for script_url in provider_pill_scripts %}
+  <script src="{{ script_url }}"></script>
+  {% endfor %}
+</head>
+
+<body>
+  <!-- ===== Page Transition Loader ===== -->
+  <style>
+    #page-loader {
+      position: fixed;
+      top: 0;
+      left: var(--sidebar-width, 240px);
+      right: 0;
+      bottom: 0;
+      background: var(--bg-base, #0d0d14);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    /* Shown during click on old page */
+    #page-loader.active { opacity: 1; }
+    /* Shown instantly before paint on new page (no transition) */
+    [data-page-loading] #page-loader {
+      opacity: 1;
+      transition: none;
+    }
+    @media (max-width: 768px) {
+      #page-loader { left: 0; top: var(--topbar-height, 56px); }
+    }
+    .page-loader-spinner {
+      width: 46px;
+      height: 46px;
+      border: 3px solid rgba(255,255,255,0.07);
+      border-top-color: var(--accent, #7c3aed);
+      border-radius: 50%;
+      animation: pl-spin 0.75s linear infinite;
+      box-shadow: 0 0 18px var(--accent-glow, rgba(124,58,237,0.4));
+    }
+    @keyframes pl-spin { to { transform: rotate(360deg); } }
+  </style>
+  <div id="page-loader"><div class="page-loader-spinner"></div></div>
+
+  <!-- ===== Sidebar ===== -->
+  <aside class="sidebar" id="sidebar">
+    <!-- Floating collapse/expand toggle, pinned to the right edge and always
+         visible. Left arrow = collapse (expanded state), right arrow = expand
+         (mini state); the swap is handled in CSS via html.sidebar-mini. -->
+    <button class="sidebar-toggle-btn" type="button" onclick="toggleSidebarMini()"
+      title="{{ _('Collapse / expand menu') }}" aria-label="{{ _('Collapse / expand menu') }}">
+      <svg viewBox="0 0 24 24">
+        <polyline points="15 18 9 12 15 6" class="arrow-left-icon" />
+        <polyline points="9 18 15 12 9 6" class="arrow-right-icon" />
+      </svg>
+    </button>
+
+    <div class="sidebar-header">
+      <a href="{{ url_for('index') }}" class="sidebar-brand">
+        <svg class="sidebar-brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="5 3 19 12 5 21 5 3" />
+        </svg>
+        <span class="sidebar-brand-text">MediaForge{% if app_version %}<small>v{{ app_version }}</small>{% endif %}</span>
+      </a>
+    </div>
+
+    <nav class="sidebar-nav">
+      {# App navigation is hidden for SyncPlay guests (auth on, not logged in) — they only watch. #}
+      {% if not auth_enabled or current_user %}
+      <!-- ===== Discover ===== -->
+      <span class="sidebar-category">{{ _('Discover') }}</span>
+      <div class="sidebar-category-group">
+        <div class="sidebar-category-inner">
+
+          {# Home + its collapsible sub-menu (Advanced Search, Favorites). The
+             chevron toggles the sub; the label still navigates to the start page. #}
+          <a href="{{ url_for('index') }}" class="sidebar-link" data-page="index" id="homeSidebarLink">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              <polyline points="9 22 9 12 15 12 15 22" />
+            </svg>
+            <span>{{ _('Home') }}</span>
+            <span class="sidebar-toggle-chevron collapsed" id="homeSidebarToggle" title="{{ _('Toggle Submenu') }}"
+              onclick="return toggleSidebarSub(event, 'homeSidebarSub', this);">▾</span>
+          </a>
+          <div class="sidebar-sub" id="homeSidebarSub">
+            <a href="{{ url_for('advanced_search_page') }}" class="sidebar-sub-link has-icon" data-page="advanced_search" id="sidebarAdvancedSearch" style="display: {% if cineinfo_advanced_search %}flex{% else %}none{% endif %};">
+              <svg viewBox="0 0 24 24" fill="none" class="advancedSearchIcon" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                <line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line>
+              </svg>
+              <span>{{ _('Advanced Search') }}</span></a>
+            {# Catalogue — the third way of finding something to download, next
+               to Advanced Search (TMDB filters) and Favorites (your marks):
+               the complete A-Z list a source site publishes, for bulk
+               selection. Not under Library: that shows what you HAVE. #}
+            <a href="{{ url_for('catalogue_page') }}" class="sidebar-sub-link has-icon" data-page="catalogue">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line>
+                <line x1="8" y1="18" x2="21" y2="18"></line><polyline points="3 6 4 7 6 5"></polyline>
+                <polyline points="3 12 4 13 6 11"></polyline><polyline points="3 18 4 19 6 17"></polyline>
+              </svg>
+              <span>{{ _('Catalogue') }}</span>
+              {# Reuses the module pill's shape rather than inventing a second
+                 badge style: it is the sidebar's established "this entry has
+                 a note attached" affordance. #}
+              <span class="sidebar-module-pill cat-beta-pill" title="{{ _('This feature is new and still being worked on.') }}">{{ _('Beta') }}</span></a>
+            <a href="{{ url_for('favourites_page') }}" class="sidebar-sub-link has-icon" data-page="favourites">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+              </svg>
+              <span>{{ _('Favorites') }}</span></a>
+          </div>
+
+          {# Library — a group, not a page: /library is an overview and each
+             media kind has a shelf of its own (see web/media_kinds.py). The
+             kinds that are not implemented yet stay listed but disabled, so
+             the sub-menu shows where this is going instead of quietly
+             growing an entry per release. `library_media_kinds` comes from
+             the context processor in web/app.py. #}
+          <a href="{{ url_for('library_page') }}" class="sidebar-link" data-page="library">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+            <span>{{ _('Library') }}</span>
+            <span class="queue-badge" id="streamBadge" style="display:none">0</span>
+            <span class="sidebar-toggle-chevron collapsed" id="librarySidebarToggle" title="{{ _('Toggle Submenu') }}"
+              onclick="return toggleSidebarSub(event, 'librarySidebarSub', this);">▾</span>
+          </a>
+          <div class="sidebar-sub" id="librarySidebarSub">
+            {% for kind in library_media_kinds %}
+            {% if kind.available %}
+            <a href="{{ url_for('library_kind_page', kind_url=kind.url) }}" class="sidebar-sub-link has-icon"
+               data-page="library_{{ kind.slug }}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round">{{ libnav.kind_icon(kind.slug) }}</svg>
+              <span>{{ libnav.kind_label(kind.slug) }}</span></a>
+            {% else %}
+            {# Still a link: it lands on a page that explains itself. Marked
+               aria-disabled and styled quiet so it does not read as broken. #}
+            <a href="{{ url_for('library_kind_page', kind_url=kind.url) }}"
+               class="sidebar-sub-link has-icon sidebar-sub-soon" data-page="library_{{ kind.slug }}"
+               aria-disabled="true" title="{{ _('Coming soon') }}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round">{{ libnav.kind_icon(kind.slug) }}</svg>
+              <span>{{ libnav.kind_label(kind.slug) }}</span>
+              <span class="sidebar-soon-pill">{{ _('soon') }}</span></a>
+            {% endif %}
+            {% endfor %}
+            {# Shelves added by modules (register_thirdparty(section="library")). #}
+            {% for item in library_module_items %}
+            <a href="{{ item.url }}" class="sidebar-sub-link has-icon" data-page="{{ item.page }}">{{ item.icon|safe }}<span>{{ item.label }}</span><span class="sidebar-module-pill" title="{{ _('Module') }}: {{ item.module_name }}">M</span></a>
+            {% endfor %}
+          </div>
+
+          <a href="{{ url_for('calendar_page') }}" class="sidebar-link" data-page="calendar" id="sidebarCalendar" style="display: {% if cineinfo_calendar %}flex{% else %}none{% endif %};">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="16" y1="2" x2="16" y2="6"></line>
+              <line x1="8" y1="2" x2="8" y2="6"></line>
+              <line x1="3" y1="10" x2="21" y2="10"></line>
+            </svg>
+            <span>{{ _('Calendar') }}</span>
+          </a>
+
+          {# Discover modules — register_thirdparty(section="discover"/"syncplay").
+             No longer top-level: grouped into a collapsible "Modules" sub-menu,
+             shown only when at least one such module is enabled. #}
+          {% if discover_module_items %}
+          <button type="button" class="sidebar-link sidebar-group-btn" id="discoverModulesToggle"
+            onclick="return toggleSidebarSub(event, 'discoverModulesSub', this.querySelector('.sidebar-toggle-chevron'));">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>
+            </svg>
+            <span>{{ _('Modules') }}</span>
+            <span class="sidebar-toggle-chevron collapsed" title="{{ _('Toggle Submenu') }}">▾</span>
+          </button>
+          <div class="sidebar-sub" id="discoverModulesSub">
+            {% for item in discover_module_items %}
+            <a href="{{ item.url }}" class="sidebar-sub-link has-icon" data-page="{{ item.page }}">{{ item.icon|safe }}<span>{{ item.label }}</span><span class="sidebar-module-pill" title="{{ _('Module') }}: {{ item.module_name }}">M</span></a>
+            {% endfor %}
+          </div>
+          {% endif %}
+
+          {# Queues — one entry, one window. The three queues used to hang in a
+             sub-menu because each had its own modal; since they share the queue
+             hub (with its own segment switcher inside) a sub-menu would only add
+             a click. The badge is the sum of all three (updateTotalQueueBadge in
+             queue.js), and the per-queue counts live in window._qBadgeCounts
+             rather than in three hidden badge elements. #}
+          <button type="button" class="sidebar-link sidebar-group-btn sidebar-queue-btn" id="queuesToggle"
+            onclick="openQueueHub('all')" title="{{ _('Queues') }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line class="moving-line line-1" x1="8" y1="6" x2="21" y2="6"></line>
+              <line class="moving-line line-2" x1="8" y1="12" x2="21" y2="12"></line>
+              <line class="moving-line line-3" x1="8" y1="18" x2="21" y2="18"></line>
+              <line class="moving-line line-1" x1="3" y1="6" x2="3.01" y2="6"></line>
+              <line class="moving-line line-2" x1="3" y1="12" x2="3.01" y2="12"></line>
+              <line class="moving-line line-3" x1="3" y1="18" x2="3.01" y2="18"></line>
+            </svg>
+            <span>{{ _('Queues') }}</span>
+            <span class="queue-badge" id="totalQueueBadge" style="display:none">0</span>
+          </button>
+
+          {# SyncPlay — no longer its own category; a single entry here, gated by
+             syncplay_enabled just like before. #}
+          {% if syncplay_enabled %}
+          <a href="{{ url_for('syncplay_page') }}" class="sidebar-link" data-page="syncplay">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 2.1l4 4-4 4"/><path d="M3 12.95v-1a4 4 0 0 1 4-4h14"/><path d="M7 21.9l-4-4 4-4"/><path d="M21 11.05v1a4 4 0 0 1-4 4H3"/>
+            </svg>
+            <span>SyncPlay</span>
+            {# Active-rooms badge — count of open SyncPlay rooms, polled from
+               /api/syncplay/rooms (see the poller in the script below). #}
+            <span class="seerr-badge" id="syncplayBadge" style="display:none">0</span>
+          </a>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- ===== Management ===== -->
+      <span class="sidebar-category">{{ _('Management') }}</span>
+      <div class="sidebar-category-group">
+        <div class="sidebar-category-inner">
+          <a href="{{ url_for('seerr_page') }}" class="sidebar-link" data-page="seerr">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2" />
+              <line x1="8" y1="21" x2="16" y2="21" />
+              <line x1="12" y1="17" x2="12" y2="21" />
+            </svg>
+            <span>Seerr</span>
+            <span class="seerr-badge" id="seerrBadge" style="display:none">0</span>
+          </a>
+          <a href="{{ url_for('autosync_page') }}" class="sidebar-link" data-page="autosync">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10" />
+              <polyline points="1 20 1 14 7 14" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+            </svg>
+            <span>Auto-Sync</span>
+          </a>
+
+          {# Monitoring — single sidebar link (opens Statistics); the in-page
+             floating menu switches between Statistics / Download History /
+             Uptime. Highlighted as active on any of those three routes. #}
+          <a href="{{ url_for('monitoring_page') }}" class="sidebar-link" data-page="monitoring" id="monitoringSidebarLink">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 12h-4l-3 9L9 3l-3 9H2" pathLength="100" />
+            </svg>
+            <span>{{ _('Monitoring') }}</span>
+          </a>
+
+          {# Management modules — register_thirdparty(section="management"). #}
+          {% if management_module_items %}
+          <button type="button" class="sidebar-link sidebar-group-btn" id="managementModulesToggle"
+            onclick="return toggleSidebarSub(event, 'managementModulesSub', this.querySelector('.sidebar-toggle-chevron'));">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>
+            </svg>
+            <span>{{ _('Modules') }}</span>
+            <span class="sidebar-toggle-chevron collapsed" title="{{ _('Toggle Submenu') }}">▾</span>
+          </button>
+          <div class="sidebar-sub" id="managementModulesSub">
+            {% for item in management_module_items %}
+            <a href="{{ item.url }}" class="sidebar-sub-link has-icon" data-page="{{ item.page }}">{{ item.icon|safe }}<span>{{ item.label }}</span><span class="sidebar-module-pill" title="{{ _('Module') }}: {{ item.module_name }}">M</span></a>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+      </div>
+
+      {% endif %}{# /guest-hidden app navigation #}
+
+      {% if not auth_enabled or current_user %}
+      <!-- ===== System ===== -->
+      <span class="sidebar-category">{{ _('System') }}</span>
+      <div class="sidebar-category-group">
+        <div class="sidebar-category-inner">
+          {# Notifications — single link; sub-navigation now lives in the page as
+             a floating side menu (see notifications.html), same pattern as
+             Integrations/Settings/Monitoring. #}
+          <a href="{{ url_for('notifications_page') }}" class="sidebar-link" data-page="notifications">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+            </svg>
+            <span>{{ _('Notifications') }}</span>
+          </a>
+
+          {% if not auth_enabled or (current_user and current_user.role == 'admin') %}
+          {# Module Manager + its collapsible sub (Module Settings). The chevron
+             toggles the sub; the label still navigates to the manager page. #}
+          <a href="{{ url_for('extensions_page') }}" class="sidebar-link" data-page="extensions" id="modmgrSidebarLink">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <rect x="7" y="7" width="10" height="10" rx="2"></rect>
+              <path d="M9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4"></path>
+            </svg>
+            <span>{{ _('Module Manager') }}</span>
+            <span class="sidebar-toggle-chevron collapsed" id="modmgrSidebarToggle" title="{{ _('Toggle Submenu') }}"
+              onclick="return toggleSidebarSub(event, 'modmgrSidebarSub', this);">▾</span>
+          </a>
+          <div class="sidebar-sub" id="modmgrSidebarSub">
+            <a href="{{ url_for('module_settings_page') }}" class="sidebar-sub-link has-icon" data-page="module_settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>
+              </svg><span>{{ _('Module Settings') }}</span></a>
+          </div>
+          {% endif %}
+
+          {% if not auth_enabled or (current_user and current_user.role == 'admin') %}
+          {# Integrations — single link; sub-navigation now lives in the page as
+             a floating side menu (see integrations.html). #}
+          <a href="{{ url_for('integrations_page') }}" class="sidebar-link" data-page="integrations">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+            </svg>
+            <span>{{ _('Integrations') }}</span>
+          </a>
+          {% endif %}
+
+          {# Your profile — for EVERY account, admin or not. Settings below is
+             admin-only, so without this link a normal user has no way into
+             their own theme, language or media-server profile. #}
+          <a href="{{ url_for('profile_page') }}" class="sidebar-link" data-page="profile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+            <span>{{ _('Your profile') }}</span>
+          </a>
+
+          {# Settings — single link; sub-navigation now lives in the page as a
+             floating side menu (see settings.html). #}
+          <a href="{{ url_for('settings_page') }}" class="sidebar-link" data-page="settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06-.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06-.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+            <span>{{ _('Settings') }}</span>
+            {% if update_available %}<span class="update-badge" id="updateBadge">&#8593;</span>{% endif %}
+          </a>
+
+          {# System modules — register_thirdparty(section="system"). #}
+          {% if system_module_items %}
+          <button type="button" class="sidebar-link sidebar-group-btn" id="systemModulesToggle"
+            onclick="return toggleSidebarSub(event, 'systemModulesSub', this.querySelector('.sidebar-toggle-chevron'));">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>
+            </svg>
+            <span>{{ _('Modules') }}</span>
+            <span class="sidebar-toggle-chevron collapsed" title="{{ _('Toggle Submenu') }}">▾</span>
+          </button>
+          <div class="sidebar-sub" id="systemModulesSub">
+            {% for item in system_module_items %}
+            <a href="{{ item.url }}" class="sidebar-sub-link has-icon" data-page="{{ item.page }}">{{ item.icon|safe }}<span>{{ item.label }}</span><span class="sidebar-module-pill" title="{{ _('Module') }}: {{ item.module_name }}">M</span></a>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
+    </nav>
+
+    <div class="sidebar-footer">
+      {% if auth_enabled and current_user %}
+      <div class="sidebar-user">
+        <div class="sidebar-user-avatar">{{ current_user.username[0]|upper }}</div>
+        <span class="sidebar-username">{{ current_user.username }}</span>
+        {# POST, not a link: as a GET, any page embedding <img src=".../logout">
+           would log the user out. #}
+        <form method="post" action="{{ url_for('auth.logout') }}" class="sidebar-logout-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+          <button type="submit" class="sidebar-logout" title="{{ _('Log out') }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+          </button>
+        </form>
+      </div>
+      {% endif %}
+
+      <!-- Compact 4-icon action grid: Dev Infos, GitHub, Appearance, Language -->
+      <div class="footer-actions-grid">
+        <a href="{{ url_for('devinfos_page') }}" class="footer-action-icon" title="{{ _('Dev Infos') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="16" x2="12" y2="11" />
+            <line x1="12" y1="8" x2="12.01" y2="8" />
+          </svg>
+          <span class="icon-badge" id="devinfoBadge" style="display:none">0</span>
+        </a>
+
+        <a href="https://github.com/PD-Codes/MediaForge" target="_blank" rel="noopener noreferrer"
+          class="footer-action-icon" title="GitHub Repository">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round">
+            <path
+              d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22">
+            </path>
+          </svg>
+        </a>
+
+        <button type="button" class="footer-action-icon" id="themeToggle" onclick="toggleAppearancePopup()"
+          title="{{ _('Customize appearance') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round">
+            <circle cx="13.5" cy="6.5" r="1.5" />
+            <circle cx="17.5" cy="10.5" r="1.5" />
+            <circle cx="8.5" cy="7.5" r="1.5" />
+            <circle cx="6.5" cy="12.5" r="1.5" />
+            <path
+              d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />
+          </svg>
+        </button>
+
+        <div class="sidebar-lang-dropdown" id="langDropdown">
+          <button class="footer-action-icon" onclick="toggleLangDropdown(event)" type="button"
+            title="{{ _('Change language') }}">
+            <img src="{{ url_for('static', filename='flags/' + ('german' if ui_language == 'de' else 'english') + '.svg') }}"
+                 class="sidebar-lang-flag" alt="" />
+          </button>
+          <div class="sidebar-lang-menu" id="langMenu">
+          <button class="sidebar-lang-option{% if ui_language == 'de' %} active{% endif %}"
+                  onclick="setUiLanguage('de')" type="button">
+            <img src="{{ url_for('static', filename='flags/german.svg') }}" class="sidebar-lang-flag" alt="" />
+            <span>Deutsch</span>
+            {% if ui_language == 'de' %}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;margin-left:auto;color:var(--accent)"><polyline points="20 6 9 17 4 12"/></svg>{% endif %}
+          </button>
+          <button class="sidebar-lang-option{% if ui_language == 'en' %} active{% endif %}"
+                  onclick="setUiLanguage('en')" type="button">
+            <img src="{{ url_for('static', filename='flags/english.svg') }}" class="sidebar-lang-flag" alt="" />
+            <span>English</span>
+            {% if ui_language == 'en' %}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;margin-left:auto;color:var(--accent)"><polyline points="20 6 9 17 4 12"/></svg>{% endif %}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  </aside>
+
+  <!-- ===== Mobile Top Bar ===== -->
+  <header class="mobile-topbar">
+    <button class="hamburger" id="hamburgerBtn" onclick="toggleSidebar()" aria-label="{{ _('Open menu') }}">
+      <span></span><span></span><span></span>
+    </button>
+    <a href="{{ url_for('index') }}" class="mobile-brand">MediaForge</a>
+    <!-- The standalone Upscaling shortcut was removed from the mobile top bar:
+         the queue button next to it opens the same unified hub, where
+         Upscaling is one segment away, and its badge already includes the
+         upscale count. _updateUpscaleBadges() tolerates the missing
+         #mobileUpscaleBadge element. -->
+    <button class="mobile-queue-btn" onclick="openQueueHub('all')" aria-label="{{ _('Queues') }}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round">
+        <line class="moving-line line-1" x1="8" y1="6" x2="21" y2="6"></line>
+        <line class="moving-line line-2" x1="8" y1="12" x2="21" y2="12"></line>
+        <line class="moving-line line-3" x1="8" y1="18" x2="21" y2="18"></line>
+        
+        <line class="moving-line line-1" x1="3" y1="6" x2="3.01" y2="6"></line>
+        <line class="moving-line line-2" x1="3" y1="12" x2="3.01" y2="12"></line>
+        <line class="moving-line line-3" x1="3" y1="18" x2="3.01" y2="18"></line>
+      </svg>
+      <span class="queue-badge mobile-queue-badge" id="mobileQueueBadge" style="display:none">0</span>
+    </button>
+  </header>
+
+  <!-- ===== Sidebar backdrop (mobile) ===== -->
+  <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebar()"></div>
+
+  <!-- ===== Main content ===== -->
+  <main class="main-content">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- ===== Queue hub =====================================================
+       ONE window for all three queues. "Alles" merges downloads, encoding and
+       upscaling into a single list; the other three segments narrow it down.
+       It replaces the former three separate overlays (#queueOverlay /
+       #encodingOverlay / #upscaleOverlay).
+
+       Kept on purpose: the three sidebar badges stay separate (they feed
+       window.updateTotalQueueBadge, which reads their textContent), and every
+       legacy handler name an inline onclick= refers to still exists in
+       queue.js — openQueueModal(), setQueueFilter(), moveQueueItem(), …
+       ===================================================================== -->
+  <div class="queue-overlay" id="queueOverlay" onclick="if(event.target===this)closeQueueHub();"
+    role="dialog" aria-modal="true" aria-labelledby="qhubTitle">
+    <div class="queue-modal qhub">
+      <div class="modal-header qhub-header">
+        <h2 class="modal-title" id="qhubTitle">{{ _('Queues') }}</h2>
+        <button class="modal-close" onclick="closeQueueHub()" aria-label="{{ _('Close') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+            stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Which queue is shown + the two actions that apply to all of them -->
+      <div class="qhub-bar">
+        <div class="mf-segmented qhub-seg" role="tablist" aria-label="{{ _('Queues') }}">
+          <button type="button" class="mf-segmented-btn active" id="qhubTab-all" role="tab"
+            aria-selected="true" onclick="setQueuePane('all')">
+            <span>{{ _('Everything') }}</span><span class="mf-facet" id="qhubFacet-all" hidden>0</span>
+          </button>
+          <button type="button" class="mf-segmented-btn" id="qhubTab-downloads" role="tab"
+            aria-selected="false" onclick="setQueuePane('downloads')">
+            <span>{{ _('Downloads') }}</span><span class="mf-facet" id="qhubFacet-downloads" hidden>0</span>
+          </button>
+          <button type="button" class="mf-segmented-btn" id="qhubTab-encoding" role="tab"
+            aria-selected="false" onclick="setQueuePane('encoding')">
+            <span>{{ _('Encoding') }}</span><span class="mf-facet" id="qhubFacet-encoding" hidden>0</span>
+          </button>
+          <button type="button" class="mf-segmented-btn" id="qhubTab-upscaling" role="tab"
+            aria-selected="false" onclick="setQueuePane('upscaling')">
+            <span>{{ _('Upscaling') }}</span><span class="mf-facet" id="qhubFacet-upscaling" hidden>0</span>
+          </button>
+        </div>
+        <div class="qhub-bar-actions">
+          <span class="qhub-off-badge qhub-off-badge--warn" id="encodingDisabledBadge"
+            style="display:none">{{ _('Inactive') }}</span>
+          <span class="qhub-off-badge qhub-off-badge--error" id="upscaleDisabledBadge"
+            style="display:none">{{ _('Disabled') }}</span>
+          <button class="btn btn-secondary btn-sm" id="qhubClearBtn" onclick="qhubClear()"
+            title="{{ _('Remove completed, failed and cancelled entries') }}">{{ _('Clear Entries') }}</button>
+          {# Pausing halts the queue for every account, so the endpoint is
+             admin-only. Hidden here rather than left to fail with a 403: a
+             button that is visible and refuses reads as a broken button. #}
+          {% if not auth_enabled or (current_user and current_user.role == 'admin') %}
+          <button class="btn btn-ghost btn-sm" id="queuePauseBtn" onclick="toggleQueuePause()"
+            title="{{ _('Pause downloads') }}" style="display:none">
+            <span id="queuePauseLabel">{{ _('Pause all') }}</span>
+          </button>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- The one job that is running right now -->
+      <div class="qhub-hero" id="qhubHero"></div>
+
+      <!-- Everything else, grouped: needs attention / up next / finished today -->
+      <div id="queueList" class="queue-list qhub-list"></div>
+    </div>
+  </div>
+
+  <!-- ===== Self-update overlay ===== -->
+  <div id="updateOverlay" class="update-overlay" role="dialog" aria-modal="true" aria-live="polite">
+    <div class="update-overlay-card">
+      <div class="update-spinner" id="updateOverlaySpinner" aria-hidden="true">
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+      <div class="update-overlay-icon" id="updateOverlayIcon" style="display:none"></div>
+      <h2 class="update-overlay-title" id="updateOverlayTitle"></h2>
+      <p class="update-overlay-text" id="updateOverlayText"></p>
+      <div class="update-overlay-version" id="updateOverlayVersion" style="display:none"></div>
+      <details class="update-overlay-log" id="updateOverlayLogWrap" style="display:none">
+        <summary>Log</summary>
+        <pre id="updateOverlayLog"></pre>
+      </details>
+      <div class="update-overlay-actions" id="updateOverlayActions" style="display:none">
+        <button type="button" class="update-overlay-btn" id="updateOverlayBtn"></button>
+      </div>
+      <p class="update-overlay-hint" id="updateOverlayHint"></p>
+    </div>
+  </div>
+
+  <!-- ===== Toast ===== -->
+  <div class="toast" id="toast"></div>
+
+  <!-- ===== Global Confirm Modal ===== -->
+  <div class="modal-overlay" id="confirmModal" style="display:none"
+    onclick="if(event.target===this)_confirmResolve(false)">
+    <div class="confirm-modal">
+      <h3 class="lib-remove-title" id="confirmModalTitle">{{ _('Delete title?') }}</h3>
+      <p class="confirm-modal-msg" id="confirmModalMsg"></p>
+      <div class="confirm-modal-actions">
+        <button class="btn btn-secondary btn-sm" onclick="_confirmResolve(false)">{{ _('Cancel') }}</button>
+        <button class="btn btn-danger btn-sm" onclick="_confirmResolve(true)" id="confirmModalOk">{{ _('Delete') }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Telemetry: first-run consent dialog (TELEMETRY_PLAN.md §4.0) =====
+       Shown once, before any telemetry call is ever made, gated on
+       consent_given === null (see the bootstrap script near the bottom of
+       this file). Deliberately NOT built from the generic #confirmModal:
+       no X button, no click-outside-to-close, no Escape shortcut, and the
+       two actions are visually equal (same size/color, neither is the
+       accent-colored "primary" button this project otherwise uses for
+       confirmations) -- an optically favoured "Yes" would undercut the
+       "active, free decision" requirement behind this dialog (see
+       TELEMETRY_PLAN.md §7a's GDPR research). -->
+  <div class="modal-overlay telemetry-consent-overlay" id="telemetryConsentOverlay" style="display:none">
+    <div class="telemetry-consent-card">
+      <h2 class="telemetry-consent-title">{{ _('Send crash reports to the developer?') }}</h2>
+      <p class="telemetry-consent-text">
+        {{ _('If MediaForge crashes unexpectedly, it can automatically send a technical error report (file/line/error type) plus basic system info (app version, OS, Python version) to the developer -- this helps find and fix bugs. Passwords, credentials and file contents are never included.') }}
+      </p>
+      <p class="telemetry-consent-text telemetry-consent-hint">
+        {{ _('You can change this decision at any time under Settings -> Privacy & Telemetry. More extensive data points (e.g. download titles or watch behaviour) always stay separate, off by default, and individually toggled -- this question only covers crash reports and basic system info.') }}
+      </p>
+      <div class="telemetry-consent-actions">
+        <button type="button" class="telemetry-consent-btn" onclick="_telemetryConsentAnswer(false)">{{ _('No, thanks') }}</button>
+        <button type="button" class="telemetry-consent-btn" onclick="_telemetryConsentAnswer(true)">{{ _('Yes, send crash reports') }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Library: Move — background pill =====
+       Lives here rather than in library_video.html's header, where it used to
+       be. A move keeps running server-side after the modal is minimized, but
+       with the pill on one page only there was no way back into it from
+       anywhere else: minimize, navigate, and a running move became invisible
+       and unreachable. Global markup + the job id in sessionStorage (see
+       library_video.js) means it survives the page change. -->
+  <div class="lib-move-pill-host">
+    <span class="lib-move-pill" id="libMovePill" style="display:none"
+          onclick="libOpenMoveProgress()" title="{{ _('Move in progress') }}"
+          role="button" tabindex="0"
+          onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();libOpenMoveProgress();}">
+      <span class="lib-move-pill-spinner"></span>
+      <span id="libMovePillPct">0%</span>
+      <span class="lib-move-pill-label">{{ _('moving') }}</span>
+    </span>
+  </div>
+
+  <!-- ===== Library: Move Modal ===== -->
+  <div class="modal-overlay" id="libMoveModal" style="display:none"
+    onclick="if(event.target===this)libMoveModalBgClick()">
+    <div class="lib-move-modal">
+      <h3 class="lib-move-title">{{ _('Move title') }}</h3>
+      <!-- Select view -->
+      <div id="libMoveSelectView">
+        <p class="lib-move-subtitle">{{ _('Move') }} <strong id="libMoveTitleName"></strong> {{ _('to a different location.') }}
+        </p>
+        <div>
+          <label class="form-label" style="margin-bottom:6px;display:block">{{ _('Destination') }}</label>
+          <select id="libMoveTarget" class="lib-move-target"></select>
+        </div>
+        <div class="lib-move-actions">
+          <button class="btn btn-secondary btn-sm" onclick="libCloseMoveModal()">{{ _('Cancel') }}</button>
+          <button class="btn btn-primary btn-sm" onclick="libConfirmMove()">{{ _('Move') }}</button>
+        </div>
+      </div>
+      <!-- Progress view -->
+      <div id="libMoveProgressView" style="display:none">
+        <p class="lib-move-subtitle">{{ _('Moving') }} <strong id="libMoveProgressTitle"></strong>…</p>
+        <div class="lib-move-progress-bar-wrap">
+          <div class="lib-move-progress-bar-fill" id="libMoveProgressBarFill"></div>
+        </div>
+        <div class="lib-move-progress-info">
+          <span class="lib-move-progress-pct" id="libMoveProgressPct">0%</span>
+          <span class="lib-move-progress-file" id="libMoveProgressFile"></span>
+        </div>
+        <div class="lib-move-progress-error" id="libMoveProgressError" style="display:none"></div>
+        <div class="lib-move-actions" id="libMoveProgressActions">
+          <button class="btn btn-secondary btn-sm" id="libMoveMinimizeBtn" onclick="libMinimizeMove()">{{ _('In background') }}</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Library: Media Info Modal ===== -->
+  <div class="modal-overlay" id="libMediaInfoModal" style="display:none"
+    onclick="if(event.target===this)libCloseMediaInfoModal()">
+    <div class="lib-media-info-modal">
+      <div class="modal-header" style="margin-bottom:18px">
+        <h2 class="modal-title">Media Info</h2>
+        <button class="modal-close" onclick="libCloseMediaInfoModal()" aria-label="{{ _('Close') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+            stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <div id="libMediaInfoLoading" class="lib-media-info-loading" style="display:none">
+        <span class="lib-scan-spinner" style="width:24px;height:24px;border-width:3px"></span>
+        <span style="margin-left:12px;font-weight:500">{{ _('Reading media information...') }}</span>
+      </div>
+      <div id="libMediaInfoContent" class="lib-media-info-content"></div>
+    </div>
+  </div>
+
+  <!-- ===== Captcha Overlay ===== -->
+  <div class="captcha-overlay" id="captchaOverlay" onclick="if(event.target===this)closeCaptchaModal();"
+    style="display:none;">
+    <div class="captcha-modal">
+      <div class="modal-header">
+        <h2 class="modal-title">🔒 {{ _('Solve Captcha') }}</h2>
+        <button class="modal-close" onclick="closeCaptchaModal()" aria-label="{{ _('Close') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+            stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <p class="captcha-hint" id="captchaHint">{{ _('Loading browser screenshot...') }}</p>
+      <div class="captcha-img-wrap">
+        <img id="captchaScreenshot" class="captcha-screenshot" src="" alt="{{ _('Captcha screenshot') }}" />
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // i18n helper — returns the German or English string based on the session language
+    window.__LANG = "{{ ui_language }}";
+    {# For hiding controls whose endpoint is admin-only, so they are not
+       offered and then refused. Never a substitute for the server-side check
+       -- this is cosmetics, the gate lives in the route. #}
+    window.__IS_ADMIN = {{ 'true' if (not auth_enabled or (current_user and current_user.role == 'admin')) else 'false' }};
+    window.__UPTIME_ENABLED = {{ 'true' if uptime_enabled else 'false' }};
+    window.__SEERR_CONFIGURED = {{ 'true' if seerr_configured else 'false' }};
+    function t(de, en) { return window.__LANG === 'de' ? de : en; }
+
+    // ---------------------------------------------------------------- dates
+    //
+    // Dates follow the APP language, not the browser's. Those are different
+    // settings and they disagree constantly: a German UI on an en-US laptop
+    // was rendering "8/6/2026" next to "6. August", and a bare
+    // toLocaleString() with no locale argument silently follows whatever the
+    // browser feels like — which is why the Operations cards and the UpTime
+    // page showed a different format from the download history on the same
+    // machine.
+    //
+    // The field options are explicit rather than left to the locale's own
+    // "short" style, because de-DE short is "6.8.2026" — day and month
+    // unpadded — and the agreed format is dd.MM.yyyy. Times follow the
+    // language too: 24-hour for German, 12-hour for English.
+    window.mfLocale = function () {
+      return window.__LANG === 'de' ? 'de-DE' : 'en-US';
+    };
+
+    /** Parse anything the backend sends: an ISO string, an epoch in seconds,
+        an epoch in milliseconds, or a Date. Returns null when unusable, so
+        every caller below can decide its own placeholder. */
+    window.mfParseDate = function (value) {
+      if (value == null || value === '') return null;
+      if (value instanceof Date) return isNaN(value.getTime()) ? null : value;
+      if (typeof value === 'number') {
+        // Seconds vs milliseconds: anything below ~1e11 cannot be a sensible
+        // millisecond timestamp (that is 1973), so it is seconds.
+        var d = new Date(value < 1e11 ? value * 1000 : value);
+        return isNaN(d.getTime()) ? null : d;
+      }
+      var parsed = new Date(value);
+      return isNaN(parsed.getTime()) ? null : parsed;
+    };
+
+    window.mfFormatDate = function (value) {
+      var d = window.mfParseDate(value);
+      if (!d) return '';
+      return d.toLocaleDateString(window.mfLocale(),
+        { day: '2-digit', month: '2-digit', year: 'numeric' });
+    };
+
+    window.mfFormatTime = function (value) {
+      var d = window.mfParseDate(value);
+      if (!d) return '';
+      return window.__LANG === 'de'
+        ? d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', hour12: false })
+        : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    };
+
+    window.mfFormatDateTime = function (value) {
+      var d = window.mfParseDate(value);
+      if (!d) return '';
+      return window.mfFormatDate(d) + ', ' + window.mfFormatTime(d);
+    };
+
+    /** Numbers with the app language's thousands separator, for the same
+        reason: "60819" and "60.819" and "60,819" were all on one page. */
+    window.mfFormatNumber = function (value, digits) {
+      var n = Number(value);
+      if (value == null || isNaN(n)) return '—';
+      return digits == null
+        ? n.toLocaleString(window.mfLocale())
+        : n.toLocaleString(window.mfLocale(),
+            { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    };
+
+    // Language switcher — available on every page (not only settings)
+    function setUiLanguage(lang) {
+      fetch('/api/user/language', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ language: lang })
+      }).then(r => r.json()).then(() => location.reload());
+    }
+
+    function toggleLangDropdown(e) {
+      e.stopPropagation();
+      const dd = document.getElementById('langDropdown');
+      dd.classList.toggle('open');
+    }
+
+    document.addEventListener('click', function() {
+      const dd = document.getElementById('langDropdown');
+      if (dd) dd.classList.remove('open');
+    });
+  </script>
+  <script src="{{ url_for('static', filename='queue.js') }}"></script>
+  <script src="{{ url_for('static', filename='devinfos.js') }}"></script>
+  <script src="{{ url_for('static', filename='upscale_queue.js') }}"></script>
+  <script src="{{ url_for('static', filename='encoding_queue.js') }}"></script>
+  <script src="{{ url_for('static', filename='pwa.js') }}"></script>
+  <script>
+    // Global image proxy helper — routes cover images through the server so
+    // mobile clients don't need a direct connection to source sites.
+    function proxyImg(url) {
+      if (!url) return "";
+      if (!url.startsWith("http")) return url;
+      return "/api/img?url=" + encodeURIComponent(url);
+    }
+  </script>
+  <script src="{{ url_for('static', filename='autosync_filter.js') }}"></script>
+  <script src="{{ url_for('static', filename='selfupdate.js') }}"></script>
+  <script src="{{ url_for('static', filename='number_input.js') }}"></script>
+  {# Library move: pill, polling and progress view. Global, not on the library
+     page only -- a minimized move has to stay reachable after a navigation.
+     See static/library_move.js. #}
+  <script src="{{ url_for('static', filename='library_move.js') }}"></script>
+  {% block scripts %}{% endblock %}
+  <script>
+    // ===== Sidebar =====
+    var _sidebarScrollLocked = false;
+    // Keep the page behind the open mobile sidebar from scrolling.
+    function _setSidebarScrollLock(on) {
+      if (on === _sidebarScrollLocked) return;
+      _sidebarScrollLocked = on;
+      on ? window.MFScrollLock.lock() : window.MFScrollLock.unlock();
+    }
+    function toggleSidebar() {
+      var sidebar = document.getElementById('sidebar');
+      var backdrop = document.getElementById('sidebarBackdrop');
+      var open = sidebar.classList.toggle('open');
+      backdrop.classList.toggle('visible', open);
+      document.getElementById('hamburgerBtn').classList.toggle('open', open);
+      _setSidebarScrollLock(open);
+    }
+    function closeSidebar() {
+      document.getElementById('sidebar').classList.remove('open');
+      document.getElementById('sidebarBackdrop').classList.remove('visible');
+      document.getElementById('hamburgerBtn').classList.remove('open');
+      var popup = document.getElementById('appearancePopup');
+      if (popup) popup.classList.remove('open');
+      _setSidebarScrollLock(false);
+    }
+    // The sidebar is only off-canvas below 769px; if the viewport grows (or the
+    // device is rotated) while it is open, drop the lock so the desktop layout
+    // scrolls normally again.
+    window.addEventListener('resize', function () {
+      if (_sidebarScrollLocked && window.innerWidth > 768) closeSidebar();
+    });
+
+    // Collapse/expand the desktop sidebar (mini rail). State is stored on
+    // <html> as .sidebar-mini and persisted so it survives navigation; it is
+    // applied before paint by the early script in <head>. The CSS gates all
+    // mini styling to min-width:769px, so this has no effect on mobile.
+    function toggleSidebarMini() {
+      var isMini = document.documentElement.classList.toggle('sidebar-mini');
+      try { localStorage.setItem('sidebar-mini', isMini ? 'true' : 'false'); } catch (e) { }
+      // Close the language dropdown if it was left open while collapsing
+      var lang = document.getElementById('langDropdown');
+      if (lang) lang.classList.remove('open');
+      // Clear any open mini flyout + its inline positioning when switching mode
+      document.querySelectorAll('.sidebar-sub.flyout-open').forEach(function (s) {
+        s.classList.remove('flyout-open');
+        s.style.top = '';
+        s.style.maxHeight = '';
+      });
+    }
+
+    // Toggle a collapsible sidebar sub-menu (Home, Queues, per-category
+    // "Modules" groups, Module Manager). Used by the parent row's chevron or,
+    // for container-only rows (Queues / Modules), the whole button.
+    function toggleSidebarSub(ev, subId, chevron) {
+      if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+      var s = document.getElementById(subId);
+      if (!s) return false;
+      var open = s.classList.toggle('open');
+      if (chevron) chevron.classList.toggle('collapsed', !open);
+      return false;
+    }
+
+    // ===== Appearance (theme + accent colour) =====
+    var _ACCENT_PRESETS = [
+      { color: '#7c3aed', name: '{{ _("Purple") }}' },
+      { color: '#3b82f6', name: '{{ _("Blue") }}' },
+      { color: '#06b6d4', name: '{{ _("Cyan") }}' },
+      { color: '#22c55e', name: '{{ _("Green") }}' },
+      { color: '#f97316', name: '{{ _("Orange") }}' },
+      { color: '#ec4899', name: '{{ _("Pink") }}' },
+      { color: '#ef4444', name: '{{ _("Red") }}' },
+      { color: '#eab308', name: '{{ _("Yellow") }}' },
+    ];
+    var _DEFAULT_ACCENT = '#7c3aed';
+
+    function _hexToRgb(hex) {
+      var r = parseInt(hex.slice(1, 3), 16);
+      var g = parseInt(hex.slice(3, 5), 16);
+      var b = parseInt(hex.slice(5, 7), 16);
+      return { r: r, g: g, b: b };
+    }
+    function _adjustLightness(hex, amount) {
+      // amount: positive = lighten, negative = darken (-1..1)
+      var c = _hexToRgb(hex);
+      var clamp = function (v) { return Math.min(255, Math.max(0, Math.round(v))); };
+      return '#' + [c.r + amount * 255, c.g + amount * 255, c.b + amount * 255]
+        .map(function (v) { return clamp(v).toString(16).padStart(2, '0'); }).join('');
+    }
+    // ── Appearance persistence ──────────────────────────────────────────────
+    // Every look-related choice is stored on the ACCOUNT (POST
+    // /api/user/preferences -> db.user_ui_prefs) as well as in localStorage.
+    // The account copy is what base.html renders on the next page load, so the
+    // theme follows the user across browsers, devices and a cleared cache;
+    // localStorage remains the offline/logged-out fallback.
+    //
+    // Fire-and-forget on purpose: the look has already been applied locally, so
+    // a failed save must never interrupt the user. A 401 (auth on, session
+    // expired) is a normal outcome here and stays silent.
+    var _appearanceSaveTimer = null;
+    var _appearancePending = {};
+    function _persistAppearance(patch) {
+      if (!patch) return;
+      Object.keys(patch).forEach(function (k) { _appearancePending[k] = patch[k]; });
+      // Debounced: the accent colour picker fires on every 'input' event while
+      // the user drags through the spectrum — that must not be one request per
+      // pixel.
+      if (_appearanceSaveTimer) clearTimeout(_appearanceSaveTimer);
+      _appearanceSaveTimer = setTimeout(function () {
+        var body = _appearancePending;
+        _appearancePending = {};
+        _appearanceSaveTimer = null;
+        try {
+          fetch('/api/user/preferences', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          }).then(function (r) {
+            if (r.ok) {
+              window._USER_PREFS = Object.assign(window._USER_PREFS || {}, body);
+              return;
+            }
+            // The endpoint rejects the WHOLE call on one unknown key or one
+            // out-of-range value, so a single unregistered preference silently
+            // discarded every other setting sent with it -- which is how a
+            // reader setting could appear to work and then be gone after a
+            // reload. Failing silently is what made that take a bug report to
+            // find; say it once, in the console.
+            r.json().then(function (res) {
+              if (window.console && console.warn) {
+                console.warn('[Prefs] not saved:', (res && res.error) || r.status,
+                  '| keys:', Object.keys(body).join(', '));
+              }
+            }).catch(function () { });
+          }).catch(function () { });
+        } catch (e) { }
+      }, 500);
+    }
+
+    // Shared with the rest of the app (and with modules): any per-account UI
+    // preference whitelisted in db.USER_UI_PREF_KEYS can be saved through the
+    // same debounced, fire-and-forget path the appearance settings use.
+    // static/library_core.js stores its grid/list choice this way.
+    window.mfSaveUserPref = _persistAppearance;
+
+    // The accent controls exist TWICE on the settings page: once in the quick
+    // appearance popup this file renders, once on Settings -> Design. They used
+    // to share the same element ids, and getElementById() only ever answers with
+    // the first match in document order -- so the popup's copies were dead on
+    // /settings while the settings ones were dead everywhere the popup came
+    // first. The settings page's copies carry their own ids now; everything
+    // below drives both.
+    function _accentHexInputs() {
+      return [document.getElementById('accentHexInput'),
+      document.getElementById('accentHexInputSettings')].filter(Boolean);
+    }
+    function _accentPickers() {
+      return [document.getElementById('accentColorPicker'),
+      document.getElementById('accentColorPickerSettings')].filter(Boolean);
+    }
+
+    // persist=false is used by the restore paths below: replaying a stored
+    // value must not write it straight back.
+    function applyAccent(hex, persist) {
+      if (!hex || !/^#[0-9a-fA-F]{6}$/.test(hex)) return;
+      var rgb = _hexToRgb(hex);
+      var root = document.documentElement;
+      root.style.setProperty('--accent', hex);
+      root.style.setProperty('--accent-hover', _adjustLightness(hex, -0.1));
+      root.style.setProperty('--accent-soft', 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.15)');
+      root.style.setProperty('--accent-glow', 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.35)');
+      root.style.setProperty('--border-focus', 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.6)');
+      root.style.setProperty('--text-link', _adjustLightness(hex, 0.12));
+      root.style.setProperty('--text-link-hover', _adjustLightness(hex, 0.22));
+      // sync swatch background
+      _accentPickers().forEach(function (picker) { picker.value = hex; });
+      _accentHexInputs().forEach(function (input) {
+        // Never rewrite the field the user is typing in.
+        if (document.activeElement !== input) input.value = hex;
+      });
+      // update preset active state
+      document.querySelectorAll('.accent-preset').forEach(function (el) {
+        el.classList.toggle('active', el.dataset.color === hex.toLowerCase());
+      });
+      try { localStorage.setItem('aw-accent', hex); } catch (e) { }
+      if (persist !== false) _persistAppearance({ accent: hex });
+    }
+    function setTheme(t, persist) {
+      document.documentElement.setAttribute('data-theme', t);
+      try { localStorage.setItem('aw-theme', t); } catch (e) { }
+      _updateThemeBtns(t);
+      if (persist !== false) _persistAppearance({ theme_mode: t });
+    }
+    function toggleTheme() {
+      var current = document.documentElement.getAttribute('data-theme') || 'dark';
+      setTheme(current === 'dark' ? 'light' : 'dark');
+    }
+    // Theme packs (web/themes.py). Persists the personal override and swaps
+    // the stylesheet live — no reload. '' = follow the instance default,
+    // 'default' = force the built-in look, '<folder>' = that installed theme.
+    function applyThemePack(folder, persist) {
+      folder = folder || '';
+      if (folder && folder !== 'default' && !/^[A-Za-z0-9._-]+$/.test(folder)) return;
+      try { localStorage.setItem('aw-themepack', folder); } catch (e) { }
+      if (persist !== false) _persistAppearance({ theme_pack: folder });
+      var target = folder || (window._THEME_DEFAULT || '');
+      var link = document.getElementById('themePackCss');
+      if (!target || target === 'default') {
+        if (link) link.parentNode.removeChild(link);
+        return;
+      }
+      var t = null;
+      for (var i = 0; i < (window._THEME_PACKS || []).length; i++) {
+        if (window._THEME_PACKS[i].folder === target) { t = window._THEME_PACKS[i]; break; }
+      }
+      if (!t) return;
+      var href = '/themes/' + encodeURIComponent(target) + '/bundle.css?v=' + encodeURIComponent(t.version);
+      if (link) {
+        link.setAttribute('href', href);
+        link.setAttribute('data-theme-folder', target);
+      } else {
+        link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.id = 'themePackCss';
+        link.setAttribute('data-theme-folder', target);
+        link.href = href;
+        document.head.appendChild(link);
+      }
+    }
+    function _updateThemeBtns(t) {
+      var d = document.getElementById('themeBtnDark');
+      var l = document.getElementById('themeBtnLight');
+      if (d) d.classList.toggle('active', t === 'dark');
+      if (l) l.classList.toggle('active', t === 'light');
+    }
+    function toggleAppearancePopup() {
+      var popup = document.getElementById('appearancePopup');
+      var btn = document.getElementById('themeToggle');
+      if (!popup || !btn) return;
+      if (popup.classList.contains('open')) {
+        popup.classList.remove('open');
+        return;
+      }
+      var rect = btn.getBoundingClientRect();
+      var popupW = 248;
+      var gap = 8;
+      var top = rect.top - gap;
+      var left = rect.left;
+
+      if (left + popupW > window.innerWidth - 16) left = window.innerWidth - popupW - 16;
+      if (left < 8) left = 8;
+      popup.style.left = left + 'px';
+      popup.style.bottom = (window.innerHeight - top) + 'px';
+      popup.style.top = '';
+      popup.classList.add('open');
+    }
+    function resetAppearance() {
+      // Both calls persist the defaults to the account (and to localStorage),
+      // which is why the old localStorage.removeItem() pair is gone: clearing
+      // the mirror while the account still held the previous values would have
+      // brought them straight back on the next page load.
+      // "Reset" means back to the INSTANCE default, not to the hardcoded
+      // look -- on an instance that was themed, resetting to violet-on-dark
+      // would look like a bug rather than a reset.
+      var def = window._APPEARANCE_DEFAULTS || {};
+      setTheme(def.theme_mode || 'dark');
+      applyAccent(def.accent || _DEFAULT_ACCENT);
+      // The advanced toggles are account values now, so "reset" has to write
+      // them back as off rather than only clearing the local mirror -- doing
+      // the latter would bring them straight back on the next page load, the
+      // same mistake the theme/accent reset above already had to unlearn.
+      (window._MF_UI_TOGGLES || []).forEach(function (s) {
+        if (window.mfSetUiToggle) window.mfSetUiToggle(s.pref, false);
+      });
+    }
+    function _initAppearance() {
+      // Build presets
+      var containers = [
+        document.getElementById('accentPresets'),
+        document.getElementById('accentPresetsSettings')
+      ].filter(Boolean);
+
+
+      if (containers.length > 0) {
+
+        _ACCENT_PRESETS.forEach(function (p) {
+
+          containers.forEach(function (container) {
+            var btn = document.createElement('button');
+            btn.className = 'accent-preset';
+            btn.title = p.name;
+            btn.dataset.color = p.color;
+            btn.style.background = p.color;
+            btn.onclick = function () { applyAccent(p.color); };
+
+            container.appendChild(btn);
+          });
+
+        });
+      }
+      // Hex inputs (popup + settings page)
+      _accentHexInputs().forEach(function (hexInput) {
+        hexInput.addEventListener('input', function () {
+          var v = hexInput.value.trim();
+          if (!v.startsWith('#')) v = '#' + v;
+          if (/^#[0-9a-fA-F]{6}$/.test(v)) applyAccent(v);
+        });
+      });
+      // Color pickers (popup + settings page)
+      _accentPickers().forEach(function (picker) {
+        picker.addEventListener('input', function () { applyAccent(picker.value); });
+      });
+      // Close on outside click
+      document.addEventListener('click', function (e) {
+        var btn = document.getElementById('themeToggle');
+        var popup = document.getElementById('appearancePopup');
+        if (!popup || !popup.classList.contains('open')) return;
+        if ((btn && btn.contains(e.target)) || popup.contains(e.target)) return;
+        popup.classList.remove('open');
+      });
+      // Restore saved accent (account value was mirrored into localStorage by
+      // the <head> bootstrap). persist=false — this is a replay, not a change.
+      try {
+        var saved = localStorage.getItem('aw-accent');
+        if (saved) applyAccent(saved, false);
+        else applyAccent(_DEFAULT_ACCENT, false);
+      } catch (e) { applyAccent(_DEFAULT_ACCENT, false); }
+      // Set theme button states
+      var t = document.documentElement.getAttribute('data-theme') || 'dark';
+      _updateThemeBtns(t);
+      // Sync swatch bg color
+      var cur = document.documentElement.style.getPropertyValue('--accent') || _DEFAULT_ACCENT;
+      cur = cur.trim() || _DEFAULT_ACCENT;
+      _accentPickers().forEach(function (picker) { picker.value = cur; });
+      _accentHexInputs().forEach(function (input) { input.value = cur; });
+
+      // Initialize extended settings
+      _initExtendedSettings();
+    }
+
+    // The "Advanced" appearance toggles.
+    //
+    // These used to live in localStorage ONLY, which quietly made them per
+    // BROWSER: the same account looked different on a laptop and on a phone,
+    // and clearing site data reset them with nothing to restore from. They
+    // are account preferences now (ui_* in db.USER_UI_PREF_KEYS), with
+    // localStorage kept purely as a pre-paint mirror so the classes are on
+    // <body> before the first frame -- the account values arrive with the
+    // page, but this function also runs on pages rendered before a change.
+    window._MF_UI_TOGGLES = [
+      { pref: 'ui_glow_effect',          ls: 'aw-glow-effect',          cls: 'glow-effect',          cb: 'glowEffect' },
+      { pref: 'ui_header_color',         ls: 'aw-header-color',         cls: 'header-color',         cb: 'headerColor' },
+      { pref: 'ui_header_color_help',    ls: 'aw-header-color-help',    cls: 'header-color-help',    cb: 'headerColorHelp' },
+      { pref: 'ui_skeleton_loader',      ls: 'aw-skeleton-loader',      cls: 'skeleton-loader',      cb: 'skeletonLoader' },
+      { pref: 'ui_choose_border',        ls: 'aw-choose-border',        cls: 'choose-border',        cb: 'chooseBorder' },
+      { pref: 'ui_active_download_glow', ls: 'aw-active-download-glow', cls: 'active-download-glow', cb: 'activeDownloadGlow' },
+      { pref: 'ui_click_effect',         ls: 'aw-click-effect',         cls: 'click-effect',         cb: 'clickEffect' },
+      { pref: 'ui_icon_move',            ls: 'aw-icon-move',            cls: 'icon-move',            cb: 'iconMove' }
+    ];
+
+    function _initExtendedSettings() {
+      var prefs = window._USER_PREFS || {};
+      // Instance default for these toggles (Settings -> Design, admin only).
+      // null when no admin ever configured it -- then the old localStorage
+      // fallback stays in charge, so upgrading an install does not silently
+      // repaint everybody's UI.
+      var uiDefaults = (window._APPEARANCE_DEFAULTS || {}).ui || null;
+      window._MF_UI_TOGGLES.forEach(function (s) {
+        // Three levels, same order as the theme/accent cascade above: what THIS
+        // account picked, what the admin set as the instance default, and
+        // finally the per-browser localStorage mirror. The middle level is what
+        // makes a freshly created account look like the instance it was created
+        // on instead of like a factory reset.
+        var active;
+        if (typeof prefs[s.pref] === 'string' && prefs[s.pref] !== '') {
+          active = prefs[s.pref] === '1';
+        } else if (uiDefaults && typeof uiDefaults[s.pref] === 'string') {
+          active = uiDefaults[s.pref] === '1';
+        } else {
+          active = localStorage.getItem(s.ls) === 'true';
+        }
+        try { localStorage.setItem(s.ls, active ? 'true' : 'false'); } catch (e) { }
+        document.body.classList.toggle(s.cls, active);
+        var cb = document.getElementById(s.cb);
+        if (cb) cb.checked = active;
+      });
+    }
+
+    /** Flip one toggle: paint it, mirror it, and store it on the account. */
+    window.mfSetUiToggle = function (pref, active) {
+      var entry = null;
+      window._MF_UI_TOGGLES.forEach(function (s) { if (s.pref === pref) entry = s; });
+      if (!entry) return;
+      document.body.classList.toggle(entry.cls, active);
+      try { localStorage.setItem(entry.ls, active ? 'true' : 'false'); } catch (e) { }
+      var patch = {};
+      patch[pref] = active ? '1' : '0';
+      if (typeof window.mfSaveUserPref === 'function') window.mfSaveUserPref(patch);
+    };
+    document.addEventListener('DOMContentLoaded', _initAppearance);
+
+    // ===== Active nav link =====
+    (function () {
+      var path = window.location.pathname.replace(/\/$/, '') || '/';
+      document.querySelectorAll('.sidebar-link[data-page], .sidebar-sub-link[data-page]').forEach(function (el) {
+        el.classList.remove('active');
+      });
+      // Monitoring bundles three routes under one sidebar link; map them all
+      // to that link's data-page ("monitoring").
+      var map = {
+        '/': 'index',
+        '/library': 'library',
+        '/favourites': 'favourites',
+        '/advanced-search': 'advanced_search',
+        '/catalogue': 'catalogue',
+        '/calendar': 'calendar',
+        '/autosync': 'autosync',
+        '/monitoring': 'monitoring',
+        '/stats': 'monitoring',
+        '/history': 'monitoring',
+        '/uptime': 'monitoring',
+        '/settings': 'settings',
+        '/encoding': 'settings',
+        '/integrations': 'integrations',
+        '/syncplay': 'syncplay',
+        '/notifications': 'notifications',
+        '/seerr': 'seerr',
+        '/extensions': 'extensions',
+        '/module-settings': 'module_settings'
+      };
+      var page = map[path];
+      var el = page
+        ? document.querySelector('.sidebar-link[data-page="' + page + '"], .sidebar-sub-link[data-page="' + page + '"]')
+        : null;
+      // Fallback for any page not in the map (module pages, etc.): match a nav
+      // link whose own href points at the current path. Covers module entries
+      // in the "Modules" sub-menus, which have no fixed data-page mapping.
+      if (!el) {
+        var _links = document.querySelectorAll('.sidebar-nav a.sidebar-link[href], .sidebar-nav a.sidebar-sub-link[href]');
+        for (var _i = 0; _i < _links.length; _i++) {
+          var _lp;
+          try { _lp = new URL(_links[_i].href, window.location.origin).pathname.replace(/\/$/, '') || '/'; }
+          catch (e) { continue; }
+          if (_lp === path) { el = _links[_i]; break; }
+        }
+      }
+      {
+        if (el) {
+          el.classList.add('active');
+          // If the active item sits inside a collapsible sub-menu, open that
+          // sub-menu and mark its parent row active too.
+          var sub = el.closest('.sidebar-sub');
+          if (sub) {
+            sub.classList.add('open');
+            var parent = sub.previousElementSibling;
+            if (parent) {
+              var chev = parent.querySelector('.sidebar-toggle-chevron');
+              if (chev) chev.classList.remove('collapsed');
+              if (parent.classList && parent.classList.contains('sidebar-link')) parent.classList.add('active');
+            }
+          }
+          // Scroll the (scrollable) nav so the active item is visible — only the
+          // nav moves, never the page.
+          try {
+            var _nav = el.closest('.sidebar-nav');
+            if (_nav) {
+              var _nr = _nav.getBoundingClientRect(), _er = el.getBoundingClientRect();
+              if (_er.top < _nr.top || _er.bottom > _nr.bottom) {
+                _nav.scrollTop += (_er.top - _nr.top) - (_nav.clientHeight - _er.height) / 2;
+              }
+            }
+          } catch (e) {}
+        }
+      }
+    })();
+
+    // ===== Mobile drawer for in-page floating side menus =====
+    // On small screens the in-page floating menu (Settings / Integrations /
+    // Monitoring) is off-canvas; a fixed side button slides it in. Injected
+    // only when such a menu exists on the page.
+    (function () {
+      // data-no-drawer opts a page out: its menu stays in the flow and
+      // stacks above the content on a phone (see the Module Manager's rail,
+      // _extensions_nav.html) rather than sliding in from the side. Building
+      // the FAB anyway would leave a button that opens nothing.
+      var menu = document.querySelector('.has-floating-menu > .floating-side-menu:not([data-no-drawer])');
+      if (!menu) return;
+      var fab = document.createElement('button');
+      fab.type = 'button';
+      fab.className = 'floating-menu-fab';
+      fab.setAttribute('aria-label', '{{ _("Menu") }}');
+      fab.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>';
+      var backdrop = document.createElement('div');
+      backdrop.className = 'floating-menu-backdrop';
+      document.body.appendChild(backdrop);
+      document.body.appendChild(fab);
+      var locked = false;
+      // Same scroll lock as the main sidebar: the page behind the drawer must
+      // stay put while it is open.
+      function setLock(on) {
+        if (on === locked) return;
+        locked = on;
+        on ? window.MFScrollLock.lock() : window.MFScrollLock.unlock();
+      }
+      function close() { menu.classList.remove('mobile-open'); backdrop.classList.remove('show'); setLock(false); }
+      function open() { menu.classList.add('mobile-open'); backdrop.classList.add('show'); setLock(true); }
+      // The drawer only exists below 861px — release the lock when the layout
+      // switches back to the docked desktop menu.
+      window.addEventListener('resize', function () {
+        if (locked && window.innerWidth > 860) close();
+      });
+      fab.addEventListener('click', function () { menu.classList.contains('mobile-open') ? close() : open(); });
+      backdrop.addEventListener('click', close);
+      // Close after picking an entry (links navigate; switchTab buttons stay).
+      menu.addEventListener('click', function (e) { if (e.target.closest('a, button')) close(); });
+    })();
+
+    {% if syncplay_enabled %}
+    // ===== SyncPlay active-rooms badge =====
+    // Show the number of open SyncPlay rooms on the sidebar link, polled from
+    // /api/syncplay/rooms (the same endpoint the lobby uses).
+    (function () {
+      var badge = document.getElementById('syncplayBadge');
+      if (!badge) return;
+      function poll() {
+        fetch('{{ url_for("api_syncplay_rooms") }}', { headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) {
+            if (!d) return;
+            var n = (d.rooms || []).length;
+            if (n > 0) { badge.textContent = n; badge.style.display = ''; }
+            else { badge.style.display = 'none'; }
+          })
+          .catch(function () { });
+      }
+      poll();
+      window.mfPoll(poll, 60000);
+    })();
+    {% endif %}
+
+    // The mobile download badge used to be mirrored from the sidebar's
+    // #queueBadge through a MutationObserver. That element is gone with the
+    // Queues sub-menu, and updateBadge() in queue.js now writes
+    // #mobileQueueBadge directly — the same way the encoding and upscale
+    // loaders have always done it.
+
+    // ===== Global Confirm Modal =====
+    var _confirmResolveCallback = null;
+
+    function showConfirm(message, okLabel, title, okClass) {
+      return new Promise(function (resolve) {
+        var modal = document.getElementById("confirmModal");
+        var msgEl = document.getElementById("confirmModalMsg");
+        var okBtn = document.getElementById("confirmModalOk");
+        var titleEl = document.getElementById("confirmModalTitle");
+        if (titleEl) {
+          if (titleEl._defaultText === undefined) titleEl._defaultText = titleEl.textContent;
+          titleEl.textContent = title || titleEl._defaultText;
+        }
+        msgEl.innerHTML = message;
+        okBtn.textContent = okLabel || {{ _('Delete')|tojson }};
+        okBtn.className = "btn btn-sm " + (okClass || "btn-danger");
+        _confirmResolveCallback = resolve;
+        modal.style.display = "block";
+        okBtn.focus();
+        document._confirmKeyHandler = function (e) {
+          if (e.key === "Escape") _confirmResolve(false);
+          if (e.key === "Enter") _confirmResolve(true);
+        };
+        document.addEventListener("keydown", document._confirmKeyHandler);
+      });
+    }
+
+    function _confirmResolve(result) {
+      var modal = document.getElementById("confirmModal");
+      if (!modal || modal.style.display === "none") return;
+      modal.style.display = "none";
+      if (document._confirmKeyHandler) {
+        document.removeEventListener("keydown", document._confirmKeyHandler);
+        document._confirmKeyHandler = null;
+      }
+      if (_confirmResolveCallback) {
+        var cb = _confirmResolveCallback;
+        _confirmResolveCallback = null;
+        cb(result);
+      }
+    }
+
+    // ===== Telemetry: first-run consent dialog bootstrap =====
+    // Runs on every page (this script lives in base.html), but only ever
+    // shows the dialog when consent_given is still null (i.e. truly the
+    // first run) -- once answered, either "Yes" or "No" is a permanent
+    // answer that only changes again via the Settings page.
+    (function () {
+      fetch('/api/settings/telemetry')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          // A non-ok response (not logged in yet, non-admin account, or the
+          // route simply not reachable this early) must never block the
+          // rest of the UI -- just skip showing the dialog this time.
+          if (!data || data.consent_given !== null) return;
+          var overlay = document.getElementById('telemetryConsentOverlay');
+          if (overlay) overlay.style.display = 'block';
+        })
+        .catch(function () { /* offline first load -- skip, never block the UI */ });
+    })();
+
+    function _telemetryConsentAnswer(granted) {
+      var overlay = document.getElementById('telemetryConsentOverlay');
+      fetch('/api/settings/telemetry/consent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ granted: granted })
+      }).finally(function () {
+        if (overlay) overlay.style.display = 'none';
+      });
+    }
+  </script>
+  <div class="appearance-popup" id="appearancePopup">
+    <div>
+      <div class="appearance-popup-label">{{ _('Appearance') }}</div>
+      <div class="appearance-theme-row">
+        <button class="appearance-theme-btn" id="themeBtnDark" onclick="setTheme('dark')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+          </svg>
+          Dark
+        </button>
+        <button class="appearance-theme-btn" id="themeBtnLight" onclick="setTheme('light')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round">
+            <circle cx="12" cy="12" r="5" />
+            <line x1="12" y1="1" x2="12" y2="3" />
+            <line x1="12" y1="21" x2="12" y2="23" />
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+            <line x1="1" y1="12" x2="3" y2="12" />
+            <line x1="21" y1="12" x2="23" y2="12" />
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+          </svg>
+          Light
+        </button>
+      </div>
+    </div>
+    <div>
+      <div class="appearance-popup-label">{{ _('Accent Color') }}</div>
+      <div class="accent-presets" id="accentPresets"></div>
+      <div class="accent-hex-row">
+        <input type="text" class="accent-hex-input" id="accentHexInput" maxlength="7" placeholder="#7c3aed" />
+        <div class="accent-color-swatch">
+          <input type="color" id="accentColorPicker" />
+        </div>
+      </div>
+    </div>
+    <button class="appearance-reset" onclick="resetAppearance()">{{ _('Reset') }}</button>
+  </div>
+
+
+
+  <div id="toast" class="toast"></div>
+
+  <!-- ===== Player Modal =====
+       Every control lives inside #playerVideoWrap and floats above the
+       picture, so the video keeps the full height of the container. The ids
+       playerOverlay / playerContainer / playerVideoWrap / playerVideo /
+       playerSeekWrap / playerPlayBtn are load-bearing: syncplay_page.js
+       re-parents the container and syncplay.css locks those two controls
+       inside a room. -->
+  <div class="queue-overlay" id="playerOverlay" style="display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.92);" onclick="if(event.target===this)closePlayer()">
+    <div id="playerContainer" class="mfp">
+
+      <div id="playerVideoWrap" class="mfp-stage">
+        <video id="playerVideo" class="mfp-video" playsinline preload="auto"></video>
+
+        <!-- Swipe-dimmer (a web page cannot touch the device backlight, so
+             "brightness" is an overlay on the picture only). -->
+        <div class="mfp-dim" id="playerDim"></div>
+        <div class="mfp-scrim" id="playerScrim"></div>
+
+        <!-- Rendered subtitle cues (the TextTrack itself stays hidden). -->
+        <div class="mfp-captions" id="playerCaptions" aria-live="off"></div>
+
+        <!-- Touch gesture zones: double tap = -10 s / +10 s, hold = 2x. -->
+        <div class="mfp-gestures" id="playerGestures" aria-hidden="true">
+          <div class="mfp-gesture" data-zone="left"></div>
+          <div class="mfp-gesture is-mid" data-zone="mid"></div>
+          <div class="mfp-gesture" data-zone="right"></div>
+        </div>
+        <div class="mfp-ripple is-left" id="playerRippleL" aria-hidden="true">
+          <div class="mfp-ripple-inner">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 19l-9-7 9-7v14zM22 19l-9-7 9-7v14z"/></svg>
+            <span id="playerRippleLText">10</span>
+          </div>
+        </div>
+        <div class="mfp-ripple is-right" id="playerRippleR" aria-hidden="true">
+          <div class="mfp-ripple-inner">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 5l9 7-9 7V5zM2 5l9 7-9 7V5z"/></svg>
+            <span id="playerRippleRText">10</span>
+          </div>
+        </div>
+        <div class="mfp-swipe-hud" id="playerSwipeHud" aria-hidden="true">
+          <svg id="playerSwipeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>
+          <div class="mfp-swipe-meter"><i id="playerSwipeFill"></i></div>
+          <span id="playerSwipeVal">100%</span>
+        </div>
+        <div class="mfp-speed-hud" id="playerSpeedHud" aria-hidden="true">2x &nbsp;&#9654;&#9654;</div>
+
+        <!-- ── Top bar ── -->
+        <div class="mfp-top" id="playerTopBar">
+          <div class="mfp-title-wrap">
+            <div class="mfp-title" id="playerTitle"></div>
+            <div class="mfp-subtitle" id="playerSubtitle" style="display:none;"></div>
+          </div>
+          <button class="mfp-srcbadge" id="playerSourceBadge" style="display:none;" onclick="_playerToggleMenu('source')" aria-haspopup="true" aria-expanded="false">
+            <span class="mfp-live"></span>
+            <span id="playerSourceBadgeText"></span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="mfp-top-right">
+            <span class="mfp-encoder" id="playerEncoderInfo"></span>
+            <button class="mfp-icon-btn" onclick="closePlayer()" title="{{ _('Close (Esc)') }}" aria-label="{{ _('Close (Esc)') }}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- ── Centre cluster (touch screens) ── -->
+        <div class="mfp-center" id="playerCenter">
+          <button class="mfp-cbtn is-30 is-skip" onclick="_playerSkip(-30)" title="{{ _('Back 30 seconds') }}" aria-label="{{ _('Back 30 seconds') }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5A9 9 0 1 1 12 21"/><path d="M3 4v5h5"/></svg>
+            <span class="mfp-skip-n">30</span>
+          </button>
+          <button class="mfp-cbtn is-skip" onclick="_playerSkip(-10)" title="{{ _('Back 10 seconds') }}" aria-label="{{ _('Back 10 seconds') }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5A9 9 0 1 1 12 21"/><path d="M3 4v5h5"/></svg>
+            <span class="mfp-skip-n">10</span>
+          </button>
+          <button class="mfp-cbtn is-main" id="playerCenterPlay" onclick="_playerTogglePlay()" title="{{ _('Play/Pause (Space)') }}" aria-label="{{ _('Play/Pause (Space)') }}">
+            <svg id="playerCenterPlayIcon" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>
+            <svg id="playerCenterPauseIcon" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+          </button>
+          <button class="mfp-cbtn is-skip" onclick="_playerSkip(10)" title="{{ _('Forward 10 seconds') }}" aria-label="{{ _('Forward 10 seconds') }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:scaleX(-1)"><path d="M3.5 8.5A9 9 0 1 1 12 21"/><path d="M3 4v5h5"/></svg>
+            <span class="mfp-skip-n">10</span>
+          </button>
+          <button class="mfp-cbtn is-30 is-skip" onclick="_playerSkip(30)" title="{{ _('Forward 30 seconds') }}" aria-label="{{ _('Forward 30 seconds') }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:scaleX(-1)"><path d="M3.5 8.5A9 9 0 1 1 12 21"/><path d="M3 4v5h5"/></svg>
+            <span class="mfp-skip-n">30</span>
+          </button>
+        </div>
+
+        <!-- ── Floating actions ── -->
+        <div class="mfp-float" id="playerSkipFloat">
+          <button class="mfp-skip-btn" id="playerSkipMarkerBtn" onclick="_playerSkipMarker()">{{ _('Skip intro') }}</button>
+        </div>
+        <div class="mfp-float" id="playerNextFloat">
+          <div class="mfp-nextup">
+            <span class="mfp-nextup-count" id="playerNextCount"></span>
+            <div class="mfp-nextup-art" id="playerNextArt"></div>
+            <div>
+              <div class="mfp-nextup-kicker">{{ _('Up next') }}</div>
+              <div class="mfp-nextup-name" id="playerNextName"></div>
+              <button class="mfp-btn" style="padding:6px 12px;font-size:0.75rem;" onclick="_playerPlayNext()">{{ _('Play now') }}</button>
+            </div>
+            <button class="mfp-nextup-close" onclick="_playerCancelNext()">{{ _('Cancel') }}</button>
+          </div>
+        </div>
+
+        <!-- ── Bottom rail ── -->
+        <div class="mfp-bar" id="playerControls">
+          <div id="playerSeekWrap" role="slider" tabindex="0" aria-label="{{ _('Seek') }}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="mfp-seek-track"></div>
+            <div class="mfp-seek-buf"  id="playerSeekBuf"></div>
+            <div class="mfp-seek-fill" id="playerSeekFill"></div>
+            <div class="mfp-seek-thumb" id="playerSeekThumb"></div>
+          </div>
+          <div class="mfp-preview" id="playerPreview">
+            <div class="mfp-preview-img" id="playerPreviewImg"></div>
+            <div class="mfp-preview-time" id="playerHoverTime"></div>
+            <div class="mfp-preview-chapter" id="playerPreviewChapter" style="display:none;"></div>
+          </div>
+
+          <div class="mfp-row">
+            <button class="mfp-icon-btn is-transport" onclick="_playerSkip(-30)" title="{{ _('Back 30 seconds') }}" aria-label="{{ _('Back 30 seconds') }}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5A9 9 0 1 1 12 21"/><path d="M3 4v5h5"/></svg>
+              <span class="mfp-skip-n">30</span>
+            </button>
+            <button class="mfp-icon-btn is-transport" onclick="_playerSkip(-10)" title="{{ _('Back 10 seconds') }}" aria-label="{{ _('Back 10 seconds') }}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5A9 9 0 1 1 12 21"/><path d="M3 4v5h5"/></svg>
+              <span class="mfp-skip-n">10</span>
+            </button>
+            <button class="mfp-icon-btn is-transport" id="playerPlayBtn" title="{{ _('Play/Pause (Space)') }}" aria-label="{{ _('Play/Pause (Space)') }}">
+              <svg id="playerPlayIcon"  viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>
+              <svg id="playerPauseIcon" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+            </button>
+            <button class="mfp-icon-btn is-transport" onclick="_playerSkip(10)" title="{{ _('Forward 10 seconds') }}" aria-label="{{ _('Forward 10 seconds') }}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:scaleX(-1)"><path d="M3.5 8.5A9 9 0 1 1 12 21"/><path d="M3 4v5h5"/></svg>
+              <span class="mfp-skip-n">10</span>
+            </button>
+            <button class="mfp-icon-btn is-transport" onclick="_playerSkip(30)" title="{{ _('Forward 30 seconds') }}" aria-label="{{ _('Forward 30 seconds') }}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:scaleX(-1)"><path d="M3.5 8.5A9 9 0 1 1 12 21"/><path d="M3 4v5h5"/></svg>
+              <span class="mfp-skip-n">30</span>
+            </button>
+            <button class="mfp-icon-btn" id="playerNextBtn" style="display:none;" onclick="_playerPlayNext()" title="{{ _('Next episode') }}" aria-label="{{ _('Next episode') }}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4l10 8-10 8V4z"/><path d="M19 5v14"/></svg>
+            </button>
+
+            <div class="mfp-volwrap">
+              <button class="mfp-icon-btn" id="playerMuteBtn" onclick="_playerToggleMute()" title="{{ _('Mute (M)') }}" aria-label="{{ _('Mute (M)') }}">
+                <svg id="playerVolIcon"  viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                <svg id="playerMuteIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+              </button>
+              <div class="mfp-volslot">
+                <input id="playerVolSlider" class="mfp-volslider" type="range" min="0" max="1" step="0.02" value="1" aria-label="{{ _('Volume') }}">
+              </div>
+            </div>
+
+            <span class="mfp-time" id="playerTimeText"><b>0:00</b> / --:--</span>
+            <div class="mfp-spacer"></div>
+
+            <button class="mfp-lbl" id="playerAudioLbl" style="display:none;" onclick="_playerToggleMenu('audio')" aria-haspopup="true"></button>
+            <button class="mfp-lbl" id="playerSubLbl" onclick="_playerToggleMenu('subs')" aria-haspopup="true">{{ _('CC') }} <small>{{ _('off') }}</small></button>
+            <button class="mfp-lbl is-optional" id="playerSpeedLbl" onclick="_playerToggleMenu('speed')" aria-haspopup="true">1&times;</button>
+            <button class="mfp-lbl" id="playerQualityLbl" onclick="_playerToggleMenu('quality')" aria-haspopup="true"></button>
+
+            <button class="mfp-icon-btn" id="playerSettingsBtn" onclick="_playerToggleMenu('settings')" title="{{ _('Settings') }}" aria-label="{{ _('Settings') }}" aria-haspopup="true" aria-expanded="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <button class="mfp-icon-btn" id="playerPipBtn" onclick="_playerTogglePip()" title="{{ _('Picture in picture') }}" aria-label="{{ _('Picture in picture') }}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="12" width="8" height="6" rx="1" fill="currentColor"/></svg>
+            </button>
+            <button class="mfp-icon-btn" onclick="_playerFullscreen()" title="{{ _('Fullscreen (F)') }}" aria-label="{{ _('Fullscreen (F)') }}">
+              <svg id="playerFsIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
+              <svg id="playerFsExitIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;"><path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Menus are filled by player.js so quality/audio/subtitle lists can
+             follow the actual media instead of being hardcoded here. -->
+        <div class="mfp-menu" id="playerMenu" role="menu"></div>
+
+        <!-- ── Overlays ── -->
+        <div class="mfp-overlay is-on" id="playerSpinner">
+          <div class="mfp-spinner-ring"></div>
+          <span class="mfp-overlay-msg" id="playerSpinnerMsg">{{ _('Starting transcoder...') }}</span>
+        </div>
+
+        <div class="mfp-overlay" id="playerError">
+          <div class="mfp-error-card">
+            <div class="mfp-overlay-title" id="playerErrorTitle">{{ _('Playback failed') }}</div>
+            <div class="mfp-overlay-msg" id="playerErrorMsg"></div>
+            <div class="mfp-btn-row" id="playerErrorActions">
+              <button class="mfp-btn is-ghost" onclick="closePlayer()">{{ _('Close') }}</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="mfp-overlay" id="playerResumeChoice">
+          <span class="mfp-overlay-title">{{ _('Continue watching?') }}</span>
+          <span class="mfp-overlay-msg" id="playerResumeAt"></span>
+          <div class="mfp-btn-row">
+            <button class="mfp-btn" id="playerResumeBtn" onclick="_playerResume()">
+              <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <span id="playerResumeLabel">{{ _('Resume') }}</span>
+            </button>
+            <button class="mfp-btn is-ghost" onclick="_playerStartOver()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+              {{ _('Start over') }}
+            </button>
+          </div>
+        </div>
+
+        <div class="mfp-overlay" id="playerSwitching">
+          <div class="mfp-spinner-ring"></div>
+          <div class="mfp-overlay-title" id="playerSwitchTitle"></div>
+          <div class="mfp-overlay-msg" id="playerSwitchSub"></div>
+          <div class="mfp-overlay-note" id="playerSwitchNote"></div>
+        </div>
+      </div>
+
+      <!-- Legacy source selects. The picker above replaced them, but third
+           party modules read/write these ids, so they stay in the DOM as
+           hidden mirrors of the current selection (see player.js). -->
+      <div id="playerSourceBar" hidden style="display:none;">
+        <select id="playerLangSelect" onchange="_playerChangeSource()"></select>
+        <select id="playerProviderSelect" onchange="_playerChangeSource()"></select>
+      </div>
+
+    </div>
+  </div>
+
+  {# hls.js, vendored (static/hls.min.js, upstream dist of v1.5.7). It used to
+     come from cdn.jsdelivr.net, which meant the player was dead on any install
+     without internet access -- a LAN-only container, or one behind Gluetun:
+     player.js falls back to video.canPlayType('application/vnd.apple.mpegurl'),
+     and Chrome and Firefox answer "" to that, so every play click ended in the
+     generic error branch. It also kept a third-party origin in the CSP. #}
+  <script src="{{ url_for('static', filename='hls.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='player.js') }}"></script>
+
+  <!-- ══════════════════════════════════════════════════════════════════
+       eBook reader overlay
+
+       Lives in base.html for the same reason the player does: it is opened
+       from the library, but a module or a future page must be able to call
+       window.openReader() without shipping its own markup. Ids are
+       load-bearing (reader.js queries them by id) -- rename with care.
+       ══════════════════════════════════════════════════════════════════ -->
+  <div id="readerOverlay" data-reader-theme="dark" role="dialog" aria-modal="true"
+       aria-label="{{ _('Reader') }}">
+    <div class="mfr" id="readerShell">
+
+      <div class="mfr-head">
+        <button type="button" class="mfr-btn mfr-btn--icon" id="readerClose" title="{{ _('Close') }}"
+                aria-label="{{ _('Close') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <h2 class="mfr-title" id="readerTitle"></h2>
+        <button type="button" class="mfr-btn mfr-btn--icon mfr-btn--mark" id="readerMarkBtn"
+                title="{{ _('Set bookmark') }}" aria-label="{{ _('Set bookmark') }}" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+        </button>
+        {# Not epub-only: the same panel lists the bookmarks, and a PDF has
+           those too. Its chapter section simply stays empty. #}
+        <button type="button" class="mfr-btn mfr-btn--icon" id="readerTocBtn"
+                title="{{ _('Contents and bookmarks') }}" aria-label="{{ _('Contents and bookmarks') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+            <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
+            <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        </button>
+        <button type="button" class="mfr-btn mfr-btn--icon" id="readerFullscreen" title="{{ _('Fullscreen') }}"
+                aria-label="{{ _('Fullscreen') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M8 3H5a2 2 0 00-2 2v3M16 3h3a2 2 0 012 2v3M8 21H5a2 2 0 01-2-2v-3M16 21h3a2 2 0 002-2v-3"/></svg>
+        </button>
+      </div>
+
+      <div class="mfr-stage" id="readerStage">
+        <button type="button" class="mfr-tap mfr-tap--prev" id="readerPrev"
+                aria-label="{{ _('Previous page') }}"></button>
+        <div class="mfr-page">
+          <div id="readerEpub" hidden></div>
+        </div>
+        <div id="readerPdf" hidden></div>
+        {# The comic stage. Filled entirely from reader.js -- one or two <img>
+           elements that are reused across page turns, never rebuilt. #}
+        <div id="readerComic" hidden data-fit="height"></div>
+        <button type="button" class="mfr-tap mfr-tap--next" id="readerNext"
+                aria-label="{{ _('Next page') }}"></button>
+
+        <!-- Says "this page is bookmarked" while the chrome is faded out and
+             the header button is not on screen. -->
+        <div class="mfr-mark" id="readerMark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M4 2h16v22l-8-6-8 6z"/></svg>
+        </div>
+
+        <div class="mfr-toc" id="readerToc" hidden>
+          <div class="mfr-toc-head">
+            <span>{{ _('Contents and bookmarks') }}</span>
+            <button type="button" class="mfr-btn mfr-btn--icon" id="readerTocClose" aria-label="{{ _('Close') }}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="mfr-toc-list" id="readerTocList">
+            <div class="mfr-toc-section" id="readerBookmarksHead" hidden>{{ _('Bookmarks') }}</div>
+            <div id="readerBookmarks"></div>
+            <div class="mfr-toc-section" id="readerChaptersHead" hidden>{{ _('Chapters') }}</div>
+            <div id="readerChapters"></div>
+          </div>
+        </div>
+
+        <div class="mfr-status" id="readerStatus" hidden></div>
+      </div>
+
+      <!-- Everything about how the page looks lives in one panel; the footer
+           keeps only where-am-I and how-do-I-turn-the-page. -->
+      <div class="mfr-sheet" id="readerSheet" hidden role="group" aria-label="{{ _('Reading settings') }}">
+        {# Comic-only controls. They sit first because in comic mode every row
+           below them except Paper is hidden, and a panel that opens on its one
+           relevant control beats a panel that opens on a gap. #}
+        <div class="mfr-sheet-row" data-reader-comic-only hidden>
+          <span class="mfr-sheet-label">{{ _('Pages') }}</span>
+          <div class="mfr-seg" id="readerComicPages">
+            <button type="button" data-comic-spread="single">{{ _('Single') }}</button>
+            <button type="button" data-comic-spread="double">{{ _('Double') }}</button>
+          </div>
+        </div>
+        <div class="mfr-sheet-row" data-reader-comic-only id="readerComicCoverRow" hidden>
+          <span class="mfr-sheet-label">{{ _('Cover') }}</span>
+          <div class="mfr-seg" id="readerComicCover">
+            <button type="button" data-comic-cover="alone">{{ _('Alone') }}</button>
+            <button type="button" data-comic-cover="paired">{{ _('Paired') }}</button>
+          </div>
+        </div>
+        <div class="mfr-sheet-row" data-reader-comic-only hidden>
+          <span class="mfr-sheet-label">{{ _('Zoom') }}</span>
+          <div class="mfr-seg" id="readerComicZoom">
+            <button type="button" data-comic-zoom="-10" aria-label="{{ _('Zoom out') }}">&minus;</button>
+            <button type="button" data-comic-zoom="reset" id="readerComicZoomLabel">100%</button>
+            <button type="button" data-comic-zoom="10" aria-label="{{ _('Zoom in') }}">+</button>
+          </div>
+        </div>
+        <div class="mfr-sheet-row" data-reader-comic-only hidden>
+          <span class="mfr-sheet-label">{{ _('Fit') }}</span>
+          <div class="mfr-seg" id="readerComicFit">
+            <button type="button" data-comic-fit="width">{{ _('Width') }}</button>
+            <button type="button" data-comic-fit="height">{{ _('Height') }}</button>
+            <button type="button" data-comic-fit="native" title="{{ _('Original size') }}">{{ pgettext('reader fit', 'Original') }}</button>
+          </div>
+        </div>
+        <div class="mfr-sheet-row" data-reader-text-only>
+          <span class="mfr-sheet-label">{{ _('Typeface') }}</span>
+          <div class="mfr-seg mfr-seg--font" id="readerFont">
+            <button type="button" data-font="serif">{{ _('Serif') }}</button>
+            <button type="button" data-font="sans">{{ _('Sans') }}</button>
+            <button type="button" data-font="original">{{ _('Original') }}</button>
+          </div>
+        </div>
+        <div class="mfr-sheet-row" data-reader-text-only>
+          <span class="mfr-sheet-label">{{ _('Text size') }}</span>
+          <div class="mfr-seg" id="readerSize">
+            <button type="button" data-size="-10" aria-label="{{ _('Smaller text') }}">A&minus;</button>
+            <button type="button" data-size="reset" id="readerSizeLabel">100%</button>
+            <button type="button" data-size="10" aria-label="{{ _('Larger text') }}">A+</button>
+          </div>
+        </div>
+        <div class="mfr-sheet-row" data-reader-text-only>
+          <span class="mfr-sheet-label">{{ _('Line spacing') }}</span>
+          <div class="mfr-seg" id="readerLead">
+            <button type="button" data-lead="1.4">{{ _('Tight') }}</button>
+            <button type="button" data-lead="1.65">{{ _('Normal') }}</button>
+            <button type="button" data-lead="1.95">{{ _('Loose') }}</button>
+          </div>
+        </div>
+        <div class="mfr-sheet-row" data-reader-text-only>
+          <span class="mfr-sheet-label">{{ _('Page width') }}</span>
+          <div class="mfr-seg" id="readerWidth">
+            <button type="button" data-width="34">{{ _('Narrow') }}</button>
+            <button type="button" data-width="44">{{ _('Normal') }}</button>
+            <button type="button" data-width="62">{{ _('Wide') }}</button>
+          </div>
+        </div>
+        <div class="mfr-sheet-sep"></div>
+        <div class="mfr-sheet-row">
+          <span class="mfr-sheet-label">{{ _('Paper') }}</span>
+          <div class="mfr-seg mfr-seg--theme" id="readerThemes">
+            <button type="button" data-theme="light" title="{{ _('Light') }}">{{ _('Light') }}</button>
+            <button type="button" data-theme="sepia" title="{{ _('Sepia') }}">{{ _('Sepia') }}</button>
+            <button type="button" data-theme="dark" title="{{ _('Dark') }}">{{ _('Dark') }}</button>
+          </div>
+        </div>
+        <div class="mfr-sheet-row" data-reader-epub-only>
+          <span class="mfr-sheet-label">{{ _('Reading mode') }}</span>
+          <div class="mfr-seg" id="readerFlow">
+            <button type="button" data-flow="paginated">{{ _('Pages') }}</button>
+            <button type="button" data-flow="scrolled">{{ _('Scroll') }}</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="mfr-foot">
+        <div class="mfr-rail"><div class="mfr-rail-fill" id="readerProgressFill"></div></div>
+
+        <div class="mfr-foot-nav">
+          <button type="button" class="mfr-btn mfr-btn--icon" id="readerPrevBtn"
+                  aria-label="{{ _('Previous page') }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+          <button type="button" class="mfr-btn mfr-btn--icon" id="readerNextBtn"
+                  aria-label="{{ _('Next page') }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+          </button>
+        </div>
+
+        <div class="mfr-progress-wrap">
+          <span class="mfr-chapter" id="readerChapter"></span>
+          <span class="mfr-progress-label" id="readerProgressLabel"></span>
+        </div>
+
+        <button type="button" class="mfr-btn mfr-btn--aa" id="readerSheetBtn"
+                aria-label="{{ _('Reading settings') }}" aria-expanded="false">Aa</button>
+      </div>
+
+    </div>
+  </div>
+
+  {# pdf.js (Apache-2.0, v3.11 legacy UMD build) and epub.js (BSD-2-Clause) with
+     its jszip dependency (MIT/GPL-3.0), all vendored for the same reason hls.js
+     is: an install without internet access must still be able to read a book,
+     and a CDN would put a third-party origin back into the CSP. The v3 build is
+     deliberate -- pdf.js v4 ships .mjs only, and pyproject.toml's package-data
+     globs are extension-specific, so a .mjs would silently not be packaged. #}
+  <script src="{{ url_for('static', filename='pdf.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='jszip.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='epub.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='reader.js') }}"></script>
+
+
+  <!-- ===== Page Transition Loader JS ===== -->
+  <script>
+    (function () {
+      var loader = document.getElementById('page-loader');
+      if (!loader) return;
+
+      function hideLoader() {
+        document.documentElement.removeAttribute('data-page-loading');
+        loader.style.transition = 'opacity 0.25s ease';
+        loader.classList.remove('active');
+      }
+
+      // Hide once DOM is ready (works on all devices, no touch/mouse listeners needed)
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function () { setTimeout(hideLoader, 60); });
+      } else {
+        setTimeout(hideLoader, 60);
+      }
+
+      // Desktop only: show loader on click for smooth departure animation
+      // Detect touch device and skip to avoid issues with synthetic mouse events on mobile
+      var isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+      if (!isTouchDevice) {
+        function isInternal(a) {
+          var href = a.getAttribute('href');
+          if (!href || href.startsWith('#') || href.startsWith('javascript')) return false;
+          if (a.target === '_blank' || a.download) return false;
+          try {
+            var u = new URL(href, location.href);
+            if (u.origin !== location.origin) return false;
+            if (u.pathname === location.pathname && u.search === location.search) return false;
+            return true;
+          } catch (e) { return false; }
+        }
+        document.addEventListener('mousedown', function (e) {
+          var a = e.target.closest('a[href]');
+          if (a && isInternal(a)) {
+            loader.style.transition = 'none';
+            loader.classList.add('active');
+          }
+        });
+      }
+
+      // Collapsible sidebar categories
+      (function() {
+        document.querySelectorAll('.sidebar-category').forEach(function (category) {
+          var group = category.nextElementSibling;
+          if (group && group.classList.contains('sidebar-category-group')) {
+            var key = 'sidebar-collapsed-' + category.textContent.trim();
+            var isCollapsed = localStorage.getItem(key) === 'true';
+            
+            if (isCollapsed) {
+              category.classList.add('collapsed');
+              group.classList.add('collapsed');
+            }
+            
+            category.addEventListener('click', function () {
+              var collapsed = !category.classList.contains('collapsed');
+              category.classList.toggle('collapsed', collapsed);
+              group.classList.toggle('collapsed', collapsed);
+              localStorage.setItem(key, collapsed);
+            });
+          }
+        });
+
+        // Fade in the navigation after setting up the categories collapse state
+        var nav = document.querySelector('.sidebar-nav');
+        if (nav) {
+          nav.style.opacity = '1';
+        }
+      })();
+
+      // Mini-mode flyout submenus. In the collapsed rail the submenu panels are
+      // position:fixed (so the scrolling rail can't clip them) and shown via the
+      // .flyout-open class. We drive open/close in JS with a short close delay
+      // (hover-intent): leaving the icon starts a timer, entering the panel
+      // cancels it — so the cursor can travel diagonally from the icon into the
+      // panel without it snapping shut. Top/max-height are set from the icon's
+      // current viewport position so the panel stays aligned after scrolling.
+      (function () {
+        var closeTimer = null;
+        function isMini() { return document.documentElement.classList.contains('sidebar-mini'); }
+        document.querySelectorAll('.sidebar-nav .sidebar-link').forEach(function (link) {
+          var sub = link.nextElementSibling;
+          if (!sub || !sub.classList.contains('sidebar-sub')) return;
+
+          function openFlyout() {
+            if (!isMini()) return;
+            clearTimeout(closeTimer);
+            document.querySelectorAll('.sidebar-sub.flyout-open').forEach(function (s) {
+              if (s !== sub) s.classList.remove('flyout-open');
+            });
+            var r = link.getBoundingClientRect();
+            sub.style.top = r.top + 'px';
+            sub.style.maxHeight = (window.innerHeight - r.top - 12) + 'px';
+            sub.classList.add('flyout-open');
+          }
+          function scheduleClose() {
+            clearTimeout(closeTimer);
+            closeTimer = setTimeout(function () { sub.classList.remove('flyout-open'); }, 250);
+          }
+
+          link.addEventListener('mouseenter', openFlyout);
+          link.addEventListener('mouseleave', scheduleClose);
+          sub.addEventListener('mouseenter', function () { if (isMini()) clearTimeout(closeTimer); });
+          sub.addEventListener('mouseleave', scheduleClose);
+        });
+      })();
+    })();
+  </script>
+
+</body>
+
+</html>

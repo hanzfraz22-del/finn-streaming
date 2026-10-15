@@ -1,0 +1,2 @@
+[console_scripts]
+mediaforge = mediaforge.entry:mediaforge

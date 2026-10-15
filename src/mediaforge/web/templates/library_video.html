@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% import "_library_nav.html" as libnav %}
+{% block title %}{{ libnav.kind_label('video') }} — MediaForge{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='stats.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='library_core.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='library_video.css') }}">{% endblock %}
+{% block content %}
+<div class="library-container">
+
+  <!-- Header -->
+  <div class="page-header" style="margin-bottom:18px">
+    <h1 class="page-title">{{ libnav.kind_label('video') }}</h1>
+    <div id="libSummaryPills" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;"></div>
+  </div>
+
+  <!-- ===== Toolbar =====
+       Row 1 finds, row 2 shapes the view — same rhythm as Calendar/Seerr.
+       See .mf-toolbar in mf_components.css. -->
+  <div class="mf-toolbar" id="libToolbar">
+
+    <div class="mf-toolbar-row">
+      <div class="mf-search lib-search">
+        <svg class="mf-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input type="search" class="mf-search-input" id="libSearchInput"
+               placeholder="{{ _('Search series, movie or file…') }}"
+               aria-label="{{ _('Search series, movie or file…') }}"
+               oninput="libOnSearch(this.value)" autocomplete="off">
+        <button type="button" class="mf-search-clear" id="libSearchClear"
+                onclick="libClearSearch()" aria-label="{{ _('Clear search') }}" hidden>&times;</button>
+      </div>
+
+      <div class="mf-toolbar-gap"></div>
+
+      <button class="mf-icon-btn" id="libRefreshBtn" onclick="libLoad(true)" title="{{ _('Refresh') }}" aria-label="{{ _('Refresh') }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+          <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="mf-toolbar-row">
+      <!-- Content filter, not a media-type switch: the other media types are
+           pages of their own now (see web/media_kinds.py). -->
+      <div class="mf-segmented lib-filter-toggle" id="libFilterToggle" role="group" aria-label="{{ _('Filter') }}">
+        <button type="button" class="mf-segmented-btn active" id="libFilter-all"    onclick="libSetFilter('all')"    aria-pressed="true"  title="{{ _('Show all') }}">{{ _('All') }}</button>
+        <button type="button" class="mf-segmented-btn"        id="libFilter-series" onclick="libSetFilter('series')" aria-pressed="false" title="{{ _('Series only') }}">{{ _('Series') }}</button>
+        <button type="button" class="mf-segmented-btn"        id="libFilter-movies" onclick="libSetFilter('movies')" aria-pressed="false" title="{{ _('Movies only') }}">{{ _('Movies') }}</button>
+      </div>
+
+      <span class="mf-toolbar-sep" aria-hidden="true"></span>
+
+      <div class="mf-segmented" id="libSortToggle" role="group" aria-label="{{ _('Sort') }}">
+        <button type="button" class="mf-segmented-btn active" id="libSort-name"     onclick="libSetSort('name')"     title="{{ _('Sort by name') }}">A–Z <span id="libSortDir-name" style="font-size:0.7rem;opacity:0.8">↑</span></button>
+        <button type="button" class="mf-segmented-btn"        id="libSort-size"     onclick="libSetSort('size')"     title="{{ _('Sort by size') }}">{{ _('Size') }} <span id="libSortDir-size" style="font-size:0.7rem;opacity:0.8"></span></button>
+        <button type="button" class="mf-segmented-btn"        id="libSort-episodes" onclick="libSetSort('episodes')" title="{{ _('Sort by episode count') }}">{{ _('Ep.') }} <span id="libSortDir-episodes" style="font-size:0.7rem;opacity:0.8"></span></button>
+      </div>
+
+      <div class="mf-toolbar-gap"></div>
+
+      <div class="mf-segmented" id="libViewToggle" role="group" aria-label="{{ _('Layout') }}">
+        <button type="button" class="mf-segmented-btn active" id="libViewGrid" onclick="libSetView('grid')"
+                aria-pressed="true" title="{{ _('Grid view') }}" aria-label="{{ _('Grid view') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+               stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+        </button>
+        <button type="button" class="mf-segmented-btn" id="libViewList" onclick="libSetView('list')"
+                aria-pressed="false" title="{{ _('List view') }}" aria-label="{{ _('List view') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+               stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line>
+            <line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line>
+            <line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Status-Zeile -->
+    <div class="lib-status-row" id="libStatusRow">
+      <!-- Scan-Badge -->
+      <span class="lib-scan-badge" id="libScanBadge">
+        <span class="lib-scan-spinner"></span>{{ _('Scanning…') }}
+      </span>
+      <!-- Watcher -->
+      <span class="lib-watcher-status" id="libWatcherTip" title="">
+        <span class="lib-watcher-dot" id="libWatcherDot"></span>
+        <span class="lib-watcher-label" id="libWatcherLabel">{{ _('Watcher…') }}</span>
+      </span>
+      {# The move pill moved to base.html so a minimized move stays reachable
+         from every page, not just this one. #}
+      <!-- Last scan -->
+      <span class="lib-last-scanned" id="libLastScanned"></span>
+    </div>
+  </div>
+
+  <!-- Empty state / grid / list — libPaintItems() toggles [hidden] on these -->
+  <div id="libEmptyState" class="mf-empty" hidden>
+    <svg class="mf-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+    </svg>
+    <p>{{ _('No downloaded content found. Downloads will be shown here automatically.') }}</p>
+  </div>
+  <div id="libGridView" class="mf-poster-grid" hidden></div>
+  <div id="libListView" class="lib-list-view" hidden></div>
+
+  <!-- Pagination — filled/toggled by libRenderPagination() in library_core.js.
+       Uses the shared .mf-pagination-bar component (mf_components.css) +
+       the numbered .mf-pagination pager (forms.css), same pattern as
+       Download History (history.js). -->
+  <div id="libPaginationRow" class="mf-pagination-bar" hidden>
+    <span class="mf-pagination-count" id="libPageCount"></span>
+    <div id="libPagination"></div>
+    <label class="mf-pagination-perpage">
+      <span>{{ _('Results per page') }}</span>
+      <select id="libPerPageSelect" onchange="libSetPerPage(this.value)">
+        <option value="10">10</option>
+        <option value="20">20</option>
+        <option value="50">50</option>
+        <option value="100">100</option>
+      </select>
+    </label>
+  </div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+  var libraryCanDelete = {{ 'true' if not auth_enabled or (current_user and current_user.role == 'admin') else 'false' }};
+  var libraryCanStream = true;
+</script>
+<!-- Page module first, core second: library_core.js runs its init on parse
+     and needs LIB_KIND / libRender() / libUpdateSummary() to already exist. -->
+<script src="{{ url_for('static', filename='library_video.js') }}"></script>
+<script src="{{ url_for('static', filename='library_core.js') }}"></script>
+{% endblock %}

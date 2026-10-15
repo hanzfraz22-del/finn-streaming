@@ -1,0 +1,173 @@
+[project]
+name = "mediaforge"
+version = "1.6.0"
+authors = [
+  { name = "TheMRX13 (Pascal Keller)", email = "keller.pascal1313@gmail.com" },
+  { name = "Domekologe (Domenick Waldvogel)", email = "domenick.waldvogel@domekologe.eu" },
+]
+description = "Self-hosted WebUI anime, series and movie downloader with media library, web player, eBook reader, AutoSync scheduling and Jellyfin/Plex integration. Run 'mediaforge' to open the web interface."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  # [brotli] extra: aniworld.to (Cloudflare) can serve Brotli-encoded (Content-Encoding: br)
+  # responses. niquests advertises "br" in Accept-Encoding regardless (see config.py's
+  # _DEFAULT_HEADERS), but without this extra it has no decoder for it: resp.text still
+  # "succeeds" — charset-normalizer force-decodes the still-compressed bytes into unprintable
+  # mojibake instead of raising — which then reads as an empty/garbled page and gets
+  # misdiagnosed as an AniWorld layout change. See models/aniworld_to/series.py's
+  # AniworldSeries.__diagnose() for the detection and the accurate error message.
+  "niquests[brotli]",
+  "ffmpeg-python",
+  "yt-dlp",
+  "python-dotenv",
+  "rich",
+  "fake-useragent",
+  # Upper bounds on the security- and API-sensitive packages only. The Docker
+  # build resolves through uv.lock and is unaffected, but a plain `pip install
+  # mediaforge` and the PyInstaller build resolve from the ambient environment
+  # and would otherwise pick up whatever major release landed that day --
+  # Flask, Authlib, cryptography and bleach all break API across majors, and a
+  # silently-changed auth or sanitiser is not something a build should decide.
+  # Bumping a bound is a deliberate act; the floors are the versions currently
+  # locked. Everything else stays unpinned on purpose.
+  "flask>=3.1,<4",
+  "flask-wtf>=1.2,<2",
+  "flask-limiter>=4.1,<5",
+  "authlib>=1.6,<2",
+  "joserfc>=1.7,<2",
+  "requests",
+  "beautifulsoup4",
+  "waitress>=3.0,<4",
+  "packaging",
+  # Floor lives in [tool.uv] constraint-dependencies below (CVE-2026-69247).
+  "cryptography<51",
+  "patchright==1.61.2",
+  "pywebpush",
+  "watchdog",
+  "dnspython",
+  "curl_cffi",
+  "flask-babel",
+  "markdown",
+  # Sanitises the untrusted devInfo feed (web/markdown_utils.py).
+  "bleach>=6.2,<7",
+  # Validate TLS certificates against the OS trust store (Windows/macOS/Linux)
+  # instead of the ageing certifi bundle. Used as an explicitly passed SSLContext
+  "truststore",
+  "pystray",
+  "Pillow",
+  # MOBI/AZW3/AZW -> EPUB for the built-in reader (web/books/convert.py).
+  # Pure Python, a KindleUnpack derivative; GPL-3.0, same as MediaForge.
+  "mobi",
+  # .cb7 comic archives (web/comics/archive.py). Pure Python, so unlike RAR
+  # and ACE this format needs no external binary on the host.
+  "py7zr",
+]
+
+keywords = [
+  "anime", "anime-downloader", "aniworld", "aniworld-downloader", "s.to", "serienstream-downloader", "serienstream", "filmpalast", "filmpalast-downloader", "megakino", "megakino-downloader",
+  "downloader", "video-downloader", "m3u8", "yt-dlp", "streaming", "self-hosted",
+  "webui", "flask", "media-server", "media-library", "jellyfin", "plex",
+  "jellyseerr", "overseerr", "tmdb", "subtitles", "ebook-reader", "epub",
+  "docker", "pwa", "syncplay", "modular", "themes", "python",
+  "comic-reader", "cbz", "cbr", "comicvine"
+]
+
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Operating System :: OS Independent",
+  "Environment :: Web Environment",
+  "Framework :: Flask",
+  "Intended Audience :: End Users/Desktop",
+  "Topic :: Multimedia :: Video",
+  "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+  "Natural Language :: English",
+  "Natural Language :: German",
+]
+# PEP 639: the package as a whole is GPL-3.0-or-later, except for the
+# separately licensed captcha solver (see LICENSE-CAPTCHA), which is shipped
+# in the distribution and therefore part of the license expression.
+license = "GPL-3.0-or-later AND LicenseRef-MediaForge-Captcha"
+license-files = ["LICENSE", "COPYRIGHT", "LICENSE-CAPTCHA", "LICENSE.old"]
+
+[project.urls]
+homepage = "https://github.com/PD-Codes/MediaForge"
+changelog = "https://github.com/PD-Codes/MediaForge/commits/main"
+documentation = "https://github.com/PD-Codes/MediaForge/wiki"
+bugs = "https://github.com/PD-Codes/MediaForge/issues"
+issues = "https://github.com/PD-Codes/MediaForge/issues"
+tracker = "https://github.com/PD-Codes/MediaForge/issues"
+
+[build-system]
+# setuptools >= 77 is required for PEP 639 license expressions / license-files
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mediaforge = [
+  "web/templates/*.html",
+  "web/static/*.css",
+  "web/static/*.js",
+  "web/static/*.json",
+  "web/static/*.svg",
+  "web/static/*.png",
+  "web/static/flags/*.svg",
+  "web/static/TranslationFlags/*.svg",
+  "bin/windows/*",
+  "anime4k/shader/*.glsl",
+  "web/translations/de/LC_MESSAGES/*.mo",
+  "web/translations/de/LC_MESSAGES/*.po",
+  # Third-party integrations (web/thirdparties/<name>/) each bring their own
+  # templates/static — a recursive glob so a new drop-in folder is packaged
+  # automatically, without editing this list.
+  "web/thirdparties/**/templates/*.html",
+  "web/thirdparties/**/static/*.css",
+  "web/thirdparties/**/static/*.js",
+  "web/thirdparties/**/translations/*/LC_MESSAGES/*.mo",
+  "web/thirdparties/**/translations/*/LC_MESSAGES/*.po",
+  "web/thirdparties/**/babel.cfg",
+]
+
+[project.optional-dependencies]
+# Test-only: `pip install -e .[test] && pytest`
+test = [
+  "pytest>=8",
+]
+
+[tool.uv]
+# Security floors, not feature requirements. `uv lock` on its own keeps a
+# resolved version forever unless something forces it up, so a transitive
+# dependency can sit on a version with a published CVE indefinitely and only
+# the image scan notices. A floor here makes the next resolution refuse the
+# vulnerable range instead.
+#
+# constraint-dependencies (rather than adding these to [project] dependencies)
+# because we do not depend on them directly and should not claim to:
+#   aiohttp       comes in via pywebpush
+#   cryptography  is a direct dependency, but the floor belongs with its peers
+#
+#   aiohttp      < 3.14.3  CVE-2026-69244  OOB heap read in the C response parser
+#   cryptography < 50.0.0  CVE-2026-69247  Bleichenbacher oracle in PKCS#7 decrypt
+constraint-dependencies = [
+  "aiohttp>=3.14.3",
+  "cryptography>=50.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Only files following this pattern are collected -- tests/ also holds the
+# manual environment check scripts (check_linux.sh and friends).
+python_files = ["test_*.py"]
+addopts = "-q"
+filterwarnings = [
+  "ignore::DeprecationWarning",
+]
+
+[project.scripts]
+mediaforge = "mediaforge.entry:mediaforge"

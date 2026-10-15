@@ -1,0 +1,2114 @@
+"""General settings routes.
+
+Extracted from create_app as a plain route-registration function
+(no Flask blueprint: endpoint names stay bare so url_for() keeps working).
+"""
+
+from .. import runtime_state as _runtime_state
+from .. import selfupdate
+from ... import domain_resolver as _domain_resolver
+from ... import mirrors as _mirrors
+from ...config import LANG_LABELS
+from ..autosync_worker import _normalize_sync_times
+from ..autosync_worker import _parse_sync_days
+from ..db import add_custom_path
+from ..db import add_language_group
+from ..db import clear_tmdb_cache
+from ..db import count_language_group_users
+from ..db import default_custom_path_for_url
+from ..db import get_custom_paths
+from ..db import get_language_groups
+from ..db import get_setting
+from ..db import get_setting_int
+from ..db import remove_custom_path
+from ..db import remove_language_group
+from ..db import set_setting
+from ..db import update_custom_path
+from ..db import update_language_group
+from ..language_groups import SELECTABLE_LANGUAGES
+from ..language_groups import group_languages_json
+from ..language_groups import is_group_ref
+from ..language_groups import lang_separation_enabled
+from ..language_groups import resolve_chain
+from ..media_kinds import DEFAULT_KINDS_CSV
+from ..media_kinds import kinds_for_api
+from ..media_kinds import normalize_kinds
+from ..dns_patch import _DNS_PRESETS
+from ..dns_patch import _apply_dns_patch
+from .. import dns_patch
+from ..queue_worker import _validate_server_url
+from ..runtime_state import SYNC_ADAPTIVE_PAUSE_MAP
+from ..runtime_state import SYNC_ADAPTIVE_UNIT_MAP
+from ..runtime_state import SYNC_RETRY_MAP
+from ..runtime_state import SYNC_SCHEDULE_MAP
+from ..runtime_state import WORKING_PROVIDERS
+from ..settings_migration import _apply_captcha_env
+from ..source_policy import search_sources as _search_sources
+from ..uptime_monitor import active_monitor_sites
+from ..uptime_monitor import _probe_site
+from flask import jsonify
+from flask import render_template
+from flask import request
+import json
+import os
+import re
+import secrets
+import threading
+from ..request_context import get_current_user_info as _get_current_user_info
+from ...logger import get_logger
+from ...telemetry.classify import is_server_unreachable as _is_server_unreachable
+
+
+logger = get_logger(__name__)
+
+# Mirrors routes/integrations.py: a stored secret is reported as this
+# placeholder and the matching PUT skips it, so loading and saving a form
+# unchanged never overwrites the real value with the mask.
+SECRET_PLACEHOLDER = "***"
+
+# Ids accepted in cineinfo_provider_order. The value ends up in a saved
+# setting, is handed back out to the browser and is turned into DOM there, so
+# it is validated on the way in rather than trusted on the way out: lowercase
+# id characters plus the "ext:"/"ci:" namespace separator, nothing else.
+_ORDER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,63}$")
+# One saved order cannot grow without bound just because something POSTs a
+# long list at it.
+_ORDER_MAX_ENTRIES = 64
+
+
+def _sanitize_provider_order(raw) -> str:
+    """Normalise a cineinfo_provider_order value: known-shaped ids only, no
+    duplicates, bounded length. Returns the comma-joined result (possibly
+    empty, which simply means "no preference")."""
+    parts = raw if isinstance(raw, list) else str(raw or "").split(",")
+    out = []
+    for part in parts:
+        part = str(part).strip().lower()
+        if part and part not in out and _ORDER_ID_RE.match(part):
+            out.append(part)
+        if len(out) >= _ORDER_MAX_ENTRIES:
+            break
+    return ",".join(out)
+
+
+def _cineinfo_sources_payload():
+    """Every currently enabled CineInfo source, for the order list on the
+    CineInfo tab. Lazy import + guarded: a broken or absent registry must cost
+    the settings page nothing more than an empty list."""
+    try:
+        from ..cineinfo.registry import describe_sources
+        return describe_sources(enabled_only=True)
+    except Exception:
+        logger.debug("[Settings] CineInfo source list unavailable", exc_info=True)
+        return []
+
+
+def _language_group_error(language):
+    """Reason a language value can't be used, or None if it's fine.
+
+    Mirrors routes/autosync.py's check: a group needs per-language folders (see
+    language_groups.lang_separation_enabled) and has to still exist.
+    """
+    if not is_group_ref(language):
+        return None
+    if not lang_separation_enabled():
+        return "Sprachgruppen benötigen die Einstellung 'Sprachen in Ordner trennen'."
+    if not resolve_chain(language):
+        return f"Unknown language group: {language}"
+    return None
+
+
+def _normalize_default_sites(value):
+    """Return a validated, de-duplicated CSV of supported site keys."""
+    raw = value if isinstance(value, (list, tuple)) else str(value or "").split(",")
+    sites = []
+    for item in raw:
+        site = str(item).strip().lower()
+        if site in _mirrors.SITE_LABELS and site not in sites:
+            sites.append(site)
+    return ",".join(sites)
+
+
+def _normalize_media_kinds(value):
+    """Return a validated CSV of media kind slugs (see web/media_kinds.py).
+
+    The counterpart of _normalize_default_sites for the other multiselect in
+    the custom-paths table. The registry does the validating: unknown slugs
+    and kinds nothing can index yet are dropped, and an empty result falls
+    back to the default kind rather than to "none" -- a path assigned to no
+    library at all would silently disappear from every library page.
+    """
+    return normalize_kinds(value)
+
+
+def _home_page_defaults():
+    """The Start Page tab's instance defaults, normalised by browse.py so the
+    settings page and the home page can never disagree about what a stored
+    value means."""
+    try:
+        from .browse import feed_global_defaults
+        cfg = feed_global_defaults()
+    except Exception:
+        logger.debug("[Settings] home page defaults unavailable", exc_info=True)
+        return {}
+    return {
+        "order": ",".join(cfg["order"]),
+        "hidden": ",".join(cfg["hidden"]),
+        "cards_per_row": str(cfg["limit"]),
+        "sources_off": ",".join(cfg["sources_off"]),
+        "types_off": ",".join(cfg["types_off"]),
+    }
+
+
+def _mirror_site_enabled(site_id) -> bool:
+    """Whether this site's mirror card belongs on the Sources tab.
+
+    Built-in sites always do. A site a module registered
+    (mirrors.register_site_mirrors) only while that module is switched ON: a
+    module's register(app) runs regardless of its enabled flag -- the gate
+    sits at the point of use, see thirdparties/registry.py's item_enabled() --
+    so the registry alone would keep showing an editable mirror card for a
+    source that cannot be used at all.
+    """
+    try:
+        owner = _mirrors.site_owner(site_id)
+    except Exception:
+        return True
+    if not owner:
+        return True
+    try:
+        from ..thirdparties.registry import item_enabled
+        return item_enabled(owner)
+    except Exception:
+        # Fail open: a broken lookup must not hide a working site's mirrors.
+        return True
+
+
+def register_settings_routes(app):
+    """Register the settings page and all General/Sync/DNS/CaptchaBrowser/
+    SSO/CineInfo/legacy-import/custom-paths/API-key settings API routes on
+    the Flask app."""
+    @app.route("/settings")
+    def settings_page():
+        """Serve GET /settings: render the settings page, passing the
+        display path of the legacy .env file for the migration banner."""
+        from pathlib import Path
+        import platform
+
+        env_path = Path.home() / ".mediaforge" / ".env"
+        if platform.system() != "Windows":
+            display = "~/.mediaforge/.env"
+        else:
+            display = str(env_path)
+        return render_template("settings.html", env_path=display)
+    @app.route("/api/user/language", methods=["POST"])
+    def api_user_language():
+        """Serve POST /api/user/language: save the current user's UI language
+        preference (EN/DE) to the session (and to the DB if logged in).
+        Called from templates/base.html's and templates/settings.html's
+        inline language-switcher scripts."""
+        from flask import session as _sess
+        from ..db import set_user_language as _set_lang
+        data = request.get_json(force=True, silent=True) or {}
+        lang = data.get("language", "en")
+        from flask import current_app
+        if lang not in current_app.config.get("AVAILABLE_LANGUAGES", ["en", "de"]):
+            return jsonify({"error": "Unsupported language"}), 400
+        _sess["ui_language"] = lang
+        _sess["_lang_synced"] = True
+        uid = _sess.get("user_id")
+        if uid and uid > 0:
+            _set_lang(uid, lang)
+        return jsonify({"ok": True, "language": lang})
+    @app.route("/api/user/preferences", methods=["GET"])
+    def api_user_preferences_get():
+        """Serve GET /api/user/preferences: the current account's appearance
+        settings (theme pack, dark/light, accent colour).
+
+        base.html renders the same values into <head> server-side; this
+        endpoint is for clients that need them after the fact — and for
+        modules that want to read the look the user actually has."""
+        from flask import session as _sess
+        from ..db import get_user_ui_prefs as _get_prefs
+        uid = _sess.get("user_id")
+        if uid is None:
+            return jsonify({"ok": True, "preferences": {}})
+        return jsonify({"ok": True, "preferences": _get_prefs(uid)})
+    @app.route("/api/user/preferences", methods=["POST"])
+    def api_user_preferences_set():
+        """Serve POST /api/user/preferences: persist the current account's
+        appearance settings, so the chosen look follows the user to every
+        browser and device instead of living in one browser's localStorage.
+
+        Body: {"theme_pack": ..., "theme_mode": "dark"|"light",
+        "accent": "#rrggbb"} — any subset. Keys and values are whitelisted
+        server-side in db.USER_UI_PREF_KEYS. Called from base.html's
+        _persistAppearance() (applyThemePack / setTheme / applyAccent)."""
+        from flask import session as _sess
+        from ..db import set_user_ui_prefs as _set_prefs
+        uid = _sess.get("user_id")
+        if uid is None:
+            # Auth is on and nobody is logged in. The client keeps its
+            # localStorage copy, so this is not worth shouting about.
+            return jsonify({"ok": False, "error": "Not logged in"}), 401
+        data = request.get_json(silent=True) or {}
+        ok, error = _set_prefs(uid, data)
+        if not ok:
+            return jsonify({"ok": False, "error": error}), 400
+        return jsonify({"ok": True})
+    @app.route("/api/settings", methods=["GET"])
+    def api_settings():
+        """Serve GET /api/settings: return the full combined settings blob
+        (downloads, sync, CineInfo, Crunchyroll, fernsehserien, home-page
+        source order, etc.), falling back to environment variables and then
+        defaults for any value not yet stored in the DB. Called from many
+        frontend files via `fetch('/api/settings')`, e.g. static/app.js,
+        static/autosync.js, and static/integrations.js's `_getSettings()`."""
+        from pathlib import Path
+        from ..age_gate import allows_adult as _allows_adult
+
+        # Resolved once: the catalogue walks the module registry and reads a
+        # setting per source, and the blob below needs it twice.
+        _sources_available = _search_sources(include_adult=_allows_adult())
+
+        raw = get_setting("download_path") or os.environ.get("MEDIAFORGE_DOWNLOAD_PATH", "")
+        if raw:
+            p = Path(raw).expanduser()
+            if not p.is_absolute():
+                p = Path.home() / p
+            resolved = str(p)
+        else:
+            resolved = str(Path.home() / "Downloads")
+        lang_separation      = get_setting("lang_separation")      or os.environ.get("MEDIAFORGE_LANG_SEPARATION", "0")
+        disable_english_sub  = get_setting("disable_english_sub")  or os.environ.get("MEDIAFORGE_DISABLE_ENGLISH_SUB", "0")
+        movie_subfolder      = get_setting("movie_subfolder")      or get_setting("filmpalast_movie_subfolder", "0")
+        sync_schedule        = get_setting("sync_schedule")        or os.environ.get("MEDIAFORGE_SYNC_SCHEDULE", "0")
+        sync_mode            = get_setting("sync_mode")            or os.environ.get("MEDIAFORGE_SYNC_MODE", "interval")
+        sync_days            = get_setting("sync_days")            or os.environ.get("MEDIAFORGE_SYNC_DAYS", "0,1,2,3,4,5,6")
+        sync_times           = get_setting("sync_times")           or os.environ.get("MEDIAFORGE_SYNC_TIMES", "06:00")
+        sync_language               = get_setting("sync_language")               or os.environ.get("MEDIAFORGE_SYNC_LANGUAGE", "German Dub")
+        sync_provider               = get_setting("sync_provider")               or os.environ.get("MEDIAFORGE_SYNC_PROVIDER", "VOE")
+        sync_path_unavailable_action = get_setting("sync_path_unavailable_action") or os.environ.get("MEDIAFORGE_SYNC_PATH_UNAVAILABLE_ACTION", "skip")
+        # Which download folder a NEW Auto-Sync job opens on. "" is not a
+        # missing value here, it is the global download path -- which is why
+        # this is a setting rather than a flag on one custom path: no custom
+        # path could ever carry "use the global folder".
+        sync_default_custom_path = get_setting("sync_default_custom_path") or ""
+        sync_error_retries   = get_setting_int("sync_error_retries", 0, "MEDIAFORGE_SYNC_ERROR_RETRIES")
+        sync_error_retry_time = get_setting("sync_error_retry_time") or os.environ.get("MEDIAFORGE_SYNC_ERROR_RETRY_TIME", "5min")
+        sync_adaptive_enabled     = get_setting("sync_adaptive_enabled")     or os.environ.get("MEDIAFORGE_SYNC_ADAPTIVE_ENABLED", "0")
+        sync_adaptive_pause_after = get_setting("sync_adaptive_pause_after") or os.environ.get("MEDIAFORGE_SYNC_ADAPTIVE_PAUSE_AFTER", "4w")
+        sync_adaptive_retry_value = int(get_setting("sync_adaptive_retry_value") or os.environ.get("MEDIAFORGE_SYNC_ADAPTIVE_RETRY_VALUE", "2"))
+        sync_adaptive_retry_unit  = get_setting("sync_adaptive_retry_unit")  or os.environ.get("MEDIAFORGE_SYNC_ADAPTIVE_RETRY_UNIT", "days")
+        history_retention_days = get_setting("history_retention_days") or os.environ.get("MEDIAFORGE_HISTORY_RETENTION_DAYS", "30")
+        download_language    = get_setting("download_language")    or os.environ.get("MEDIAFORGE_LANGUAGE", "German Dub")
+        download_provider    = get_setting("download_provider")    or os.environ.get("MEDIAFORGE_PROVIDER", "VOE")
+        naming_template      = get_setting("naming_template")      or os.environ.get("MEDIAFORGE_NAMING_TEMPLATE", "{title} ({year}) [imdbid-{imdbid}]/Season {season}/{title} S{season}E{episode}.mkv")
+        download_rate_limit  = get_setting_int("download_rate_limit", 0, "MEDIAFORGE_DOWNLOAD_RATE_LIMIT")
+        # Duplicate handling (models/common/dupecheck.py). Both default to "0":
+        # an existing install keeps the old "already on disk -> skip" behaviour
+        # until the user opts in.
+        dl_quality_upgrade   = get_setting("dl_quality_upgrade")   or os.environ.get("MEDIAFORGE_DL_QUALITY_UPGRADE", "0")
+        dl_audio_track_merge = get_setting("dl_audio_track_merge") or os.environ.get("MEDIAFORGE_DL_AUDIO_TRACK_MERGE", "0")
+        # Subtitles default to ON: this only ever adds tracks to a file that is
+        # being written anyway. `or` would swallow a stored "0", so read the
+        # stored value explicitly and fall back only when nothing is stored.
+        dl_subtitles         = get_setting("dl_subtitles", os.environ.get("MEDIAFORGE_DL_SUBTITLES", "1"))
+        # AniWorld absolute episode numbering. Off by default like the duplicate
+        # toggles: it changes file names, so an existing library must not get a
+        # second numbering scheme without the user asking for it.
+        aniworld_absolute_episodes = get_setting("aniworld_absolute_episodes") or os.environ.get("MEDIAFORGE_ANIWORLD_ABSOLUTE_EPISODES", "0")
+        download_window_enabled = get_setting("download_window_enabled") or os.environ.get("MEDIAFORGE_DOWNLOAD_WINDOW_ENABLED", "0")
+        download_window_start   = get_setting("download_window_start")   or os.environ.get("MEDIAFORGE_DOWNLOAD_WINDOW_START", "22:00")
+        download_window_end     = get_setting("download_window_end")     or os.environ.get("MEDIAFORGE_DOWNLOAD_WINDOW_END", "06:00")
+        web_base_url         = get_setting("web_base_url")         or os.environ.get("MEDIAFORGE_WEB_BASE_URL", "")
+        debug_forced         = os.environ.get("MEDIAFORGE_DEBUG_FORCED", "0")
+        debug_mode           = get_setting("debug_mode")           or os.environ.get("MEDIAFORGE_DEBUG_MODE", "0")
+        if debug_forced == "1":
+            debug_mode = "1"
+        media_stats_enabled  = get_setting("media_stats_enabled")  or os.environ.get("MEDIAFORGE_MEDIA_STATS_ENABLED", "0")
+        new_home_enabled     = get_setting("new_home_enabled")     or os.environ.get("MEDIAFORGE_NEW_HOME_ENABLED", "0")
+        web_console          = get_setting("web_console")          or os.environ.get("MEDIAFORGE_WEB_CONSOLE", "0")
+        
+        # A default may point at a group that has since been deleted (deletion
+        # is only blocked while jobs/queue items use it), or language separation
+        # may have been switched off, which disables groups entirely. Either way
+        # hand the frontend a language it can actually preselect rather than a
+        # value no dropdown can show. (Turning the setting off in the UI also
+        # writes a real language back, same as it already does for "All
+        # Languages" — this only covers the paths that don't.)
+        language_groups = get_language_groups()
+        _usable_groups = (
+            {f"group:{g['id']}" for g in language_groups}
+            if lang_separation == "1" else set()
+        )
+        if is_group_ref(sync_language) and sync_language not in _usable_groups:
+            sync_language = "German Dub"
+        if is_group_ref(download_language) and download_language not in _usable_groups:
+            download_language = "German Dub"
+
+        tray_mode            = get_setting("tray_mode", "0")
+        autostart_enabled    = get_setting("autostart_enabled", "0")
+        open_browser_on_startup = get_setting("open_browser_on_startup", "1")
+        is_docker            = os.path.exists("/.dockerenv") or os.environ.get("MEDIAFORGE_DOCKER") == "1"
+        # Display status is admin-only: it names the host's DISPLAY and package
+        # state, and the card that shows it sits inside the admin-only System
+        # section anyway.
+        from ...autodeps import display_status as _display_status
+        _display_info = _display_status() if _get_current_user_info()[1] else None
+
+        return jsonify(
+            {
+                "download_path":             resolved,
+                "lang_separation":           lang_separation,
+                "disable_english_sub":       disable_english_sub,
+                "filmpalast_movie_subfolder": movie_subfolder,
+                "movie_subfolder":            movie_subfolder,
+                "sync_schedule":             sync_schedule,
+                "sync_mode":                 sync_mode,
+                "sync_days":                 sync_days,
+                "sync_times":                sync_times,
+                "sync_language":              sync_language,
+                # Every page with a language dropdown reads /api/settings
+                # already, so the groups ride along instead of costing each of
+                # them a second request (app.js, autosync.js, settings.js).
+                "language_groups":           language_groups,
+                "sync_provider":              sync_provider,
+                "sync_path_unavailable_action": sync_path_unavailable_action,
+                "sync_default_custom_path": sync_default_custom_path,
+                "sync_error_retries":         sync_error_retries,
+                "sync_error_retry_time":      sync_error_retry_time,
+                "sync_adaptive_enabled":      sync_adaptive_enabled,
+                "sync_adaptive_pause_after":  sync_adaptive_pause_after,
+                "sync_adaptive_retry_value":  sync_adaptive_retry_value,
+                "sync_adaptive_retry_unit":   sync_adaptive_retry_unit,
+                "history_retention_days":     history_retention_days,
+                "audit_retention_days":       get_setting("audit_retention_days", "0"),
+                "download_language":         download_language,
+                "download_provider":         download_provider,
+                "naming_template":           naming_template,
+                "download_rate_limit":       download_rate_limit,
+                "dl_quality_upgrade":        dl_quality_upgrade,
+                "dl_audio_track_merge":      dl_audio_track_merge,
+                "dl_subtitles":              dl_subtitles,
+                "aniworld_absolute_episodes": aniworld_absolute_episodes,
+                "download_window_enabled":   download_window_enabled,
+                "download_window_start":     download_window_start,
+                "download_window_end":       download_window_end,
+                "web_base_url":              web_base_url,
+                "debug_mode":                debug_mode,
+                "debug_forced":              debug_forced,
+                "media_stats_enabled":       media_stats_enabled,
+                "new_home_enabled":          new_home_enabled,
+                "home_dash_enabled_default": get_setting("home_dash_enabled_default", ""),
+                "home_tab_default":          get_setting("home_tab_default", ""),
+                "foryou_hidden_default":      get_setting("foryou_hidden_default", ""),
+                "foryou_hero_hidden_default": get_setting("foryou_hero_hidden_default", ""),
+                "library_rescan_hours":      get_setting("library_rescan_hours", "24"),
+                "library_probe_workers":     get_setting("library_probe_workers", "0"),
+                "default_path_media_kinds":  get_setting("default_path_media_kinds", DEFAULT_KINDS_CSV),
+                # Comics (Library tab). Covers on by default -- a shelf
+                # without covers is a list of file names; the other two off,
+                # because they cost disk (every CBR repacked) respectively
+                # data (the original replaced by its CBZ).
+                "comic_auto_prepare_all":    get_setting("comic_auto_prepare_all", "0"),
+                "comic_replace_original":    get_setting("comic_replace_original", "0"),
+                "web_console":               web_console,
+                "tray_mode":                 tray_mode,
+                # Instance defaults for the look (Settings -> Design).
+                "default_theme_mode":        get_setting("default_theme_mode", "dark"),
+                "default_accent":            get_setting("default_accent", ""),
+                "default_ui_language":       get_setting("default_ui_language", "en"),
+                # The eight extra design toggles as an instance default, as a
+                # comma-separated list of ui_* keys. `None` (key never written)
+                # is a meaningful value here and must survive to the client:
+                # it means "no admin has configured this", which is what keeps
+                # base.html on its old per-browser fallback instead of
+                # repainting every existing install on upgrade.
+                "default_ui_toggles":        get_setting("default_ui_toggles", None),
+                "autostart_enabled":         autostart_enabled,
+                "open_browser_on_startup":   open_browser_on_startup,
+                "is_docker":                 is_docker,
+                # Which screen the browser stack runs on (real X, Xvfb, none).
+                # Read-only status, probed without side effects -- see
+                # autodeps.display_status.
+                "display":                   _display_info,
+                "syncplay_enabled":          get_setting("syncplay_enabled", "0"),
+                "auto_update_enabled":       get_setting("auto_update_enabled", "0"),
+                "auto_update_days":          get_setting("auto_update_days", "0,1,2,3,4,5,6"),
+                "auto_update_time":          get_setting("auto_update_time", "03:00"),
+                "seerr_url":                 get_setting("seerr_url", ""),
+                "seerr_api_key":             get_setting("seerr_api_key", ""),
+                "seerr_configured":          bool(get_setting("seerr_url", "").strip() and get_setting("seerr_api_key", "").strip()),
+                "dns_mode":                  get_setting("dns_mode", "system"),
+                "dns_server":                get_setting("dns_server", ""),
+                "browser_persistent_profile": get_setting("browser_persistent_profile", "0"),
+                "captcha_adblock":            get_setting("captcha_adblock",         "1"),
+                "captcha_adtab_guard":        get_setting("captcha_adtab_guard",     "1"),
+                "captcha_overlay_removal":    get_setting("captcha_overlay_removal", "1"),
+                "captcha_ua_sync":            get_setting("captcha_ua_sync",         "1"),
+                "captcha_webgl_spoof":        get_setting("captcha_webgl_spoof",     "0"),
+                "captcha_manual":             get_setting("captcha_manual",          "0"),
+                "captcha_visible":            get_setting("captcha_visible",         "0"),
+                "captcha_timeout":            get_setting("captcha_timeout",         ""),
+                "cineinfo": {
+                    "tmdb_api_key":   get_setting("cineinfo_tmdb_api_key",   ""),
+                    "country":        get_setting("cineinfo_country",        "DE"),
+                    "show_providers": get_setting("cineinfo_show_providers", "1"),
+                    "show_genres":    get_setting("cineinfo_show_genres",    "0"),
+                    "show_fsk":       get_setting("cineinfo_show_fsk",       "1"),
+                    "show_rating":    get_setting("cineinfo_show_rating",    "0"),
+                    "show_recommendations": get_setting("cineinfo_show_recommendations", "1"),
+                    "show_trailer":   get_setting("cineinfo_show_trailer",   "1"),
+                    "show_backdrop":  get_setting("cineinfo_show_backdrop",  "1"),
+                    "show_hover_rating": get_setting("cineinfo_show_hover_rating", "0"),
+                    "show_hover_genres": get_setting("cineinfo_show_hover_genres", "0"),
+                    "show_hover_fsk": get_setting("cineinfo_show_hover_fsk", "0"),
+                    # This block is what static/integrations.js actually reads
+                    # (see _getSettings()), so the order list has to be served
+                    # here as well -- it was only in the dedicated
+                    # /api/settings/cineinfo response, which nothing calls, so
+                    # the drag list silently re-rendered the default order on
+                    # every page load and a saved order never came back.
+                    "provider_order": get_setting("cineinfo_provider_order", "tmdb,crunchyroll,fernsehserien"),
+                    "cineinfo_sources": _cineinfo_sources_payload(),
+                    "advanced_search": get_setting("cineinfo_advanced_search", "0"),
+                    "calendar":        get_setting("cineinfo_calendar",        "0"),
+                    "calendar_seerr":  get_setting("cineinfo_calendar_seerr",  "0"),
+                    "calendar_mediathek": get_setting("cineinfo_calendar_mediathek", "0"),
+                    "calendar_library": get_setting("cineinfo_calendar_library", "0"),
+                    "calendar_refresh_interval": get_setting("cineinfo_calendar_refresh_interval", "24"),
+                },
+                "crunchyroll": {
+                    "enabled":            get_setting("crunchyroll_enabled",            "0"),
+                    "email":              get_setting("crunchyroll_email",              ""),
+                    # Never echo the stored password back to the client; only
+                    # report whether one is set so the UI can show a placeholder.
+                    "has_password":       bool(get_setting("crunchyroll_password",      "")),
+                    "locale":             get_setting("crunchyroll_locale",             "de-DE"),
+                    "anon":               get_setting("crunchyroll_anon",               "0"),
+                    "profile_id":         get_setting("crunchyroll_profile_id",         ""),
+                    "show_providers":     get_setting("crunchyroll_show_providers",     "1"),
+                    "calendar_simulcast": get_setting("crunchyroll_calendar_simulcast", "0"),
+                    "calendar_watchlist": get_setting("crunchyroll_calendar_watchlist", "0"),
+
+                    "calendar_lists":     get_setting("crunchyroll_calendar_lists",     "0"),
+                    "calendar_release":   get_setting("crunchyroll_calendar_release",   "0"),
+                },
+                "fernsehserien": {
+                    "enabled":        get_setting("fernsehserien_enabled",        "0"),
+                    "show_providers": get_setting("fernsehserien_show_providers", "1"),
+                    "delay":          get_setting("fernsehserien_delay",          "1.5"),
+                },
+                # Start Page tab: the instance defaults for the new home
+                # page. The per-user override lives in user_ui_prefs
+                # ("home_feed_layout"/"home_feed_filters"), not here -- see
+                # routes/browse.py's feed_effective_config().
+                "home_page": _home_page_defaults(),
+                "sources": {
+                    "order": get_setting("home_source_order", "aniworld,sto,filmpalast,megakino,filmo,nineanime,aniwaves,hanime"),
+                    "section_order": {
+                        "aniworld":  get_setting("home_section_order_aniworld",  "new,popular"),
+                        "sto":       get_setting("home_section_order_sto",       "new,popular"),
+                        "filmo":     get_setting("home_section_order_filmo",     "new,popular"),
+                        "nineanime": get_setting("home_section_order_nineanime", "new,popular"),
+                        "aniwaves":  get_setting("home_section_order_aniwaves",  "new,popular"),
+                        "megakino": get_setting("home_section_order_megakino", "new_movies,popular_movies,new_series,popular_series"),
+                        "hanime":   get_setting("home_section_order_hanime",   "new,trending"),
+                    },
+                    "sections": {
+                        "aniworld": {
+                            "new":     get_setting("source_show_new_aniworld",     "1"),
+                            "popular": get_setting("source_show_popular_aniworld", "1"),
+                        },
+                        "sto": {
+                            "new":     get_setting("source_show_new_sto",     "1"),
+                            "popular": get_setting("source_show_popular_sto", "1"),
+                        },
+                        "filmo": {
+                            "new":     get_setting("source_show_new_filmo",     "1"),
+                            "popular": get_setting("source_show_popular_filmo", "1"),
+                        },
+                        "nineanime": {
+                            "new":     get_setting("source_show_new_nineanime",     "1"),
+                            "popular": get_setting("source_show_popular_nineanime", "1"),
+                        },
+                        "aniwaves": {
+                            "new":     get_setting("source_show_new_aniwaves",     "1"),
+                            "popular": get_setting("source_show_popular_aniwaves", "1"),
+                        },
+                        "megakino": {
+                            "new_movies":     get_setting("source_show_new_movies_megakino",     "1"),
+                            "popular_movies": get_setting("source_show_popular_movies_megakino", "1"),
+                            "new_series":     get_setting("source_show_new_series_megakino",     "1"),
+                            "popular_series": get_setting("source_show_popular_series_megakino", "1"),
+                        },
+                        "hanime": {
+                            "new":        get_setting("source_show_new_hanime",        "1"),
+                            "trending":   get_setting("source_show_trending_hanime",   "1"),
+                            # Content-type filters (applied per item within the New/
+                            # Trending lists, not separate sections like the two above).
+                            "censored":   get_setting("source_show_censored_hanime",   "1"),
+                            "uncensored": get_setting("source_show_uncensored_hanime", "1"),
+                        },
+                    },
+                    # Every source that currently exists -- built-ins plus the
+                    # ones installed modules registered. The Sources tab
+                    # renders its rows from this instead of the five ids it
+                    # used to hardcode, so a module source gets an on/off
+                    # switch like any other.
+                    "available": _sources_available,
+                    # Defaults come from source_policy (opt-out, except an
+                    # adult source) rather than being repeated per id here.
+                    # Kept as the "1"/"0" strings the frontend already reads.
+                    "enabled": {
+                        _s["id"]: ("1" if _s["enabled"] else "0")
+                        for _s in _sources_available
+                    },
+                    "hide_disabled_in_search": get_setting("sources_hide_in_search", "0"),
+                },
+                # Hoster order + fallback. "available" is every hoster with a
+                # working extractor; "order" is the user's ranking of them,
+                # which queue_worker.py walks when the hoster picked for a
+                # download fails. See runtime_state.get_provider_fallback_chain().
+                "providers": {
+                    # enabled_providers(): a module that is installed but
+                    # switched off must not still be listed here.
+                    "available": _runtime_state.enabled_providers(),
+                    "order": _runtime_state.get_provider_order(),
+                    "fallback_enabled": "1" if _runtime_state.is_provider_fallback_enabled() else "0",
+                },
+                # Per-site domain fallback (s.to -> serienstream.to -> origin IP).
+                # See mediaforge/mirrors.py.
+                "mirrors": {
+                    "sites": [
+                        {
+                            "id": _site,
+                            "label": _mirrors.SITE_LABELS.get(_site, _site),
+                            # The host URLs are currently written with. For a
+                            # site with a rotating domain that is the resolved
+                            # one, so the card shows what is actually in use.
+                            "canonical": _mirrors.canonical_host(_site),
+                            # The hardcoded one. The fallback list the user
+                            # edits is anchored to this, never to a resolved
+                            # domain that goes stale on the next rotation.
+                            "shipped": _mirrors.shipped_canonical_host(_site),
+                            "hosts": _mirrors.get_mirrors(_site),
+                            "active": _mirrors.active_host(_site),
+                            "default": list(_default_hosts),
+                            # {} for every site whose domain does not rotate.
+                            "resolved": _domain_resolver.resolved_info(_site),
+                        }
+                        for _site, _default_hosts in _mirrors.DEFAULT_SITE_MIRRORS.items()
+                        if _mirror_site_enabled(_site)
+                    ],
+                    # The master switch for the remote domain lookup
+                    # (domain_resolver.py). Applies to every resolvable site.
+                    "resolver_enabled": "1" if _domain_resolver.is_enabled() else "0",
+                },
+            }
+        )
+    @app.route("/api/console", methods=["GET"])
+    def api_console():
+        """Serve GET /api/console: read-only tail of the live console output
+        (admin only).
+
+        Gated behind the ``web_console`` setting so the buffer is never exposed
+        unless the feature is explicitly enabled. Called from
+        static/settings.js's `_webConsolePoll()`.
+        """
+        _u, _is_admin = _get_current_user_info()
+        if not _is_admin:
+            return jsonify({"error": "forbidden"}), 403
+        enabled = (get_setting("web_console") or os.environ.get("MEDIAFORGE_WEB_CONSOLE", "0")) == "1"
+        if not enabled:
+            return jsonify({"enabled": False, "lines": [], "seq": 0, "partial": "", "first_seq": 0})
+        try:
+            after = int(request.args.get("after", 0))
+        except (TypeError, ValueError):
+            after = 0
+        from ..console_capture import get_console_output
+        out = get_console_output(after)
+        out["enabled"] = True
+        return jsonify(out)
+    @app.route("/api/settings/seerr", methods=["PUT"])
+    def api_settings_seerr():
+        """Serve PUT /api/settings/seerr: save the Jellyseerr/Overseerr URL
+        and API key. Called from static/integrations.js's
+        `saveSeerrSettings()`."""
+        data = request.get_json(silent=True) or {}
+        seerr_url = str(data.get("seerr_url", "")).strip()
+        try:
+            _validate_server_url(seerr_url)
+        except ValueError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        set_setting("seerr_url", seerr_url)
+        set_setting("seerr_api_key", str(data.get("seerr_api_key", "")).strip())
+        return jsonify({"ok": True})
+    @app.route("/api/settings/sso", methods=["GET"])
+    def api_settings_sso_get():
+        """Serve GET /api/settings/sso: return current SSO / OIDC
+        configuration from DB (secrets masked). Called from
+        static/settings.js's `loadSsoSettings()`."""
+        return jsonify({
+            "sso_enabled":        get_setting("web_sso", "0"),
+            "force_sso":          get_setting("web_force_sso", "0"),
+            "oidc_issuer_url":    get_setting("oidc_issuer_url", ""),
+            "oidc_client_id":     get_setting("oidc_client_id", ""),
+            "oidc_client_secret": "***" if get_setting("oidc_client_secret", "") else "",
+            "oidc_display_name":  get_setting("oidc_display_name", "SSO"),
+            "oidc_admin_user":    get_setting("oidc_admin_user", ""),
+            "oidc_admin_subject": get_setting("oidc_admin_subject", ""),
+        })
+    @app.route("/api/settings/sso", methods=["PUT"])
+    def api_settings_sso_put():
+        """Serve PUT /api/settings/sso: save SSO / OIDC configuration to DB
+        and apply immediately. Called from static/settings.js's
+        `saveSsoSettings()`."""
+        data = request.get_json(silent=True) or {}
+
+        def _save(db_key, env_key, default=""):
+            val = str(data.get(db_key, "")).strip()
+            set_setting(db_key, val)
+            os.environ[env_key] = val
+
+        sso_enabled = "1" if data.get("sso_enabled") else "0"
+        force_sso   = "1" if data.get("force_sso")   else "0"
+        set_setting("web_sso",       sso_enabled); os.environ["MEDIAFORGE_WEB_SSO"]       = sso_enabled
+        set_setting("web_force_sso", force_sso);   os.environ["MEDIAFORGE_WEB_FORCE_SSO"] = force_sso
+
+        _save("oidc_issuer_url",    "MEDIAFORGE_OIDC_ISSUER_URL")
+        _save("oidc_client_id",     "MEDIAFORGE_OIDC_CLIENT_ID")
+        _save("oidc_display_name",  "MEDIAFORGE_OIDC_DISPLAY_NAME")
+        _save("oidc_admin_user",    "MEDIAFORGE_OIDC_ADMIN_USER")
+        _save("oidc_admin_subject", "MEDIAFORGE_OIDC_ADMIN_SUBJECT")
+
+        # Secret: only overwrite if a real value was sent (not the "***" placeholder)
+        secret = str(data.get("oidc_client_secret", "")).strip()
+        if secret and secret != "***":
+            set_setting("oidc_client_secret", secret)
+            os.environ["MEDIAFORGE_OIDC_CLIENT_SECRET"] = secret
+
+        return jsonify({"ok": True, "restart_required": True})
+    @app.route("/api/settings/cineinfo", methods=["GET"])
+    def api_settings_cineinfo_get():
+        """Serve GET /api/settings/cineinfo: return the CineInfo/TMDB
+        configuration. No confirmed direct frontend caller was found — the
+        combined GET /api/settings response (which nests the same fields
+        under "cineinfo") is what static/integrations.js actually reads via
+        `_getSettings()`."""
+        return jsonify({
+            # The TMDB key is a stored secret (db.SENSITIVE_KEYS, encrypted at
+            # rest) -- handing it back out through the API would undo that.
+            # The PUT below ignores the placeholder.
+            "tmdb_api_key":   SECRET_PLACEHOLDER if get_setting("cineinfo_tmdb_api_key", "") else "",
+            "has_tmdb_api_key": bool(get_setting("cineinfo_tmdb_api_key", "")),
+            "country":        get_setting("cineinfo_country",        "DE"),
+            "show_providers": get_setting("cineinfo_show_providers", "1"),
+            "show_genres":    get_setting("cineinfo_show_genres",    "0"),
+            "show_fsk":       get_setting("cineinfo_show_fsk",       "1"),
+            "show_rating":    get_setting("cineinfo_show_rating",    "0"),
+            "show_recommendations": get_setting("cineinfo_show_recommendations", "1"),
+            "show_trailer":   get_setting("cineinfo_show_trailer",   "1"),
+            "show_backdrop":  get_setting("cineinfo_show_backdrop",  "1"),
+            "show_hover_rating": get_setting("cineinfo_show_hover_rating", "0"),
+            "show_hover_genres": get_setting("cineinfo_show_hover_genres", "0"),
+            "show_hover_fsk": get_setting("cineinfo_show_hover_fsk", "0"),
+            # One order list, two kinds of entry, each read by the consumer
+            # that owns its prefix and ignored by the other:
+            #   - provider pills: "tmdb"/"crunchyroll"/"fernsehserien", a
+            #     module's own pill as "ext:<name>" -- static/app.js's
+            #     _pillSources()
+            #   - CineInfo data sources: "ci:<source id>" -- web/cineinfo/
+            #     registry.py's get_sources()/enrich()
+            # A preference, not a whitelist on either side: an unlisted entry
+            # is still used, just after the listed ones.
+            "provider_order": get_setting("cineinfo_provider_order", "tmdb,crunchyroll,fernsehserien"),
+            # The enabled CineInfo sources, so the order list can render them
+            # (with a "Module" pill) without knowing about the registry.
+            "cineinfo_sources": _cineinfo_sources_payload(),
+            "advanced_search": get_setting("cineinfo_advanced_search", "0"),
+            "calendar":        get_setting("cineinfo_calendar",        "0"),
+            "calendar_seerr":  get_setting("cineinfo_calendar_seerr",  "0"),
+            "calendar_mediathek": get_setting("cineinfo_calendar_mediathek", "0"),
+            "calendar_library": get_setting("cineinfo_calendar_library", "0"),
+            "calendar_refresh_interval": get_setting("cineinfo_calendar_refresh_interval", "24"),
+        })
+    @app.route("/api/settings/cineinfo", methods=["PUT"])
+    def api_settings_cineinfo_put():
+        """Serve PUT /api/settings/cineinfo: save CineInfo/TMDB settings, and
+        clear the TMDB lookup cache if the API key or country changed (both
+        affect lookup results). Called from static/integrations.js's
+        `saveCineinfoSettings()` and `saveCineinfoDisplayOptions()`."""
+        data = request.get_json(silent=True) or {}
+        old_key = get_setting("cineinfo_tmdb_api_key", "")
+        old_country = get_setting("cineinfo_country", "DE")
+
+        for key in ["tmdb_api_key", "country", "show_providers",
+                    "show_genres", "show_fsk", "show_rating", "show_recommendations", "show_trailer",
+                    "show_backdrop",
+                    "show_hover_rating", "show_hover_genres", "show_hover_fsk", "advanced_search",
+                    "provider_order",
+                    "calendar", "calendar_seerr", "calendar_mediathek", "calendar_library",
+                    "calendar_refresh_interval"]:
+            if key in data:
+                _val = str(data[key])
+                if key == "tmdb_api_key" and _val.strip() == SECRET_PLACEHOLDER:
+                    continue  # unchanged masked value from the GET above
+                if key == "provider_order":
+                    # Stored, echoed back to the browser and turned into DOM
+                    # there -- validated on the way in, not trusted on the way
+                    # out. See _sanitize_provider_order().
+                    _val = _sanitize_provider_order(data[key])
+                set_setting("cineinfo_" + key, _val)
+
+        new_key = get_setting("cineinfo_tmdb_api_key", "")
+        new_country = get_setting("cineinfo_country", "DE")
+        if new_key != old_key or new_country != old_country:
+            clear_tmdb_cache()
+
+        return jsonify({"ok": True})
+    @app.route("/api/settings/env-file", methods=["GET"])
+    def api_settings_env_file_get():
+        """Serve GET /api/settings/env-file: check whether the legacy .env
+        file still exists and has been migrated. Called from
+        static/settings.js's `checkEnvFileBanner()` IIFE."""
+        from pathlib import Path as _Path
+        env_path = _Path.home() / ".mediaforge" / ".env"
+        return jsonify({
+            "exists":   env_path.exists(),
+            "migrated": get_setting("env_migrated") == "1",
+        })
+    @app.route("/api/settings/env-file", methods=["DELETE"])
+    def api_settings_env_file_delete():
+        """Serve DELETE /api/settings/env-file: delete the legacy .env file
+        after migration. Called from static/settings.js's `deleteEnvFile()`."""
+        import os as _os
+        from pathlib import Path as _Path
+        env_path = _Path.home() / ".mediaforge" / ".env"
+        if not env_path.exists():
+            return jsonify({"ok": True, "message": "Datei existiert nicht mehr"})
+        try:
+            env_path.unlink()
+            return jsonify({"ok": True})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+    @app.route("/api/settings/legacy-import", methods=["GET"])
+    def api_settings_legacy_import_status():
+        """Serve GET /api/settings/legacy-import: report whether data from a
+        previous AniWorld install can be imported. Called from
+        templates/settings.html's inline legacy-import banner script."""
+        from ...legacy_import import detect_legacy
+        status = detect_legacy()
+        status["dismissed"] = get_setting("legacy_import_dismissed", "0") == "1"
+        return jsonify(status)
+    @app.route("/api/settings/legacy-import", methods=["POST"])
+    def api_settings_legacy_import_run():
+        """Serve POST /api/settings/legacy-import: manually import data from
+        a previous AniWorld install (~/.aniworld).
+
+        Non-destructive: an existing database is never overwritten (data is
+        imported automatically on first start before the DB is created). This
+        endpoint fills in any auxiliary files that are still missing. Called
+        from templates/settings.html's inline legacy-import banner script."""
+        from ...legacy_import import detect_legacy, run_import
+        status = detect_legacy()
+        if not status["legacy_exists"]:
+            return jsonify({"ok": False, "error": "no_legacy_dir"}), 404
+        summary = run_import(overwrite=False)
+        summary["ok"] = True
+        summary["db_replaced"] = False
+        summary["restart_required_for_db"] = status["new_has_db"] and status["legacy_has_db"]
+        return jsonify(summary)
+    @app.route("/api/settings/legacy-import/dismiss", methods=["POST"])
+    def api_settings_legacy_import_dismiss():
+        """Serve POST /api/settings/legacy-import/dismiss: permanently hide
+        the legacy-import card (already imported / not wanted). Called from
+        templates/settings.html's inline legacy-import banner dismiss
+        handler."""
+        set_setting("legacy_import_dismissed", "1")
+        return jsonify({"ok": True})
+    @app.route("/api/settings/dns", methods=["PUT"])
+    def api_settings_dns():
+        """Serve PUT /api/settings/dns: save the DNS mode/server and apply
+        the DNS patch immediately (no restart needed). Called from
+        static/settings.js's `saveDnsSettings()`."""
+        data = request.get_json(silent=True) or {}
+        mode   = str(data.get("dns_mode",   "system")).strip()
+        server = str(data.get("dns_server", "")).strip()
+
+        valid_modes = {"system", "cloudflare", "google", "quad9", "custom"}
+        if mode not in valid_modes:
+            return jsonify({"error": f"Ungültiger Modus: {mode}"}), 400
+        if mode == "custom" and not server:
+            return jsonify({"error": "Benutzerdefinierter DNS-Server fehlt"}), 400
+
+        set_setting("dns_mode",   mode)
+        set_setting("dns_server", server)
+
+        # Apply patch immediately (no restart needed)
+        if mode == "system":
+            _apply_dns_patch(None, mode=None)
+        else:
+            target = _DNS_PRESETS.get(mode) or server
+            _apply_dns_patch(target, mode=mode)
+
+        return jsonify({"ok": True, "active_server": dns_patch._active_dns_server})
+    @app.route("/api/settings/dns/test", methods=["GET"])
+    def api_dns_test():
+        """
+        Serve GET /api/settings/dns/test: test the current DNS configuration by:
+          1. Reporting which DNS mode / server is active in memory.
+          2. Resolving each hostname via the patched socket (covers ffmpeg etc.,
+             shown for information only — not used to judge reachability).
+          3. Making a HEAD request to each site via GLOBAL_SESSION (niquests/DoH)
+             and comparing the response headers against that site's known CDN
+             signature (see _MONITOR_SITES) so we know we actually reached the
+             correct site (not a block page) — headers instead of IP because
+             Cloudflare/DDoS-Guard rotate edge IPs constantly.
+
+        Called from static/settings.js's `runDnsTest()`.
+        """
+        _saved_mode = get_setting("dns_mode", "system")
+        _saved_server = get_setting("dns_server", "")
+
+        # Reachability + site-identity check for every trackable source site.
+        # Verification priority inside _probe_site:
+        #   1. Response headers match the site's known CDN signature, else
+        #   2. (fallback GET) body contains a known marker or final URL stayed
+        #      on the expected domain (handles CDN challenge pages).
+        results = {}
+        # Snapshot — a module (un)registering a site mutates the live dict.
+        # active_monitor_sites() additionally leaves out sites belonging to a
+        # module that is switched off: probing those would keep a disabled
+        # module's domains in the DNS test (and in outbound traffic).
+        for _sid, (label, url, expected_domain, markers, headers) in active_monitor_sites().items():
+            _probe = _probe_site(url, expected_domain, markers, expected_headers=headers, timeout=10)
+            # The domain that was actually probed. Carried back because it is
+            # not always the one the template hardcoded next to the row:
+            # active_monitor_sites() rewrites a rotating domain to the one
+            # currently resolved (MegaKino), and showing "megakino.to" beside a
+            # result measured against megakino16.com is simply wrong.
+            _probe["domain"] = expected_domain
+            results[label] = _probe
+
+        # Non-null when this Python installation has a broken ssl.SSLContext
+        # and we had to fall back from the OS trust store to certifi. It is a
+        # property of the interpreter, not of the network, so it belongs next
+        # to the DNS diagnostics rather than in a log nobody reads.
+        from ...config import truststore_unsafe_reason as _ts_reason
+
+        return jsonify({
+            "dns_mode":          _saved_mode,
+            "dns_server_saved":  _saved_server,
+            "dns_active_server": dns_patch._active_dns_server,
+            "trust_store_warning": _ts_reason(),
+            "sites":             results,
+        })
+    @app.route("/api/settings/browser", methods=["PUT"])
+    def api_settings_browser():
+        """Serve PUT /api/settings/browser: save browser-persistence and
+        captcha-solver behavior settings (admin only). Called from
+        static/settings.js's `saveCaptchaSettings()`."""
+        _u, _is_admin = _get_current_user_info()
+        if not _is_admin:
+            return jsonify({"error": "forbidden"}), 403
+        data = request.get_json(silent=True) or {}
+
+        def _b(key):
+            return "1" if data.get(key) else "0"
+
+        if "persistent_profile" in data:
+            set_setting("browser_persistent_profile", _b("persistent_profile"))
+        for key, db_key in (
+            ("adblock",         "captcha_adblock"),
+            ("adtab_guard",     "captcha_adtab_guard"),
+            ("overlay_removal", "captcha_overlay_removal"),
+            ("ua_sync",         "captcha_ua_sync"),
+            ("webgl_spoof",     "captcha_webgl_spoof"),
+            ("manual",          "captcha_manual"),
+            ("visible",         "captcha_visible"),
+        ):
+            if key in data:
+                set_setting(db_key, _b(key))
+        if "timeout" in data:
+            raw = str(data.get("timeout", "")).strip()
+            if raw == "":
+                set_setting("captcha_timeout", "")
+            else:
+                try:
+                    v = int(raw)
+                except (ValueError, TypeError):
+                    return jsonify({"error": "invalid timeout"}), 400
+                set_setting("captcha_timeout", str(max(10, min(1800, v))))
+
+        # Persistent profile env (applies live on the next captcha)
+        if get_setting("browser_persistent_profile", "0") == "1":
+            os.environ["MEDIAFORGE_PERSISTENT_PROFILE"] = "1"
+            os.environ.pop("MEDIAFORGE_NO_PERSISTENT_PROFILE", None)
+        else:
+            os.environ.pop("MEDIAFORGE_PERSISTENT_PROFILE", None)
+        _apply_captcha_env()
+        return jsonify({"ok": True})
+    @app.route("/api/browser/profile/clear", methods=["POST"])
+    def api_browser_profile_clear():
+        """Serve POST /api/browser/profile/clear: delete the persistent
+        Chromium profile directory (admin only). Called from
+        static/settings.js's `clearBrowserProfile()`."""
+        _u, _is_admin = _get_current_user_info()
+        if not _is_admin:
+            return jsonify({"error": "forbidden"}), 403
+        # Refuse while a captcha solve is active — Chromium holds the profile open.
+        try:
+            from ...playwright import captcha as _cap
+            with _cap._active_sessions_lock:
+                busy = bool(_cap._active_sessions)
+        except Exception:
+            busy = False
+        if busy:
+            return jsonify({"error": "captcha_running"}), 409
+        import shutil
+        from pathlib import Path as _P
+        prof = os.environ.get("MEDIAFORGE_BROWSER_PROFILE") or str(_P.home() / ".mediaforge" / "browser-profile")
+        try:
+            p = _P(prof)
+            if p.exists():
+                shutil.rmtree(p, ignore_errors=True)
+            return jsonify({"ok": True, "path": str(p)})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+    @app.route("/api/restart", methods=["POST"])
+    def api_restart():
+        """Serve POST /api/restart: trigger a self-restart of the app (admin
+        only), requeuing any in-flight downloads first so they resume
+        afterwards. Called from static/settings.js's `restartApp()` and
+        static/selfupdate.js's post-update restart flow."""
+        _u, _is_admin = _get_current_user_info()
+        if not _is_admin:
+            return jsonify({"error": "forbidden"}), 403
+        try:
+            result = selfupdate.start_restart()
+        except selfupdate.UpdateError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except Exception as exc:
+            logger.exception("[Restart] start failed")
+            return jsonify({"error": str(exc)}), 500
+
+        # Requeue running downloads so they resume after the restart.
+        try:
+            from ..db import get_db
+            _c = get_db()
+            try:
+                _c.execute("UPDATE download_queue SET status = 'queued' WHERE status = 'running'")
+                _c.commit()
+            finally:
+                _c.close()
+        except Exception:
+            logger.warning("[Restart] could not requeue download queue", exc_info=True)
+
+        def _exit_soon():
+            import time as _t
+            _t.sleep(1.5)
+            logger.info("[Restart] exiting for restart helper")
+            os._exit(0)
+        threading.Thread(target=_exit_soon, daemon=True, name="restart-exit").start()
+        return jsonify(result)
+    @app.route("/api/settings", methods=["PUT"])
+    def api_settings_update():
+        """Serve PUT /api/settings: update any subset of the general/sync/
+        download/debug/source settings sent in the request body (each field
+        is only touched if present). Called from many `save*()` functions in
+        static/settings.js (e.g. `saveLangSeparation()`), each of which PUTs
+        just the fields it owns."""
+        data = request.get_json(silent=True) or {}
+        logger.info("[Settings] PUT /api/settings received data: %r", data)
+        if "download_path" in data:
+            val = str(data["download_path"]).strip()
+            set_setting("download_path", val)
+            os.environ["MEDIAFORGE_DOWNLOAD_PATH"] = val
+        # Set below when language separation is switched off while fallback
+        # groups are still in use — those jobs stop working, and silently
+        # letting them fail on the next run would be the worse answer.
+        _lang_sep_warning = None
+        if "lang_separation" in data:
+            val = "1" if data["lang_separation"] else "0"
+            if val == "0":
+                _in_use = count_language_group_users()
+                if _in_use:
+                    _lang_sep_warning = (
+                        f"{_in_use} Auto-Sync-Job(s)/Download(s) verwenden eine Sprachgruppe. "
+                        "Ohne Sprachtrennung funktionieren Sprachgruppen nicht — "
+                        "diese Einträge schlagen beim nächsten Lauf fehl."
+                    )
+            set_setting("lang_separation", val)
+            os.environ["MEDIAFORGE_LANG_SEPARATION"] = val
+        if "disable_english_sub" in data:
+            val = "1" if data["disable_english_sub"] else "0"
+            set_setting("disable_english_sub", val)
+            os.environ["MEDIAFORGE_DISABLE_ENGLISH_SUB"] = val
+        if "filmpalast_movie_subfolder" in data or "movie_subfolder" in data:
+            raw_val = data.get("movie_subfolder") if "movie_subfolder" in data else data.get("filmpalast_movie_subfolder")
+            val = "1" if raw_val else "0"
+            set_setting("movie_subfolder", val)
+            set_setting("filmpalast_movie_subfolder", val)
+            os.environ["MEDIAFORGE_MOVIE_SUBFOLDER"] = val
+            os.environ["FILMPALAST_MOVIE_SUBFOLDER"] = val
+            os.environ["MEGAKINO_MOVIE_SUBFOLDER"] = val
+        if "sync_schedule" in data:
+            sched = str(data["sync_schedule"])
+            if sched != "0" and sched not in SYNC_SCHEDULE_MAP:
+                return jsonify({"error": f"Invalid sync_schedule: {sched}"}), 400
+            set_setting("sync_schedule", sched)
+            os.environ["MEDIAFORGE_SYNC_SCHEDULE"] = sched
+        if "sync_mode" in data:
+            smode = str(data["sync_mode"]).strip().lower()
+            if smode not in ("interval", "weekly"):
+                return jsonify({"error": "Invalid sync_mode: must be 'interval' or 'weekly'"}), 400
+            set_setting("sync_mode", smode)
+            os.environ["MEDIAFORGE_SYNC_MODE"] = smode
+        if "sync_days" in data:
+            days = _parse_sync_days(data["sync_days"], default="")
+            if not days:
+                return jsonify({"error": "Invalid sync_days: select at least one weekday"}), 400
+            days_str = ",".join(str(d) for d in sorted(days))
+            set_setting("sync_days", days_str)
+            os.environ["MEDIAFORGE_SYNC_DAYS"] = days_str
+        if "sync_times" in data:
+            times_str = _normalize_sync_times(data["sync_times"])
+            if not times_str:
+                return jsonify({"error": "Invalid sync_times: provide at least one HH:MM time"}), 400
+            set_setting("sync_times", times_str)
+            os.environ["MEDIAFORGE_SYNC_TIMES"] = times_str
+        if "sync_language" in data:
+            lang = str(data["sync_language"])
+            valid_langs = (
+                set(LANG_LABELS.values())
+                | set(SELECTABLE_LANGUAGES)
+                | {"All Languages"}
+            )
+            if is_group_ref(lang):
+                # A group is only a valid default while it still exists and can
+                # actually run — otherwise new sync jobs inherit a setting that
+                # fails on their first run.
+                _err = _language_group_error(lang)
+                if _err:
+                    return jsonify({"error": _err}), 400
+            elif lang not in valid_langs:
+                return jsonify({"error": f"Invalid sync_language: {lang}"}), 400
+            set_setting("sync_language", lang)
+            os.environ["MEDIAFORGE_SYNC_LANGUAGE"] = lang
+        if "sync_provider" in data:
+            prov = str(data["sync_provider"])
+            if prov not in WORKING_PROVIDERS:
+                return jsonify({"error": f"Invalid sync_provider: {prov}"}), 400
+            set_setting("sync_provider", prov)
+            os.environ["MEDIAFORGE_SYNC_PROVIDER"] = prov
+        if "sync_path_unavailable_action" in data:
+            action = str(data["sync_path_unavailable_action"]).strip().lower()
+            if action not in ("skip", "hold"):
+                return jsonify({"error": "Invalid sync_path_unavailable_action: must be 'skip' or 'hold'"}), 400
+            set_setting("sync_path_unavailable_action", action)
+            os.environ["MEDIAFORGE_SYNC_PATH_UNAVAILABLE_ACTION"] = action
+        if "sync_default_custom_path" in data:
+            raw = str(data["sync_default_custom_path"] or "").strip()
+            if raw:
+                # Validated against the table rather than merely checked for
+                # digits: a stale id would silently send every new job to a
+                # folder that no longer exists.
+                if not raw.isdigit():
+                    return jsonify({"error": "Invalid sync_default_custom_path"}), 400
+                if not any(str(p["id"]) == raw for p in get_custom_paths()):
+                    return jsonify({"error": "Unknown custom path"}), 404
+            set_setting("sync_default_custom_path", raw)
+        if "sync_error_retries" in data:
+            try:
+                retries = int(data["sync_error_retries"])
+                if retries < 0 or retries > 10:
+                    raise ValueError()
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid sync_error_retries: must be integer between 0 and 10"}), 400
+            set_setting("sync_error_retries", str(retries))
+            os.environ["MEDIAFORGE_SYNC_ERROR_RETRIES"] = str(retries)
+        if "sync_error_retry_time" in data:
+            retry_time = str(data["sync_error_retry_time"])
+            if retry_time not in SYNC_RETRY_MAP:
+                return jsonify({"error": f"Invalid sync_error_retry_time: {retry_time}"}), 400
+            set_setting("sync_error_retry_time", retry_time)
+            os.environ["MEDIAFORGE_SYNC_ERROR_RETRY_TIME"] = retry_time
+        if "sync_adaptive_enabled" in data:
+            val = "1" if data["sync_adaptive_enabled"] else "0"
+            set_setting("sync_adaptive_enabled", val)
+            os.environ["MEDIAFORGE_SYNC_ADAPTIVE_ENABLED"] = val
+        if "sync_adaptive_pause_after" in data:
+            pause_after = str(data["sync_adaptive_pause_after"])
+            if pause_after not in SYNC_ADAPTIVE_PAUSE_MAP:
+                return jsonify({"error": f"Invalid sync_adaptive_pause_after: {pause_after}"}), 400
+            set_setting("sync_adaptive_pause_after", pause_after)
+            os.environ["MEDIAFORGE_SYNC_ADAPTIVE_PAUSE_AFTER"] = pause_after
+        if "sync_adaptive_retry_value" in data:
+            try:
+                rv = int(data["sync_adaptive_retry_value"])
+                if rv < 2 or rv > 12:
+                    raise ValueError()
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid sync_adaptive_retry_value: must be integer between 2 and 12"}), 400
+            set_setting("sync_adaptive_retry_value", str(rv))
+            os.environ["MEDIAFORGE_SYNC_ADAPTIVE_RETRY_VALUE"] = str(rv)
+        if "sync_adaptive_retry_unit" in data:
+            unit = str(data["sync_adaptive_retry_unit"]).strip().lower()
+            if unit not in SYNC_ADAPTIVE_UNIT_MAP:
+                return jsonify({"error": "Invalid sync_adaptive_retry_unit: must be 'days', 'weeks' or 'months'"}), 400
+            set_setting("sync_adaptive_retry_unit", unit)
+            os.environ["MEDIAFORGE_SYNC_ADAPTIVE_RETRY_UNIT"] = unit
+        if "history_retention_days" in data:
+            try:
+                hrd = int(data["history_retention_days"])
+                if hrd < 0 or hrd > 3650:
+                    raise ValueError()
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid history_retention_days: integer 0-3650"}), 400
+            set_setting("history_retention_days", str(hrd))
+            os.environ["MEDIAFORGE_HISTORY_RETENTION_DAYS"] = str(hrd)
+        if "audit_retention_days" in data:
+            # Same shape as history retention, and deliberately handled here
+            # rather than by an endpoint of its own: a second write path into
+            # app_settings is a second place for the validation and encryption
+            # rules to drift apart. 0 means "keep forever" -- pruning is the
+            # only deletion the audit log permits (web/audit.py).
+            try:
+                ard = int(data["audit_retention_days"])
+                if ard < 0 or ard > 3650:
+                    raise ValueError()
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid audit_retention_days: integer 0-3650"}), 400
+            set_setting("audit_retention_days", str(ard))
+        if "download_language" in data:
+            val = str(data["download_language"]).strip()
+            if is_group_ref(val):
+                _err = _language_group_error(val)
+                if _err:
+                    return jsonify({"error": _err}), 400
+                # This is only the download dialog's preselection. It must not
+                # reach MEDIAFORGE_LANGUAGE, which episode models use as their
+                # own default and which knows nothing about groups (see
+                # settings_migration._sync_db_settings_to_env).
+                set_setting("download_language", val)
+            else:
+                set_setting("download_language", val)
+                os.environ["MEDIAFORGE_LANGUAGE"] = val
+        if "download_provider" in data:
+            val = str(data["download_provider"]).strip()
+            set_setting("download_provider", val)
+            os.environ["MEDIAFORGE_PROVIDER"] = val
+        if "naming_template" in data:
+            val = str(data["naming_template"]).strip()
+            set_setting("naming_template", val)
+            os.environ["MEDIAFORGE_NAMING_TEMPLATE"] = val
+        # Mirrored into os.environ like every other download setting: the queue
+        # worker runs in a thread that reads the value through dupecheck's
+        # get_setting fallback, and the CLI has no DB session at all.
+        if "dl_quality_upgrade" in data:
+            val = "1" if data["dl_quality_upgrade"] else "0"
+            set_setting("dl_quality_upgrade", val)
+            os.environ["MEDIAFORGE_DL_QUALITY_UPGRADE"] = val
+        if "dl_audio_track_merge" in data:
+            val = "1" if data["dl_audio_track_merge"] else "0"
+            set_setting("dl_audio_track_merge", val)
+            os.environ["MEDIAFORGE_DL_AUDIO_TRACK_MERGE"] = val
+        if "dl_subtitles" in data:
+            val = "1" if data["dl_subtitles"] else "0"
+            set_setting("dl_subtitles", val)
+            os.environ["MEDIAFORGE_DL_SUBTITLES"] = val
+        if "aniworld_absolute_episodes" in data:
+            val = "1" if data["aniworld_absolute_episodes"] else "0"
+            set_setting("aniworld_absolute_episodes", val)
+            os.environ["MEDIAFORGE_ANIWORLD_ABSOLUTE_EPISODES"] = val
+        if "download_rate_limit" in data:
+            try:
+                rate = int(data["download_rate_limit"])
+                if rate < 0 or rate > 1_000_000:
+                    raise ValueError()
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid download_rate_limit: must be integer KB/s between 0 and 1000000"}), 400
+            set_setting("download_rate_limit", str(rate))
+            os.environ["MEDIAFORGE_DOWNLOAD_RATE_LIMIT"] = str(rate)
+        if "download_window_enabled" in data:
+            val = "1" if data["download_window_enabled"] else "0"
+            set_setting("download_window_enabled", val)
+            os.environ["MEDIAFORGE_DOWNLOAD_WINDOW_ENABLED"] = val
+
+        def _valid_hhmm(s):
+            try:
+                h, m = (int(x) for x in str(s).split(":"))
+                return 0 <= h <= 23 and 0 <= m <= 59
+            except (ValueError, AttributeError):
+                return False
+        for _wkey, _envk in (("download_window_start", "MEDIAFORGE_DOWNLOAD_WINDOW_START"),
+                             ("download_window_end", "MEDIAFORGE_DOWNLOAD_WINDOW_END")):
+            if _wkey in data:
+                hhmm = str(data[_wkey]).strip()
+                if not _valid_hhmm(hhmm):
+                    return jsonify({"error": f"Invalid {_wkey}: must be HH:MM (24h)"}), 400
+                # normalise to zero-padded HH:MM
+                _h, _m = (int(x) for x in hhmm.split(":"))
+                hhmm = f"{_h:02d}:{_m:02d}"
+                set_setting(_wkey, hhmm)
+                os.environ[_envk] = hhmm
+        if "web_base_url" in data:
+            val = str(data["web_base_url"]).strip().rstrip("/")
+            set_setting("web_base_url", val)
+            os.environ["MEDIAFORGE_WEB_BASE_URL"] = val
+        if "debug_mode" in data and os.environ.get("MEDIAFORGE_DEBUG_FORCED", "0") != "1":
+            val = str(data["debug_mode"])
+            if val.lower() in ("true", "1"): val = "1"
+            else: val = "0"
+            set_setting("debug_mode", val)
+            os.environ["MEDIAFORGE_DEBUG_MODE"] = val
+            import logging
+            enabled = (val == "1")
+            level = logging.DEBUG if enabled else logging.WARNING
+            # Root logger — covers loggers that purely inherit its level.
+            logging.getLogger().setLevel(level)
+            # The app's own "mediaforge" logger has propagate=False, so changing
+            # the root level alone has no effect on it. It must be toggled
+            # directly — this is what actually makes debug output start/stop
+            # live without a restart (both for enabling AND disabling).
+            logging.getLogger("mediaforge").setLevel(level)
+            # Werkzeug's dev-server request logger installs its OWN handler at
+            # INFO and does NOT merely inherit the root level, so lowering root
+            # to WARNING does not silence its per-request log lines. When the app
+            # booted with debug_mode=1 it runs under app.run(debug=True) (the
+            # Flask dev server), whose request logging would otherwise keep
+            # flooding the Web Console on every ~1.5s /api/console poll even after
+            # debug is switched off here. Toggle it explicitly so disabling debug
+            # actually quietens it. Note: fully leaving dev-server/reloader mode
+            # still needs a restart — the dev-server-vs-waitress choice in
+            # app.py's run() is read from MEDIAFORGE_DEBUG_MODE once at startup.
+            logging.getLogger("werkzeug").setLevel(level)
+            try:
+                from ...logger import set_debug_mode as _set_debug_mode
+                _set_debug_mode(enabled)
+            except Exception:
+                pass
+        if "media_stats_enabled" in data:
+            val = "1" if str(data["media_stats_enabled"]).lower() in ("true", "1") else "0"
+            set_setting("media_stats_enabled", val)
+            os.environ["MEDIAFORGE_MEDIA_STATS_ENABLED"] = val
+        if "new_home_enabled" in data:
+            # Which home page layout "/" renders. Read once per request in
+            # index(), so the next page load already shows the other layout --
+            # no restart, and nothing else in the app depends on it.
+            val = "1" if str(data["new_home_enabled"]).lower() in ("true", "1") else "0"
+            set_setting("new_home_enabled", val)
+        if "library_rescan_hours" in data:
+            # Whitelisted: the value drives a background loop, so an arbitrary
+            # number here would be a foot-gun (0.001 hours = a permanent scan).
+            from .library import _LIB_RESCAN_CHOICES, _LIB_RESCAN_DEFAULT_HOURS
+            try:
+                hours = int(data["library_rescan_hours"])
+            except (TypeError, ValueError):
+                hours = _LIB_RESCAN_DEFAULT_HOURS
+            if hours not in _LIB_RESCAN_CHOICES:
+                hours = _LIB_RESCAN_DEFAULT_HOURS
+            set_setting("library_rescan_hours", str(hours))
+        if "library_probe_workers" in data:
+            # Whitelisted for the same reason as the interval: the value sizes
+            # a thread pool that spawns one ffprobe process per worker.
+            from .library import _LIB_PROBE_WORKER_CHOICES, _LIB_PROBE_WORKERS_AUTO
+            try:
+                workers = int(data["library_probe_workers"])
+            except (TypeError, ValueError):
+                workers = _LIB_PROBE_WORKERS_AUTO
+            if workers not in _LIB_PROBE_WORKER_CHOICES:
+                workers = _LIB_PROBE_WORKERS_AUTO
+            set_setting("library_probe_workers", str(workers))
+        # Comics. Three plain booleans, normalised here rather than trusted
+        # from the client: the third one gates a destructive action, so
+        # "anything that is not truthy is off" has to be decided on the server
+        # -- a request that sends "maybe" must store "0", never "maybe".
+        for _comic_key in ("comic_auto_prepare_all",
+                           "comic_replace_original"):
+            if _comic_key in data:
+                val = "1" if str(data[_comic_key]).strip().lower() in ("true", "1", "on", "yes") else "0"
+                set_setting(_comic_key, val)
+        if "default_path_media_kinds" in data:
+            # Which libraries the DEFAULT download root feeds. Custom paths
+            # keep theirs in a column; the default root has no row of its own,
+            # so it lives in this setting (routes/library.py reads it through
+            # _LIB_DEFAULT_KINDS_SETTING). Whitelisted like the two above and
+            # validated by the registry, so an unknown or not-yet-scannable
+            # slug can never end up stored.
+            set_setting("default_path_media_kinds",
+                        _normalize_media_kinds(data["default_path_media_kinds"]))
+        if "web_console" in data:
+            val = "1" if str(data["web_console"]).lower() in ("true", "1") else "0"
+            set_setting("web_console", val)
+            os.environ["MEDIAFORGE_WEB_CONSOLE"] = val
+
+        # Start Page (new home page) instance defaults. Everything is
+        # normalised through browse.py's cleaners, so an unknown row id or a
+        # cards-per-row value that is not one of the offered steps is dropped
+        # rather than stored and puzzled over later.
+        if any(k in data for k in ("home_rows_order", "home_rows_hidden",
+                                   "home_cards_per_row", "home_default_sources_off",
+                                   "home_default_types_off")):
+            from .browse import (_feed_clean_order, _feed_clean_list, _feed_clean_limit,
+                                 all_feed_source_ids, _FEED_ROW_SOURCES)
+            if "home_rows_order" in data:
+                set_setting("home_rows_order", ",".join(_feed_clean_order(data["home_rows_order"])))
+            if "home_rows_hidden" in data:
+                set_setting("home_rows_hidden",
+                            ",".join(_feed_clean_list(data["home_rows_hidden"], _FEED_ROW_SOURCES)))
+            if "home_cards_per_row" in data:
+                set_setting("home_cards_per_row", str(_feed_clean_limit(data["home_cards_per_row"])))
+            if "home_default_sources_off" in data:
+                set_setting("home_default_sources_off",
+                            ",".join(_feed_clean_list(data["home_default_sources_off"],
+                                                      all_feed_source_ids())))
+            if "home_default_types_off" in data:
+                set_setting("home_default_types_off",
+                            ",".join(_feed_clean_list(data["home_default_types_off"],
+                                                      ("series", "movies", "adult"))))
+
+        # Kids mode. The PIN is digits only and 4-8 of them, so it cannot
+        # become a passphrase nobody can type on a TV remote -- and "" clears
+        # it, which also switches the whole mode off (see below).
+        # Instance default for the two-tab home page's Dashboard/Discover
+        # arrangement and which tab opens first -- the same "Home tabs" group
+        # "Customise this page" offers per account (see ui_prefs.py's
+        # home_dash_enabled/home_tab), just for what a fresh account (or one
+        # that never touched this) starts with. Read back in app.py's index()
+        # as the fallback once the account's own preference is empty.
+        if "home_dash_enabled_default" in data:
+            val = str(data["home_dash_enabled_default"] or "")
+            if val not in ("", "0", "all"):
+                val = ""
+            set_setting("home_dash_enabled_default", val)
+        if "home_tab_default" in data:
+            val = str(data["home_tab_default"] or "")
+            if val not in ("", "disc"):
+                val = ""
+            set_setting("home_tab_default", val)
+        # Instance default for "Could be for you"'s hero banner / rail --
+        # same account-overrules-instance relationship as the arrangement
+        # above, just for db/ui_prefs.py's foryou_hero_hidden/foryou_hidden.
+        # Read back in app.py's index() and resolved client-side (see
+        # static/home_foryou.js's heroHidden()/railHidden()).
+        if "foryou_hidden_default" in data:
+            val = str(data["foryou_hidden_default"] or "")
+            if val not in ("", "0", "1"):
+                val = ""
+            set_setting("foryou_hidden_default", val)
+        if "foryou_hero_hidden_default" in data:
+            val = str(data["foryou_hero_hidden_default"] or "")
+            if val not in ("", "0", "1"):
+                val = ""
+            set_setting("foryou_hero_hidden_default", val)
+
+        if "home_kids_pin" in data:
+            pin = str(data["home_kids_pin"] or "").strip()
+            if pin and not (pin.isdigit() and 4 <= len(pin) <= 8):
+                return jsonify({"error": "PIN must be 4-8 digits"}), 400
+            set_setting("home_kids_pin", pin)
+        if "home_kids_enabled" in data:
+            set_setting("home_kids_enabled",
+                        "1" if str(data["home_kids_enabled"]).lower() in ("true", "1") else "0")
+        if "home_kids_max_fsk" in data:
+            limit = str(data["home_kids_max_fsk"] or "6").strip()
+            # 18 is deliberately not offered: a "kids mode" that permits
+            # everything is a mode that only pretends to restrict.
+            set_setting("home_kids_max_fsk",
+                        limit if limit in ("0", "6", "12", "16") else "6")
+
+        # Instance defaults for the look. Deliberately separate keys from the
+        # per-account ones (theme_mode / accent in user_ui_prefs): these two
+        # answer "what does a new account see", not "what do I see", and
+        # collapsing them is what made the old Design tab misleading.
+        if "default_theme_mode" in data:
+            mode = str(data["default_theme_mode"] or "").strip()
+            set_setting("default_theme_mode", mode if mode in ("dark", "light") else "dark")
+        if "default_accent" in data:
+            accent = str(data["default_accent"] or "").strip()
+            if accent and not re.fullmatch(r"#[0-9a-fA-F]{6}", accent):
+                return jsonify({"error": "Invalid accent colour"}), 400
+            # "" is a real value: fall back to the built-in accent.
+            set_setting("default_accent", accent)
+        if "default_ui_language" in data:
+            # Validated against the app's own language list, so enabling a
+            # third catalogue does not need this endpoint touched again.
+            from flask import current_app
+            allowed = current_app.config.get("AVAILABLE_LANGUAGES", ["en", "de"])
+            lang = str(data["default_ui_language"] or "").strip()
+            if lang not in allowed:
+                return jsonify({"error": "Invalid language"}), 400
+            set_setting("default_ui_language", lang)
+        if "default_ui_toggles" in data:
+            # Whitelisted against the canonical list in app.py rather than
+            # stored as given: this value is read back and turned into body
+            # classes for every account on the instance, so an unknown key has
+            # no business being persisted. "" is a real value (all eight off,
+            # explicitly configured) and is what distinguishes "the admin
+            # turned everything off" from "no admin ever looked".
+            from ..app import UI_TOGGLE_KEYS
+            raw = data["default_ui_toggles"]
+            picked = raw if isinstance(raw, list) else str(raw or "").split(",")
+            clean = [k for k in UI_TOGGLE_KEYS
+                     if k in {str(p).strip() for p in picked}]
+            set_setting("default_ui_toggles", ",".join(clean))
+
+        if "tray_mode" in data:
+            val = "1" if str(data["tray_mode"]).lower() in ("true", "1") else "0"
+            set_setting("tray_mode", val)
+
+        if "open_browser_on_startup" in data:
+            val = "1" if str(data["open_browser_on_startup"]).lower() in ("true", "1") else "0"
+            set_setting("open_browser_on_startup", val)
+
+        if "autostart_enabled" in data:
+            val = "1" if str(data["autostart_enabled"]).lower() in ("true", "1") else "0"
+            set_setting("autostart_enabled", val)
+            try:
+                from ...autostart import set_autostart
+                set_autostart(val == "1")
+            except Exception as e:
+                logger.error(f"Failed to configure autostart: {e}")
+        if "syncplay_enabled" in data:
+            val = "1" if str(data["syncplay_enabled"]).lower() in ("true", "1") else "0"
+            set_setting("syncplay_enabled", val)
+        if "auto_update_enabled" in data:
+            val = "1" if data["auto_update_enabled"] else "0"
+            set_setting("auto_update_enabled", val)
+            os.environ["MEDIAFORGE_AUTO_UPDATE_ENABLED"] = val
+        if "auto_update_days" in data:
+            days = _parse_sync_days(data["auto_update_days"], default="")
+            if not days:
+                return jsonify({"error": "Invalid auto_update_days: select at least one weekday"}), 400
+            days_str = ",".join(str(d) for d in sorted(days))
+            set_setting("auto_update_days", days_str)
+            os.environ["MEDIAFORGE_AUTO_UPDATE_DAYS"] = days_str
+        if "auto_update_time" in data:
+            t_raw = str(data["auto_update_time"]).strip()
+            try:
+                _h, _m = (int(x) for x in t_raw.split(":"))
+                if not (0 <= _h <= 23 and 0 <= _m <= 59):
+                    raise ValueError()
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid auto_update_time: must be HH:MM (24h)"}), 400
+            t_norm = f"{_h:02d}:{_m:02d}"
+            set_setting("auto_update_time", t_norm)
+            os.environ["MEDIAFORGE_AUTO_UPDATE_TIME"] = t_norm
+        # -- Sources: order & enablement (admin only) --
+        # Known ids = built-ins + whatever installed modules registered. Read
+        # once: it is the whitelist for both the order and the on/off keys
+        # below, so a module source can be reordered and switched off like any
+        # built-in, while an unknown id still cannot write a settings row.
+        _known_sources = _search_sources()
+        _known_source_ids = tuple(_s["id"] for _s in _known_sources)
+        # id -> the app_settings key that actually holds its on/off state. For
+        # a built-in that is source_enabled_<id>; a module source may have
+        # declared its own (register_search_source(enabled_key=...)), and the
+        # switch must write the key the reader reads.
+        _source_enabled_keys = {_s["id"]: _s["enabled_key"] for _s in _known_sources}
+        _source_keys = (
+            "home_source_order",
+            "home_section_order_aniworld", "home_section_order_sto", "home_section_order_hanime",
+            "home_section_order_megakino",
+            "home_section_order_filmo", "home_section_order_nineanime", "home_section_order_aniwaves",
+            *(("source_enabled_" + _sid) for _sid in _known_source_ids),
+            "source_show_new_aniworld", "source_show_popular_aniworld",
+            "source_show_new_sto", "source_show_popular_sto",
+            "source_show_new_filmo", "source_show_popular_filmo",
+            "source_show_new_nineanime", "source_show_popular_nineanime",
+            "source_show_new_aniwaves", "source_show_popular_aniwaves",
+            "source_show_new_hanime", "source_show_trending_hanime",
+            "source_show_censored_hanime", "source_show_uncensored_hanime",
+            "source_show_new_movies_megakino", "source_show_popular_movies_megakino",
+            "source_show_new_series_megakino", "source_show_popular_series_megakino",
+            "sources_hide_in_search",
+        )
+        if any(_sk in data for _sk in _source_keys):
+            _su, _sadmin = _get_current_user_info()
+            if not _sadmin:
+                return jsonify({"error": "forbidden"}), 403
+        if "home_source_order" in data:
+            _valid_provs = set(_known_source_ids)
+            _parts = [p.strip().lower() for p in str(data["home_source_order"]).split(",") if p.strip()]
+            if not _parts or any(p not in _valid_provs for p in _parts) or len(set(_parts)) != len(_parts):
+                return jsonify({"error": "Invalid home_source_order"}), 400
+            set_setting("home_source_order", ",".join(_parts))
+        if "home_section_order_hanime" in data:
+            _parts = [p.strip().lower() for p in str(data["home_section_order_hanime"]).split(",") if p.strip()]
+            if sorted(_parts) != ["new", "trending"]:
+                return jsonify({"error": "Invalid home_section_order_hanime: must be a permutation of new,trending"}), 400
+            set_setting("home_section_order_hanime", ",".join(_parts))
+        for _prov in ("aniworld", "sto", "filmo", "nineanime", "aniwaves"):
+            _k = "home_section_order_" + _prov
+            if _k in data:
+                _parts = [p.strip().lower() for p in str(data[_k]).split(",") if p.strip()]
+                if sorted(_parts) != ["new", "popular"]:
+                    return jsonify({"error": "Invalid %s: must be a permutation of new,popular" % _k}), 400
+                set_setting(_k, ",".join(_parts))
+        for _prov in _known_source_ids:
+            _k = "source_enabled_" + _prov
+            if _k in data:
+                set_setting(_source_enabled_keys.get(_prov, _k),
+                            "1" if str(data[_k]).lower() in ("true", "1") else "0")
+        for _prov in ("aniworld", "sto", "filmo", "nineanime", "aniwaves"):
+            for _sec in ("new", "popular"):
+                _k = "source_show_" + _sec + "_" + _prov
+                if _k in data:
+                    set_setting(_k, "1" if str(data[_k]).lower() in ("true", "1") else "0")
+        for _sec in ("new", "trending", "censored", "uncensored"):
+            _k = "source_show_" + _sec + "_hanime"
+            if _k in data:
+                set_setting(_k, "1" if str(data[_k]).lower() in ("true", "1") else "0")
+        if "home_section_order_megakino" in data:
+            _parts = [p.strip().lower() for p in str(data["home_section_order_megakino"]).split(",") if p.strip()]
+            if sorted(_parts) != ["new_movies", "new_series", "popular_movies", "popular_series"]:
+                return jsonify({"error": "Invalid home_section_order_megakino"}), 400
+            set_setting("home_section_order_megakino", ",".join(_parts))
+        for _sec in ("new_movies", "popular_movies", "new_series", "popular_series"):
+            _k = "source_show_" + _sec + "_megakino"
+            if _k in data:
+                set_setting(_k, "1" if str(data[_k]).lower() in ("true", "1") else "0")
+        if "sources_hide_in_search" in data:
+            set_setting("sources_hide_in_search", "1" if str(data["sources_hide_in_search"]).lower() in ("true", "1") else "0")
+
+        # -- Provider order & fallback (admin only) --
+        # The order the download queue walks when a hoster fails; see
+        # runtime_state.get_provider_fallback_chain() and queue_worker's
+        # _build_attempt_plan().
+        _provider_keys = ("provider_order", "provider_fallback_enabled")
+        _mirror_keys = tuple("site_mirrors_" + s for s in _mirrors.DEFAULT_SITE_MIRRORS)
+        _mirror_keys += (_domain_resolver.ENABLED_SETTING,)
+        if any(_k in data for _k in _provider_keys + _mirror_keys):
+            _pu, _padmin = _get_current_user_info()
+            if not _padmin:
+                return jsonify({"error": "forbidden"}), 403
+        if "provider_order" in data:
+            raw = data["provider_order"]
+            parts = raw if isinstance(raw, list) else str(raw).split(",")
+            by_lower = {p.lower(): p for p in WORKING_PROVIDERS}
+            order = []
+            for p in parts:
+                canonical = by_lower.get(str(p).strip().lower())
+                if canonical and canonical not in order:
+                    order.append(canonical)
+            if not order:
+                return jsonify({"error": "Invalid provider_order"}), 400
+            set_setting("provider_order", ",".join(order))
+        if "provider_fallback_enabled" in data:
+            set_setting(
+                "provider_fallback_enabled",
+                "1" if str(data["provider_fallback_enabled"]).lower() in ("true", "1") else "0",
+            )
+
+        # -- Site mirrors (admin only) --
+        # One key per site, e.g. site_mirrors_sto = "s.to,serienstream.to,186.2.175.5".
+        # The canonical host is always kept first by mirrors.py itself, so a
+        # user cannot accidentally drop the primary domain.
+        _mirrors_changed = False
+        for _site in _mirrors.DEFAULT_SITE_MIRRORS:
+            _key = "site_mirrors_" + _site
+            if _key not in data:
+                continue
+            raw = data[_key]
+            parts = raw if isinstance(raw, list) else str(raw).split(",")
+            hosts = []
+            for h in parts:
+                host = _mirrors._clean_host(h)
+                if host and host not in hosts:
+                    hosts.append(host)
+            set_setting(_key, ",".join(hosts))
+            _mirrors_changed = True
+
+        # -- Automatic domain lookup (admin only, gated above) --
+        # Off means the shipped/edited mirror lists are the only source of
+        # truth again; on re-enables the remote feed (domain_resolver.py).
+        # set_enabled() invalidates the mirror cache itself, so a flip takes
+        # effect on the next request rather than up to 30s later.
+        if _domain_resolver.ENABLED_SETTING in data:
+            _resolver_on = str(data[_domain_resolver.ENABLED_SETTING]).lower() in ("true", "1")
+            _domain_resolver.set_enabled(_resolver_on)
+            if _resolver_on:
+                # Refresh right away instead of waiting for the TTL: the user
+                # just asked for this, so the card must show a real domain when
+                # the page reloads. Backgrounded -- the settings PUT must not
+                # wait on a third-party endpoint.
+                threading.Thread(
+                    target=_domain_resolver.refresh, kwargs={"force": True},
+                    name="domain-resolver-manual", daemon=True,
+                ).start()
+
+        if _mirrors_changed:
+            _mirrors.invalidate_cache()  # re-read the lists + retry the primary host
+
+        if _lang_sep_warning:
+            return jsonify({"ok": True, "warning": _lang_sep_warning})
+        return jsonify({"ok": True})
+    @app.route("/api/custom-paths")
+    def api_custom_paths():
+        """Serve GET /api/custom-paths: list configured custom download
+        paths. Called from several frontend files via
+        `fetch('/api/custom-paths')`, e.g. static/settings.js's
+        `loadCustomPaths()`, static/app.js, static/autosync.js,
+        static/queue.js, static/library_video.js, and static/seerr.js."""
+        paths = get_custom_paths()
+        return jsonify(
+            {
+                "paths": paths,
+                # Same gate as the mirror cards: a custom path must not offer
+                # "default for <site>" for a source whose module is off.
+                "site_options": [
+                    {"key": key, "label": label}
+                    for key, label in _mirrors.SITE_LABELS.items()
+                    if _mirror_site_enabled(key)
+                ],
+                "current_site": _mirrors.site_for_url(request.args.get("url", "")),
+                # Which of those paths is the default for that site, resolved
+                # server-side (db/paths.py). Carried here so a non-browser
+                # client does not have to re-implement the default_sites CSV
+                # match that static/app.js used to own alone.
+                "default_path_id": default_custom_path_for_url(
+                    request.args.get("url", "")) or "",
+                # Only the kinds something actually indexes today. The registry
+                # also lists planned ones (manga, comics, music) so the sidebar
+                # can advertise them, but offering a folder to a library that
+                # has no scanner reads as a broken setting, not as a roadmap.
+                "media_kind_options": [
+                    kind for kind in kinds_for_api() if kind["scans"]
+                ],
+                # Carried on this response rather than fetched separately:
+                # every caller that opens the Auto-Sync dialog already asks
+                # for the path list, and the preselection has to arrive with
+                # it or the dropdown is built before the default is known.
+                "autosync_default_path": get_setting("sync_default_custom_path") or "",
+            }
+        )
+    @app.route("/api/custom-paths", methods=["POST"])
+    def api_custom_paths_add():
+        """Serve POST /api/custom-paths: add a named custom download path.
+        Called from static/settings.js's `addCustomPath()`."""
+        data = request.get_json(silent=True) or {}
+        name = (data.get("name") or "").strip()
+        path = (data.get("path") or "").strip()
+        if not name or not path:
+            return jsonify({"error": "name and path are required"}), 400
+        default_sites = _normalize_default_sites(data.get("default_sites"))
+        # No key at all means "the client has no opinion": pass None so the
+        # column default applies. Normalising a missing value would turn it
+        # into the default CSV here instead, which works today but would
+        # quietly fork from the DB the moment that default changes.
+        media_kinds = (
+            _normalize_media_kinds(data.get("media_kinds"))
+            if "media_kinds" in data
+            else None
+        )
+        path_id = add_custom_path(name, path, default_sites,
+                                  media_kinds=media_kinds)
+        return jsonify({"ok": True, "id": path_id})
+    @app.route("/api/custom-paths/<int:path_id>", methods=["PUT"])
+    def api_custom_paths_update(path_id):
+        """Update a custom path's optional site-default assignment.
+
+        The app-wide endpoint wrapper also marks this endpoint admin-only.
+        Keeping this guard here prevents a direct registration or future
+        routing change from exposing custom-path updates to regular users.
+        """
+        _username, is_admin = _get_current_user_info()
+        if not is_admin:
+            return jsonify({"error": "admin access required"}), 403
+        data = request.get_json(silent=True) or {}
+        name = data.get("name")
+        path = data.get("path")
+        default_sites = (
+            _normalize_default_sites(data.get("default_sites"))
+            if "default_sites" in data
+            else None
+        )
+        media_kinds = (
+            _normalize_media_kinds(data.get("media_kinds"))
+            if "media_kinds" in data
+            else None
+        )
+        update_custom_path(
+            path_id,
+            name=name.strip() if isinstance(name, str) else None,
+            path=path.strip() if isinstance(path, str) else None,
+            default_sites=default_sites,
+            media_kinds=media_kinds,
+        )
+        return jsonify({"ok": True})
+    @app.route("/api/custom-paths/<int:path_id>", methods=["DELETE"])
+    def api_custom_paths_delete(path_id):
+        """Serve DELETE /api/custom-paths/<path_id>: remove a custom download
+        path by id. Called from static/settings.js's `deleteCustomPath()`."""
+        ok, err = remove_custom_path(path_id)
+        if not ok:
+            return jsonify({"error": err}), 409
+        return jsonify({"ok": True})
+    # ===== Language fallback groups (Downloads tab) =====
+
+    @app.route("/api/language-groups")
+    def api_language_groups():
+        """Serve GET /api/language-groups: list the configured language
+        fallback groups plus the languages a group may be built from. Called
+        from static/settings.js's `loadLanguageGroups()`; the group list is
+        also embedded in /api/settings so the download and auto-sync pages
+        don't need a second request just to fill a dropdown."""
+        return jsonify({
+            "groups": get_language_groups(),
+            "languages": SELECTABLE_LANGUAGES,
+        })
+
+    @app.route("/api/language-groups", methods=["POST"])
+    def api_language_groups_add():
+        """Serve POST /api/language-groups: create a fallback group from a
+        name and an ordered language list. Called from static/settings.js's
+        `addLanguageGroup()`."""
+        _username, is_admin = _get_current_user_info()
+        if not is_admin:
+            return jsonify({"error": "admin access required"}), 403
+        data = request.get_json(silent=True) or {}
+        name = (data.get("name") or "").strip()
+        languages_json = group_languages_json(data.get("languages"))
+        if not name:
+            return jsonify({"error": "name is required"}), 400
+        # A one-language group is pointless (it can never fall back) and an
+        # empty one would resolve to "no language at all" in both workers.
+        if len(json.loads(languages_json)) < 2:
+            return jsonify({"error": "at least two languages are required"}), 400
+        # Default on: a group that upgrades an episode replaces the old copy.
+        # That is what groups did before the switch existed.
+        delete_replaced = bool(data.get("delete_replaced", True))
+        group_id = add_language_group(name, languages_json, delete_replaced=delete_replaced)
+        return jsonify({"ok": True, "id": group_id})
+
+    @app.route("/api/language-groups/<int:group_id>", methods=["PUT"])
+    def api_language_groups_update(group_id):
+        """Serve PUT /api/language-groups/<id>: rename a group or replace its
+        language chain. Called from static/settings.js's `saveLanguageGroup()`."""
+        _username, is_admin = _get_current_user_info()
+        if not is_admin:
+            return jsonify({"error": "admin access required"}), 403
+        data = request.get_json(silent=True) or {}
+        name = data.get("name")
+        languages_json = None
+        if "languages" in data:
+            languages_json = group_languages_json(data.get("languages"))
+            if len(json.loads(languages_json)) < 2:
+                return jsonify({"error": "at least two languages are required"}), 400
+        if isinstance(name, str) and not name.strip():
+            return jsonify({"error": "name is required"}), 400
+        update_language_group(
+            group_id,
+            name=name.strip() if isinstance(name, str) else None,
+            languages_json=languages_json,
+            delete_replaced=(
+                bool(data["delete_replaced"]) if "delete_replaced" in data else None
+            ),
+        )
+        return jsonify({"ok": True})
+
+    @app.route("/api/language-groups/<int:group_id>", methods=["DELETE"])
+    def api_language_groups_delete(group_id):
+        """Serve DELETE /api/language-groups/<id>: remove a group unless a
+        sync job or a waiting download still references it. Called from
+        static/settings.js's `deleteLanguageGroup()`."""
+        _username, is_admin = _get_current_user_info()
+        if not is_admin:
+            return jsonify({"error": "admin access required"}), 403
+        ok, err = remove_language_group(group_id)
+        if not ok:
+            return jsonify({"error": err}), 409
+        return jsonify({"ok": True})
+
+    @app.route("/api/settings/api-key", methods=["GET"])
+    def api_settings_api_key_get():
+        """Serve GET /api/settings/api-key: return the current external API
+        key. Called from static/settings.js's `loadApiKey()`."""
+        key = get_setting("external_api_key", "")
+        return jsonify({"key": key})
+    @app.route("/api/settings/api-key/regenerate", methods=["POST"])
+    def api_settings_api_key_regenerate():
+        """Serve POST /api/settings/api-key/regenerate: generate a new
+        external API key. Called from static/settings.js's
+        `regenerateApiKey()`."""
+        new_key = secrets.token_hex(32)
+        set_setting("external_api_key", new_key)
+        return jsonify({"ok": True, "key": new_key})
+
+    # ===== Telemetry (Privacy & Telemetry tab) =====
+    # See TELEMETRY_PLAN.md / TELEMETRY_IMPLEMENTATION_PLAN.md (devinfo_server
+    # checkout) for the full design. Persistence goes through the existing
+    # DB-first settings store via mediaforge.telemetry.settings, same pattern
+    # as every other setting in this file -- no new table.
+
+    @app.route("/api/settings/telemetry", methods=["GET"])
+    def api_settings_telemetry_get():
+        """Serve GET /api/settings/telemetry: current consent/enabled_keys
+        state plus the full data-point registry (labels/explain text/stage),
+        so the frontend confirmation dialog never needs a second,
+        hand-copied source for what each data_key means. Called from
+        static/telemetry.js's loadTelemetrySettings() and from base.html's
+        first-run consent-dialog bootstrap (checks consent_given === null).
+
+        The registry's label/explain/title/description text is bilingual
+        (registry.py stores {"de", "en"} per field, since that file is JSON-
+        only and never runs through pybabel extract -- see its module
+        docstring) -- resolved here to the session's current UI language,
+        same session key app.py's own get_locale() reads, so the stage tree
+        telemetry.js renders always matches whatever language the rest of
+        the Settings page is already showing."""
+        from flask import session as _sess
+        from ...telemetry import settings as _tel
+        from ...telemetry.registry import registry_export
+        ui_lang = _sess.get("ui_language") if _sess.get("ui_language") in ("en", "de") else "en"
+        return jsonify({
+            "install_id": _tel.get_install_id(),
+            "consent_given": _tel.is_consent_given(),
+            "consent_at": _tel.get_consent_at(),
+            "enabled_keys": sorted(_tel.get_enabled_keys()),
+            "registry": registry_export(ui_lang),
+        })
+
+    def _telemetry_kick():
+        """Best-effort: submit one system_info event right now, in this
+        request, instead of waiting for the next app start.
+
+        Previously the only "proof of life" event was the one-shot
+        system_info sent from hooks.init_telemetry() at create_app() time --
+        which meant granting consent (or raising the stage) mid-session
+        produced no visible signal on the devInfo server until the app was
+        restarted (the actual crash/feature/download events all check
+        settings.is_key_enabled() live and never needed a restart; system_info
+        was the only piece of the pipeline gated to "once per process start").
+        Called after every change that could newly enable something, so the
+        Settings page's Save/consent buttons are self-evidently working
+        without needing a restart to confirm it. Never raises -- a failure
+        here must not turn a settings change into a 500."""
+        try:
+            from ...telemetry import events as _tel_events
+            from ...telemetry.client import get_client as _tel_get_client
+            event = _tel_events.build_system_info_event()
+            if event:
+                _tel_get_client().submit(event)
+        except Exception:
+            logger.debug("[Telemetry] immediate kick-event failed", exc_info=True)
+
+    @app.route("/api/settings/telemetry", methods=["PUT"])
+    def api_settings_telemetry_put():
+        """Serve PUT /api/settings/telemetry: overwrite the full set of
+        enabled data_keys (not additive -- the frontend always sends the
+        complete desired end state after its own confirmation dialog, see
+        TELEMETRY_IMPLEMENTATION_PLAN.md §3.7). Refuses to store anything
+        until consent has been granted -- the Settings page can only ever
+        widen what's enabled after the first-run consent dialog said "Yes".
+        Called from static/telemetry.js's saveTelemetrySettings()."""
+        from ...telemetry import settings as _tel
+        from ...telemetry.registry import DATA_REGISTRY
+        if _tel.is_consent_given() is not True:
+            return jsonify({"ok": False, "error": "Consent not given yet"}), 403
+        data = request.get_json(silent=True) or {}
+        requested = data.get("enabled_keys", [])
+        if not isinstance(requested, list):
+            return jsonify({"ok": False, "error": "enabled_keys must be a list"}), 400
+        # Only persist keys the registry actually knows about -- an
+        # unrecognized key would be dead weight the server-side registry
+        # mirror could never explain to an admin either.
+        valid = {k for k in requested if k in DATA_REGISTRY}
+        # install_id has no toggle of its own (see registry.DATA_REGISTRY's
+        # always_on flag) but is implicitly present whenever anything else is.
+        if valid:
+            valid.add("install_id")
+        grew = bool(valid - _tel.get_enabled_keys())
+        _tel.set_enabled_keys(valid)
+        if grew:
+            # Something new was just turned on (e.g. raised to a higher stage).
+            # The actual downloads/watch/feature events for it were already live
+            # (is_key_enabled() is checked at the moment of use, no restart ever
+            # needed for those) -- this kick just makes sure the install shows up
+            # on the server with an up to date enabled_keys snapshot right away,
+            # rather than only after whatever action the new stage tracks next
+            # happens to occur.
+            _telemetry_kick()
+        return jsonify({"ok": True, "enabled_keys": sorted(valid)})
+
+    @app.route("/api/settings/telemetry/consent", methods=["POST"])
+    def api_settings_telemetry_consent():
+        """Serve POST /api/settings/telemetry/consent: record the first-run
+        consent decision (granted=true/false). Called once from the
+        first-run consent dialog (base.html), and again from the Privacy
+        tab whenever the user later flips telemetry fully on/off -- both
+        paths go through this same endpoint so consent_at always reflects
+        the most recent explicit decision (TELEMETRY_PLAN.md §7a: withdrawal
+        must be exactly as easy as granting)."""
+        from ...telemetry import settings as _tel
+        data = request.get_json(silent=True) or {}
+        granted = bool(data.get("granted"))
+        _tel.set_consent(granted)
+        if granted:
+            _telemetry_kick()
+        return jsonify({
+            "ok": True,
+            "consent_given": granted,
+            "consent_at": _tel.get_consent_at(),
+            "enabled_keys": sorted(_tel.get_enabled_keys()),
+        })
+
+    @app.route("/api/settings/telemetry/regenerate-id", methods=["POST"])
+    def api_settings_telemetry_regenerate_id():
+        """Serve POST /api/settings/telemetry/regenerate-id: "Identität
+        zurücksetzen" -- generate a brand-new install_id with no link kept
+        to the old one (TELEMETRY_IMPLEMENTATION_PLAN.md §3.1)."""
+        from ...telemetry import settings as _tel
+        new_id = _tel.regenerate_install_id()
+        return jsonify({"ok": True, "install_id": new_id})
+
+    @app.route("/api/settings/telemetry/request", methods=["POST"])
+    def api_settings_telemetry_request():
+        """Serve POST /api/settings/telemetry/request: submit a data
+        deletion/export request from inside the app ("Meine Daten
+        verwalten"), forwarded to the devInfo server's
+        POST /telemetry/request-from-app with the shared project-key header
+        (TELEMETRY_IMPLEMENTATION_PLAN.md §3.8). install_id is attached here
+        server-side from the local settings -- never typed by the user, so
+        the resulting request proves it came from this actual installation."""
+        import json as _json
+
+        from ...config import GLOBAL_SESSION, VERSION
+        from ...telemetry import device_auth as _dev
+        from ...telemetry import settings as _tel
+        from ...telemetry.registry import TELEMETRY_PROJECT_KEY, TELEMETRY_REQUEST_URL
+        data = request.get_json(silent=True) or {}
+        request_type = data.get("request_type")
+        if request_type not in ("delete", "export"):
+            return jsonify({"ok": False, "error": "request_type must be 'delete' or 'export'"}), 400
+        payload = {
+            "request_type": request_type,
+            "install_id": _tel.get_install_id(),
+            # Same version string the ingest batch sends. The server refuses an
+            # unsigned request from 1.4.2 onward, and it needs to be told which
+            # version is asking before it can apply that rule.
+            "app_version": VERSION or "unknown",
+            "submitted_username": str(data.get("username", "")).strip()[:80],
+            "submitted_email": str(data.get("email", "")).strip()[:255],
+        }
+        try:
+            # This endpoint can trigger the deletion of an install's data, so
+            # it is signed exactly like ingest: enroll if we have no secret
+            # yet, then sign the raw bytes that actually go on the wire.
+            # Enrolling here is consent-safe without a telemetry_active()
+            # check, and only here: the user pressed "request export/deletion"
+            # and typed an address, which is a deliberate act of contacting the
+            # server -- and one that must keep working after consent is
+            # withdrawn, since withdrawing it is exactly when a deletion gets
+            # requested. Enrolling is also not optional any more: from 1.4.2 on
+            # the server refuses an unsigned request from a client claiming
+            # this version, device row or not, so a failure to enroll means the
+            # request below comes back 401 and the UI reports it.
+            _dev.ensure_enrolled()
+            body = _json.dumps(payload).encode("utf-8")
+            headers = {"X-Project-Key": TELEMETRY_PROJECT_KEY,
+                       "Content-Type": "application/json"}
+            headers.update(_dev.sign_headers("POST", TELEMETRY_REQUEST_URL, body))
+            resp = GLOBAL_SESSION.post(
+                TELEMETRY_REQUEST_URL, data=body, headers=headers, timeout=8,
+            )
+            if resp.status_code == 401 and _dev.needs_registration(resp) and _dev.rotate():
+                # Our secret and the server's record of it disagree. Re-register
+                # once and retry once -- see device_auth.needs_registration().
+                headers.update(_dev.sign_headers("POST", TELEMETRY_REQUEST_URL, body))
+                resp = GLOBAL_SESSION.post(
+                    TELEMETRY_REQUEST_URL, data=body, headers=headers, timeout=8,
+                )
+            if resp.status_code >= 400:
+                return jsonify({"ok": False, "error": f"devInfo server returned {resp.status_code}"}), 502
+        except Exception as e:
+            # The caller already gets a 502 and the Settings page renders a
+            # visible error for it, so the console line adds nothing -- and the
+            # devInfo server being down for maintenance is routine. DEBUG only
+            # for that case; a genuinely unexpected failure stays at WARNING.
+            if _is_server_unreachable(e):
+                logger.debug("[Telemetry] request-from-app: devInfo server unreachable (%s)",
+                             type(e).__name__)
+            else:
+                logger.warning("[Telemetry] request-from-app call failed: %s", e)
+            return jsonify({"ok": False, "error": "devInfo server unreachable"}), 502
+        return jsonify({"ok": True})
+
+    @app.route("/api/settings/telemetry/request-status", methods=["GET"])
+    def api_settings_telemetry_request_status():
+        """Serve GET /api/settings/telemetry/request-status: check the
+        status of this install's own delete/export requests, so "Meine
+        Daten verwalten" can show "in Bearbeitung" / "Löschung
+        abgeschlossen" / a download button -- entirely over the
+        project-key-secured app channel, no email round-trip
+        (TELEMETRY_IMPLEMENTATION_PLAN.md §3.8). On success, forwards the
+        devInfo server's response array unchanged (shared contract); the
+        dict shape below is only used for this proxy's own failure case."""
+        from ...config import GLOBAL_SESSION, VERSION
+        from ...telemetry import device_auth as _dev
+        from ...telemetry import settings as _tel
+        from ...telemetry.registry import TELEMETRY_PROJECT_KEY, TELEMETRY_REQUEST_STATUS_URL
+        try:
+            # Nothing leaves the machine for somebody who never consented.
+            # telemetry.js polls this route on every load of the Settings page
+            # -- any tab, not just the telemetry one -- so without this the
+            # install_id and app_version reach the server purely because the
+            # page was opened. An install that never enrolled provably has no
+            # data requests to poll, and one that DID enrol keeps working here
+            # after withdrawing consent, which is exactly when a deletion gets
+            # requested and has to stay pollable.
+            if _tel.is_consent_given() is not True and not _dev.has_secret():
+                # Empty list, not an error: the caller is telemetry.js, which
+                # expects the server's array shape and renders nothing for it.
+                return jsonify([])
+            # Deliberately NOT ensure_enrolled(): this route is polled
+            # automatically by telemetry.js's loadTelemetrySettings() every time
+            # the Settings -> Telemetry page is opened, including for a user who
+            # has declined telemetry or not decided yet. Enrolling here would
+            # POST /telemetry/register -- install_id, app_version, OS, Python
+            # version and arch -- and create a server-side Install row for
+            # somebody who never consented, purely because they looked at the
+            # page. Enrollment belongs to the two paths that are actually about
+            # to send data: _flush() (behind telemetry_active()) and the
+            # user-pressed data-request POST above. An install with no secret
+            # has no data requests to poll either, so the worst outcome here is
+            # a 401 that renders as "nothing to show".
+            params = {"install_id": _tel.get_install_id(),
+                      "app_version": VERSION or "unknown"}
+            headers = {"X-Project-Key": TELEMETRY_PROJECT_KEY}
+            # A GET has no body, so the body hash is sha256(b"") -- and the
+            # signed <path> is the path ALONE: the server signs Flask's
+            # request.path, which stops at the "?". install_id and app_version
+            # therefore ride outside the signature, which is what the server
+            # verifies and so what we must reproduce.
+            headers.update(_dev.sign_headers("GET", TELEMETRY_REQUEST_STATUS_URL, b""))
+            resp = GLOBAL_SESSION.get(
+                TELEMETRY_REQUEST_STATUS_URL, params=params,
+                headers=headers, timeout=8,
+            )
+            # has_secret() first, for the same reason enrollment is skipped
+            # above: rotate() falls back to a plain first registration when
+            # nothing is stored, so without this guard the 401 an unenrolled
+            # 1.4.2 client always gets here would enroll it anyway -- the leak
+            # by the back door.
+            if (resp.status_code == 401 and _dev.has_secret()
+                    and _dev.needs_registration(resp) and _dev.rotate()):
+                headers.update(_dev.sign_headers("GET", TELEMETRY_REQUEST_STATUS_URL, b""))
+                resp = GLOBAL_SESSION.get(
+                    TELEMETRY_REQUEST_STATUS_URL, params=params,
+                    headers=headers, timeout=8,
+                )
+            resp.raise_for_status()
+            return jsonify(resp.json())
+        except Exception as e:
+            # Same as the POST above: the UI shows the failure, the console
+            # should stay quiet for an unreachable/maintenance server.
+            if _is_server_unreachable(e):
+                logger.debug("[Telemetry] request-status: devInfo server unreachable (%s)",
+                             type(e).__name__)
+            else:
+                logger.warning("[Telemetry] request-status fetch failed: %s", e)
+            return jsonify({"requests": [], "error": "devInfo server unreachable"}), 502

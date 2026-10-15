@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+{% block title %}{{ _('Catalogue') }} — MediaForge{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='catalogue.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="catalogue-page">
+  <div class="page-header cat-header">
+    <div>
+      <h1 class="page-title">{{ _('Catalogue') }}
+        <span class="cat-beta" title="{{ _('This feature is new and still being worked on.') }}">{{ _('Beta') }}</span>
+      </h1>
+      <p class="page-subtitle">{{ _('Every title the source sites list, in one place. Mark what you want, then queue it or hand it to Auto-Sync — one entry per series.') }}</p>
+    </div>
+  </div>
+
+  {# Two rows on purpose: what you PRESS on the first, what you NARROW BY on
+     the second. With source chips, status chips, a count and four buttons on
+     one line the wrap order changed with every source a user enabled. #}
+  <div class="cat-toolbar">
+    <input type="search" class="cat-search" id="catSearch"
+           placeholder="{{ _('Filter by title… (alternate titles are searched too)') }}"
+           autocomplete="off" spellcheck="false">
+    <button type="button" class="cat-tool-btn cat-sort-btn" id="catSort"
+            title="{{ _('Switch between A–Z and Z–A') }}">A–Z</button>
+    <button type="button" class="cat-tool-btn" id="catSelectAll">{{ _('Select all shown') }}</button>
+    <button type="button" class="cat-tool-btn" id="catClear">{{ _('Clear selection') }}</button>
+    <button type="button" class="cat-tool-btn" id="catRefresh"
+            title="{{ _('Refetch the lists from the sites') }}">{{ _('Refresh') }}</button>
+  </div>
+
+  <div class="cat-filters">
+    {# The list is merged; these only narrow it down. Sources on the left,
+       the three row badges as filters on the right — same chip, same "on by
+       default, click to hide" rule for both groups. #}
+    <div class="cat-chips" id="catSourceChips"></div>
+    <span class="cat-chip-sep" aria-hidden="true"></span>
+    <div class="cat-chips" id="catStatusChips"></div>
+    <span class="cat-count" id="catCount"></span>
+  </div>
+
+  {# Freshness and background work, in the one place the work is about. The
+     lists come from the database now, so the page never waits on a source
+     site -- but "instantly served from yesterday's copy" has to SAY so, and a
+     refresh or an id resolution nobody can see is one the user assumes is
+     broken. Hidden entirely when nothing is running and everything is fresh. #}
+  <div class="cat-status" id="catStatus" hidden>
+    <span class="cat-status-spin" id="catStatusSpin" aria-hidden="true"></span>
+    <span class="cat-status-text" id="catStatusText"></span>
+    {# No refresh button here: the toolbar above already has one, and two
+       controls that do exactly the same thing a few pixels apart is worse
+       than either of them alone. #}
+    <div class="cat-status-bar" id="catStatusBar" hidden>
+      <div class="cat-status-fill" id="catStatusFill" style="width:0%"></div>
+    </div>
+  </div>
+
+  {# The rail lives beside the viewport rather than inside it: overlaying the
+     scrollbar means the two fight for the same 16px on desktop, and a finger
+     resting on the rail must not also scroll the list underneath. #}
+  <div class="cat-list-wrap">
+    <div class="cat-viewport" id="catViewport">
+      <div class="cat-spacer" id="catSpacer">
+        <div class="cat-rows" id="catRows"></div>
+      </div>
+    </div>
+    <div class="cat-rail" id="catRail" role="navigation"
+         aria-label="{{ _('Jump to letter') }}" hidden></div>
+    {# Shown while dragging the rail — on a phone the finger covers the letter
+       it is on, so the current one is repeated to its left. #}
+    <div class="cat-rail-bubble" id="catRailBubble" aria-hidden="true" hidden></div>
+  </div>
+
+  {# The bar is only in the way when there is nothing to act on, so on a phone
+     it is not there at all until something is marked (see .is-empty in
+     catalogue.css). Collapsed it is one line: the count, the primary action
+     and a toggle; language, hoster, the missing-episodes switch, Auto-Sync
+     and the warning all live behind that toggle. Desktop has the room and
+     shows the lot. #}
+  <div class="cat-actions" id="catActions">
+    <div class="cat-actions-row">
+      <span class="cat-selcount" id="catSelCount">0 <small>{{ _('selected') }}</small></span>
+
+      {# Phone only: opens the sheet. The label carries the current option
+         values, so collapsing them never hides what is set. #}
+      <button type="button" class="cat-options-toggle" id="catOptionsToggle"
+              aria-expanded="false" aria-controls="catOptions">
+        {# Collapsed the bar has room for a word, not for three option values,
+           and a bare caret says nothing about what it opens. The summary takes
+           over as soon as the sheet is open. #}
+        <span class="cat-options-short">{{ _('Options') }}</span>
+        <span id="catOptionsSummary"></span>
+        <span class="cat-options-caret" aria-hidden="true">▾</span>
+      </button>
+
+      <div class="cat-options" id="catOptions">
+      <div class="cat-field">
+        <label for="catLanguage">{{ _('Language') }}</label>
+        {# Filled from the same lists the start page uses (lang_labels /
+           sto_lang_labels / supported_providers), passed in by
+           routes/catalogue.py -- they are NOT global context variables, which
+           is exactly why these two dropdowns came up empty at first. #}
+        <select id="catLanguage">
+          {% set _seen = [] %}
+          {% for _k, _label in (lang_labels | default({})).items() %}
+            {% if _label not in _seen %}{% set _ = _seen.append(_label) %}
+            <option value="{{ _label }}">{{ _label }}</option>{% endif %}
+          {% endfor %}
+          {% for _k, _label in (sto_lang_labels | default({})).items() %}
+            {% if _label not in _seen %}{% set _ = _seen.append(_label) %}
+            <option value="{{ _label }}">{{ _label }}</option>{% endif %}
+          {% endfor %}
+        </select>
+      </div>
+
+      {# Which site a merged row downloads from when the user has not pressed
+         one of its pills. Only matters for titles both sites carry; filled
+         from the source list in JS. #}
+      <div class="cat-field" id="catPreferredField" hidden>
+        <label for="catPreferred">{{ _('Preferred source') }}</label>
+        <select id="catPreferred"></select>
+      </div>
+
+      <div class="cat-field">
+        <label for="catProvider">{{ _('Hoster') }}</label>
+        <select id="catProvider">
+          {% for _p in (supported_providers | default([])) %}
+          <option value="{{ _p }}">{{ _p }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <label class="settings-checkbox-row" style="margin:0;" for="catMissingOnly">
+        <input type="checkbox" class="chb-main" id="catMissingOnly" checked>
+        <span>{{ _('Only missing episodes') }}</span>
+      </label>
+      </div>
+
+      <button type="button" class="btn btn-primary" id="catQueueBtn">{{ _('Add to queue') }}</button>
+      <button type="button" class="cat-tool-btn" id="catSyncBtn">{{ _('Create Auto-Sync jobs') }}</button>
+    </div>
+    <div class="cat-warn" id="catWarn" style="display:none;"></div>
+  </div>
+
+  <div class="cat-job" id="catJob" style="display:none;">
+    <div class="cat-job-head">
+      <strong id="catJobTitle"></strong>
+      <button type="button" class="cat-tool-btn" id="catJobCancel">{{ _('Stop') }}</button>
+    </div>
+    <div class="cat-job-bar"><div class="cat-job-fill" id="catJobFill" style="width:0%"></div></div>
+    <div class="cat-job-stats" id="catJobStats"></div>
+  </div>
+</div>
+
+{# Details — cover, metadata and the episode list for ONE series. Opening it
+   never touches the selection: that is the whole point of a separate modal
+   here rather than the start page's download modal, which owns its own
+   language/provider state and would fight with the bar above.
+
+   It is the DOWNLOAD MODAL'S OWN MARKUP, class for class: .modal, its
+   .modal-backdrop, its .modal-header with the poster column and .modal-meta,
+   its .genres and .desc. Those rules live in modals.css, which base.html
+   loads on every page, so this dialog is not "styled after" that one -- it IS
+   that one, and the two cannot drift.
+
+   The previous version was a private copy (.cat-modal-backdrop, a scrim on
+   the card, a blurred-poster fallback, its own gradient stops). Every one of
+   those was a decision the download modal had already made differently, which
+   is exactly why it kept coming out looking like something else. What is left
+   below is only what this dialog has and that one does not: a scrolling
+   episode list and a footer.
+
+   There is deliberately no link out to the source site. #}
+<div class="modal-overlay cat-modal-overlay" id="catModal" style="display:none"
+  onclick="if(event.target===this)catCloseModal()" role="dialog" aria-modal="true"
+  aria-labelledby="catModalTitle">
+  <div class="modal cat-modal-card" id="catModalCard">
+    <button class="close" onclick="catCloseModal()" aria-label="{{ _('Close') }}">&times;</button>
+    <div class="modal-backdrop" id="catModalBackdrop" aria-hidden="true"></div>
+    <div class="modal-header cat-modal-header">
+      <div class="modal-poster-col">
+        <img id="catModalPoster" src="" alt="" style="display:none">
+      </div>
+      <div class="modal-meta">
+        <h2 id="catModalTitle">…</h2>
+        <div class="year" id="catModalSub"></div>
+        <div class="genres" id="catModalGenres"></div>
+        <div class="desc" id="catModalDesc"></div>
+      </div>
+    </div>
+    <div class="cat-modal-scroll" id="catModalBody"></div>
+    {# A single button that does NOT close the dialog is the whole confusion:
+       people press it expecting to be done and nothing visibly happens. So:
+       an explicit Close on the left, the running selection total in the
+       middle (the action bar that normally shows it is behind the modal), and
+       the mark/unmark button on the right, which now states which of the two
+       it currently is. #}
+    <div class="cat-modal-footer">
+      <button type="button" class="cat-tool-btn" onclick="catCloseModal()">{{ _('Close') }}</button>
+      <span class="cat-modal-selinfo" id="catModalSelInfo" aria-live="polite"></span>
+      <button type="button" class="btn btn-primary" id="catModalToggle" aria-pressed="false"></button>
+    </div>
+  </div>
+</div>
+
+<script>
+  window.CAT_I18N = {
+    selected: {{ _('selected')|tojson }},
+    of: {{ _('of')|tojson }},
+    entries: {{ _('entries')|tojson }},
+    loading: {{ _('Loading the catalogue…')|tojson }},
+    failed: {{ _('The catalogue could not be loaded.')|tojson }},
+    retry: {{ _('Try again')|tojson }},
+    disabled: {{ _('This source is switched off in Settings.')|tojson }},
+    nothing: {{ _('Nothing matches this filter.')|tojson }},
+    pick_one: {{ _('Mark at least one series first.')|tojson }},
+    in_library: {{ _('In library')|tojson }},
+    queued: {{ _('Queued')|tojson }},
+    syncing: {{ _('Auto-Sync')|tojson }},
+    details: {{ _('Details')|tojson }},
+    add_sel: {{ _('Add to selection')|tojson }},
+    remove_sel: {{ _('Remove from selection')|tojson }},
+    no_episodes: {{ _('No episodes found.')|tojson }},
+    season: {{ _('Season')|tojson }},
+    job_queue: {{ _('Adding to the queue')|tojson }},
+    job_sync: {{ _('Creating Auto-Sync jobs')|tojson }},
+    done: {{ _('Done')|tojson }},
+    cancelled: {{ _('Stopped')|tojson }},
+    created: {{ _('created')|tojson }},
+    skipped: {{ _('skipped')|tojson }},
+    failed_n: {{ _('failed')|tojson }},
+    episodes_n: {{ _('episodes')|tojson }},
+    busy: {{ _('Another bulk job is still running.')|tojson }},
+    too_many: {{ _('Too many series selected at once.')|tojson }},
+    groups: {{ _('Language groups')|tojson }},
+    only_missing_short: {{ _('only missing')|tojson }},
+    all_episodes_short: {{ _('all episodes')|tojson }},
+    {# Status chips and the sort toggle are built in JS, so their labels have
+       to travel through here like everything else on this page. #}
+    chip_hint: {{ _('Show only these entries')|tojson }},
+    chip_empty: {{ _('Nothing in this category right now')|tojson }},
+    only_selection: {{ _('Only selection')|tojson }},
+    sort_az: {{ _('A–Z')|tojson }},
+    sort_za: {{ _('Z–A')|tojson }},
+    sort_label: {{ _('Sort order')|tojson }},
+    {# Merged rows: a title both sites carry is one row with one pill per
+       site, and pressing a pill is how you pick where it comes from. #}
+    pick_source: {{ _('Download this title from here')|tojson }},
+    first_available: {{ _('First available')|tojson }},
+    {# Status strip. The lists are served from the database and refreshed in
+       the background, so the page has to be able to say which of those is
+       happening right now. #}
+    refreshing_one: {{ _('Updating')|tojson }},
+    updated_just_now: {{ _('List updated just now')|tojson }},
+    updated_ago: {{ _('List from')|tojson }},
+    refresh_failed: {{ _('The last update failed — showing the previous list.')|tojson }},
+    resolving_ids: {{ _('Matching titles against TMDB')|tojson }},
+    ids_done: {{ _('Title matching complete')|tojson }},
+    ago_minutes: {{ _('min ago')|tojson }},
+    ago_hours: {{ _('h ago')|tojson }},
+    ago_days: {{ _('d ago')|tojson }},
+    {# Per-episode "already on disk" markers, worded exactly as the download
+       modal words them -- the two views share the CSS, so they share the
+       tooltips too. Nothing is said about episodes that are MISSING. #}
+    downloaded: {{ _('Downloaded')|tojson }},
+    all_downloaded: {{ _('All episodes downloaded')|tojson }},
+    {# The warning the user asked for: shown before submitting, never blocking.
+       No %(n)s placeholder -- Flask-Babel's gettext() runs its own %
+       interpolation over the result and would raise KeyError. The count is
+       prefixed in JS instead. #}
+    warn_many: {{ _('series selected. Every one of them is fetched and expanded into its episodes, which takes a while and makes for a long queue.')|tojson }},
+    warn_sync: {{ _('Auto-Sync keeps downloading new episodes for these series from now on.')|tojson }},
+  };
+</script>
+{% endblock %}
+
+{% block scripts %}
+{# app.js FIRST, and not optional. It owns the answer to "do I already have
+   this": the download-folder list, the server-side alias index, the
+   Plex/Jellyfin index and the three-stage matching in downloadedFolderFor().
+   This page was reading those globals without ever loading the file that
+   defines them, so every "In library" check silently answered no — on a
+   library with thousands of titles the page reported zero.
+
+   Loading it is what the other non-start pages do (favourites, calendar,
+   seerr, advanced-search), and it is the only way this page and the start
+   page cannot disagree about what "downloaded" means. Reimplementing the
+   matching here would have been a second opinion that drifts. #}
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='catalogue.js') }}"></script>
+{% endblock %}

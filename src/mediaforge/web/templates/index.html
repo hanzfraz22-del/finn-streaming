@@ -1,0 +1,1321 @@
+{% extends "base.html" %}
+{% import '_start_page_form.html' as startpage %}
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='index.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='shared_modals.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='hanime.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='english_only.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='devinfo_banner.css') }}">
+{% if devinfo_importants %}<link rel="stylesheet" href="{{ url_for('static', filename='devinfo_important.css') }}">{% endif %}
+{# The "Could be for you" hero's Details button opens this modal (see
+   home_foryou.js's openDetails()) -- only meaningful in the new_home
+   layout, where fyBlock/fyHero exist at all. #}
+{% if new_home %}<link rel="stylesheet" href="{{ url_for('static', filename='mf_detail_modal.css') }}">{% endif %}
+<style>
+  /* #directLinkBtn and the search bar's mobile layout now live in
+     index.css, next to the rest of the home styling. */
+
+  .directlink-modal {
+    position: relative;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-modal);
+    width: 100%;
+    max-width: 750px;
+    padding: 28px 24px 22px;
+    margin: 0 auto;
+    animation: modal-in 0.2s ease;
+  }
+
+  .directlink-modal>.close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 6px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background var(--transition), color var(--transition);
+  }
+
+  .directlink-modal>.close:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .dl-title {
+    margin: 0 0 4px;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-shadow: 1px 1px 1px BLACK;
+  }
+
+  .dl-hint {
+    margin: 0 0 16px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+
+  .dl-input-row {
+    display: flex !important;
+    flex-direction: row !important;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .dl-input-row input {
+    flex: 1 1 0%;
+    min-width: 0;
+    height: 44px;
+    border-radius: var(--radius-md);
+    padding: 0 14px;
+    font-size: 0.9rem;
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    color: var(--text-primary);
+    font-family: inherit;
+    box-sizing: border-box;
+  }
+
+  .dl-input-row input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .dl-input-row input::placeholder {
+    color: var(--text-muted);
+  }
+
+  .dl-input-row button {
+    flex-shrink: 0;
+    height: 44px;
+    padding: 0 20px;
+    border-radius: var(--radius-md);
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    border: none;
+    white-space: nowrap;
+    transition: background var(--transition);
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .dl-input-row button:hover {
+    background: var(--accent-hover);
+  }
+
+  .dl-error {
+    display: none;
+    margin-top: 10px;
+    padding: 10px 14px;
+    background: rgba(220, 53, 53, 0.12);
+    border: 1px solid rgba(220, 53, 53, 0.35);
+    border-radius: var(--radius-md);
+    color: #e05555;
+    font-size: 0.85rem;
+  }
+
+  @media (max-width: 560px) {
+    .dl-input-row {
+      flex-direction: column !important;
+    }
+
+    .dl-input-row button {
+      width: 100%;
+      justify-content: center;
+    }
+  }
+
+  /* ── Source offline banner (UpTime) ─────────────────────────────────── */
+  #sourceStatusBanner:empty { display: none; }
+  .src-alert {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 16px;
+    margin: 4px 0 22px;
+    padding: 14px 16px;
+    border-radius: var(--radius-lg, 14px);
+    background: rgba(240, 85, 106, 0.10);
+    border: 1px solid rgba(240, 85, 106, 0.35);
+    color: var(--text-primary);
+  }
+  .src-alert-ic {
+    flex: 0 0 auto;
+    width: 30px; height: 30px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(240, 85, 106, 0.22);
+    color: #ff8a99; font-weight: 800; font-size: 1rem;
+  }
+  .src-alert-body { flex: 1 1 260px; min-width: 0; }
+  .src-alert-title { font-weight: 700; font-size: 0.98rem; margin-bottom: 2px; }
+  .src-alert-title b { color: #ff8a99; }
+  .src-alert-desc { font-size: 0.85rem; color: var(--text-secondary, #b9c0cc); }
+  .src-alert-actions { display: flex; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; }
+  .src-alert-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 38px; padding: 0 14px; border-radius: var(--radius-md, 10px);
+    font-size: 0.85rem; font-weight: 600; font-family: inherit; cursor: pointer;
+    text-decoration: none; white-space: nowrap;
+    border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-primary);
+    transition: background var(--transition), border-color var(--transition);
+  }
+  .src-alert-btn:hover { background: var(--bg-hover); border-color: var(--accent); }
+  .src-alert-btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
+  .src-alert-btn.primary:hover { background: var(--accent-hover); }
+  .src-alert-close {
+    flex: 0 0 auto; background: none; border: none; color: var(--text-muted);
+    cursor: pointer; font-size: 1.2rem; line-height: 1; padding: 4px 6px; border-radius: 6px;
+  }
+  .src-alert-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+  @media (max-width: 560px) {
+    .src-alert-actions { width: 100%; }
+    .src-alert-btn { flex: 1 1 auto; justify-content: center; }
+  }
+
+</style>
+{% endblock %}
+
+{% block content %}
+{# ── No display available ──────────────────────────────────────────────
+   Headless Linux where Xvfb is missing and could not be installed
+   automatically. Everything that needs the visible captcha browser is dead in
+   that state, so admins get told here instead of finding out through failed
+   downloads. Reuses the Dev Info banner styling (already loaded above). #}
+{% set _is_admin = not auth_enabled or (current_user and current_user.role == 'admin') %}
+{% if _is_admin and display_info and display_info.mode == 'unavailable' %}
+<div class="devinfo-warning-banners">
+  <div class="devinfo-warning-banner devinfo-warning-banner-important">
+    <div class="devinfo-warning-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round">
+        <rect x="2" y="3" width="20" height="14" rx="2" />
+        <line x1="8" y1="21" x2="16" y2="21" />
+        <line x1="12" y1="17" x2="12" y2="21" />
+      </svg>
+    </div>
+    <div class="devinfo-warning-content">
+      <span class="devinfo-warning-flag">{{ _('Limited functionality') }}</span>
+      <div class="devinfo-warning-title">{{ _('No display available — captcha solving and browser-based providers cannot run') }}</div>
+      <div class="devinfo-warning-body">
+        {{ _('This host has no graphical display and MediaForge could not install a virtual one (Xvfb) automatically. Install it manually — Debian/Ubuntu: "sudo apt install xvfb", Fedora: "sudo dnf install xorg-x11-server-Xvfb", Arch: "sudo pacman -S xorg-server-xvfb" — and restart MediaForge, or use the official Docker image, which ships it.') }}
+        {% if display_info.error %}<br><small>{{ _('Automatic install failed:') }} {{ display_info.error }}</small>{% endif %}
+        <br><a href="{{ url_for('settings_page') }}#general">{{ _('Show display mode in Settings') }}</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+{# ── Dev Info banners ──────────────────────────────────────────────────
+   "warning", "important" and "release" posts all land here (app.py's index()
+   builds devinfo_banners from the three). "important" additionally raises the
+   modal further down; the banner is what remains on the page after the modal
+   has been confirmed, so the message stays visible instead of vanishing.
+   "release" shows the announced version and a shortcut into Settings ->
+   Updates; the full text and the changelog live on the Dev Infos page. #}
+{% if devinfo_banners %}
+<div id="devinfoWarningBanners" class="devinfo-warning-banners">
+  {% for w in devinfo_banners %}
+  <div class="devinfo-warning-banner{% if w.type == 'important' %} devinfo-warning-banner-important{% elif w.type == 'release' %} devinfo-warning-banner-release{% endif %}"
+       data-devinfo-id="{{ w.id }}" data-devinfo-type="{{ w.type }}">
+    <div class="devinfo-warning-icon">
+      {% if w.type == 'release' %}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round">
+        <path d="M21 12a9 9 0 1 1-6.22-8.56" />
+        <polyline points="21 3 21 9 15 9" />
+        <polyline points="8.5 12 11 14.5 15.5 10" />
+      </svg>
+      {% elif w.type == 'important' %}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="8" x2="12" y2="12" />
+        <line x1="12" y1="16" x2="12.01" y2="16" />
+      </svg>
+      {% else %}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round">
+        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+        <line x1="12" y1="9" x2="12" y2="13" />
+        <line x1="12" y1="17" x2="12.01" y2="17" />
+      </svg>
+      {% endif %}
+    </div>
+    <div class="devinfo-warning-content">
+      {% if w.type == 'important' %}
+      <span class="devinfo-warning-flag">{{ _('Important') }}</span>
+      {% elif w.type == 'release' %}
+      <span class="devinfo-warning-flag devinfo-warning-flag-release">{{ _('Release') }}</span>
+      {% endif %}
+      <div class="devinfo-warning-title">{{ w.title }}</div>
+      {# A release banner stays deliberately short: the headline plus the version
+         it announces. The text of the post and the changelog are one click away
+         on the Dev Infos page -- a home page banner is not the place for release
+         notes. #}
+      {% if w.type == 'release' %}
+      <div class="devinfo-release-line">
+        <span class="devinfo-release-version">{{ w.release_name or w.release_tag }}</span>
+        {% if w.release_name and w.release_tag and w.release_name != w.release_tag %}
+        <span class="devinfo-release-tag">{{ w.release_tag }}</span>
+        {% endif %}
+      </div>
+      <div class="devinfo-release-actions">
+        {# Deep link into the Updates tab: settings.js's restoreTab() reads the
+           hash and opens that panel, so this lands the user on the update
+           check/install controls rather than the top of Settings. #}
+        <a class="devinfo-release-btn" href="{{ url_for('settings_page') }}#updates">{{ _('Go to updates') }}</a>
+        <a class="devinfo-release-link" href="{{ url_for('devinfos_page') }}">{{ _('Read changelog') }}</a>
+      </div>
+      {% else %}
+      <div class="devinfo-warning-body devinfo-markdown">{{ w.body_html|safe }}</div>
+      {% endif %}
+    </div>
+    <button type="button" class="devinfo-warning-dismiss" aria-label="{{ _('Dismiss') }}" title="{{ _('Dismiss') }}">&times;</button>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── "Important" modal ─────────────────────────────────────────────────
+   Rendered only when there is at least one *unread* important post (app.py
+   filters on is_read). Confirming it marks that post as read and navigates to
+   the Dev Infos page so the full text can actually be read -- see
+   static/devinfo_important.js. Server-rendered rather than fetched, so it is
+   on screen with the first paint instead of after a round trip. #}
+{% if devinfo_importants %}
+<div id="devinfoImportantOverlay" class="devinfo-important-overlay" role="dialog" aria-modal="true"
+     aria-labelledby="devinfoImportantHeading" data-devinfos-url="{{ url_for('devinfos_page') }}" hidden>
+  <div class="devinfo-important-modal">
+    <div class="devinfo-important-head">
+      <span class="devinfo-important-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="8" x2="12" y2="12" />
+          <line x1="12" y1="16" x2="12.01" y2="16" />
+        </svg>
+      </span>
+      <h2 class="devinfo-important-heading" id="devinfoImportantHeading">{{ _('Important notice') }}</h2>
+    </div>
+    <div class="devinfo-important-scroll">
+      {% for w in devinfo_importants %}
+      <div class="devinfo-important-post" data-devinfo-id="{{ w.id }}">
+        <h3 class="devinfo-important-title">{{ w.title }}</h3>
+        {% if w.author or w.formatted_time %}
+        <div class="devinfo-important-meta">
+          {% if w.author %}<span>{{ w.author }}</span>{% endif %}
+          {% if w.formatted_time %}<span>{{ w.formatted_time }}</span>{% endif %}
+        </div>
+        {% endif %}
+        <div class="devinfo-important-body devinfo-markdown">{{ w.body_html|safe }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="devinfo-important-actions">
+      <p class="devinfo-important-hint">
+        {{ _('Confirming marks this notice as read and opens the Dev Infos page.') }}
+      </p>
+      <button type="button" id="devinfoImportantConfirm" class="devinfo-important-btn">
+        {{ _('Understood — open Dev Infos') }}
+      </button>
+    </div>
+  </div>
+</div>
+{% endif %}
+{# The search bar is shared by both home layouts but sits in two different
+   places: full-bleed in the sticky topstrip on the new layout, plain inside
+   .container on the classic one. A macro instead of two copies of the same
+   markup -- one thing to keep in step with app.js/home_2_1.js selectors. #}
+{# One module dashboard widget's card shell. The card flows inside its
+   Dashboard section (drag it to reorder, close it with the "x"). Rendered
+   exactly ONCE per widget id -- two copies would mean two elements sharing
+   the id "dashCard-<id>". #}
+{% macro dashboard_widget_card(widget) %}
+<section class="dash-card dash-card-flow"
+         id="dashCard-{{ widget.id }}" data-card="{{ widget.id }}"
+         data-widget-kind="thirdparty-template">
+  <div class="dash-card-content">
+    <h3 class="dash-card-head">{% if widget.icon_svg %}{{ widget.icon_svg|safe }}{% endif %}<span>{{ widget.label }}</span></h3>
+    <div class="dash-card-body">
+      {# "ignore missing" -- a widget template that was removed/renamed after
+         being registered (e.g. mid-upgrade) silently disappears instead of
+         taking down the entire home page for every user. #}
+      {% include widget.template ignore missing %}
+    </div>
+  </div>
+  {# Same msgid window.__HOME_I18N carries under 'dash_remove' -- the close
+     button is otherwise built once in JS by renderOneCard() and never
+     touched again, but a server-rendered card needs it present from the
+     first paint. #}
+  <button type="button" class="dash-tool dash-close" title="{{ _('Remove this card') }}" aria-label="{{ _('Remove this card') }}">&times;</button>
+</section>
+{% endmacro %}
+{# The search bar is shared by both home layouts but sits in two different
+   places: full-bleed in the sticky topstrip on the new layout, plain inside
+   .container on the classic one. A macro instead of two copies of the same
+   markup -- one thing to keep in step with app.js/home_2_1.js selectors. #}
+{% macro home_searchbar(show_customize=False) %}
+  <div class="search-bar home-searchbar">
+    <div class="home-search-field">
+      <span class="home-search-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </span>
+      <input type="text" id="searchInput" placeholder="{{ _('Search anime & series…') }}"
+             autocomplete="off" role="combobox" aria-expanded="false"
+             aria-controls="searchSuggest" aria-autocomplete="list" autofocus />
+      {# Recent searches / suggestions. Filled by app.js's search history --
+         empty (and invisible) until the user has searched at least once. #}
+      <div class="home-suggest" id="searchSuggest" role="listbox" hidden></div>
+    </div>
+    {# Direct Link is the quieter alternative to searching, so it reads as a
+       ghost button and the accent pill anchors the right end of the field. #}
+    <button id="directLinkBtn" onclick="openDirectLinkModal()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/>
+        <line x1="8" y1="12" x2="16" y2="12"/>
+      </svg><span>{{ _('Direct Link') }}</span>
+    </button>
+    <button id="searchBtn" onclick="doSearch()">{{ _('Search') }}</button>
+    {# "All in one page" hides the sticky topstrip entirely (see below), which
+       is where #topstripCustomize normally lives -- without a stand-in here
+       that mode would have no way back into this modal short of the classic
+       layout's own #homeCustomize row, which stays hidden for new_home. Same
+       icon/handler as the other two copies. #}
+    {% if show_customize %}
+    <button type="button" class="feed-customize home-search-customize" id="heroCustomize"
+            onclick="openStartPageModal()" title="{{ _('Customise this page') }}"
+            aria-label="{{ _('Customise this page') }}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
+        <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
+        <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
+        <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/>
+        <line x1="17" y1="16" x2="23" y2="16"/>
+      </svg>
+    </button>
+    {% endif %}
+  </div>
+{% endmacro %}
+{# The sticky strip (tabs + search + the dashboard lock toggle) is now a
+   SIBLING before .container, not a child of it -- .container's own
+   max-width/padding used to cap the strip's width and push it 32px down
+   from the viewport top, so it never actually reached the edges it was
+   meant to be sticky against. `.home-topstrip-inner` re-applies that same
+   max-width/padding as an INNER alignment column, so the tab pill and
+   search field still line up with the rest of the page while the strip's
+   own background/border/blur spans full width. #}
+{# "All in one page" stacks the old button-bar Dashboard above Discover --
+   the same layout the sticky topstrip's tab pill/lock/add-widget tools were
+   built to replace, so keeping the topstrip around here would show controls
+   for a tab switch that no longer exists. Falls through to the classic
+   hero+searchbar block below instead, exactly like the pre-overhaul page. #}
+{% if new_home and not all_in_one %}
+<div class="home-topstrip" id="homeTopStrip">
+  <div class="home-topstrip-inner">
+    {# The tab pill only makes sense with two SEPARATE tabs to switch between.
+       With the Dashboard switched off (Customise this page -> "Home tabs")
+       there is only Discover; with "All in one page" both sections render
+       stacked with nothing to switch -- either way the pill is dropped
+       instead of showing a single, unclickable-feeling button. #}
+    {% if dash_enabled and not all_in_one %}
+    {# The tab picked under "Start on" is rendered FIRST -- it is the one the
+       page opens on, and a landing tab sitting to the RIGHT of the other
+       reads as "the wrong one is selected". static/home_2_1.js still owns
+       which tab is actually open (showTab); this only decides the order the
+       two buttons appear in, so its Arrow-key handling follows along by
+       walking the DOM. #}
+    <div class="mf-segmented home-tabs" id="homeTabs" role="tablist"
+         aria-label="{{ _('Home page sections') }}">
+      {% for tab in (['disc', 'dash'] if start_tab == 'disc' else ['dash', 'disc']) %}
+      {% if tab == 'dash' %}
+      <button type="button" class="mf-segmented-btn{{ ' active' if start_tab != 'disc' }}" role="tab"
+              id="homeTabBtnDash" data-home-tab="dash"
+              aria-selected="{{ 'false' if start_tab == 'disc' else 'true' }}"
+              aria-controls="homePaneDash">{{ _('Dashboard') }}</button>
+      {% else %}
+      <button type="button" class="mf-segmented-btn{{ ' active' if start_tab == 'disc' }}" role="tab"
+              id="homeTabBtnDisc" data-home-tab="disc"
+              aria-selected="{{ 'true' if start_tab == 'disc' else 'false' }}"
+              aria-controls="homePaneDisc">{{ _('Discover') }}</button>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+    {# Phone-only: the search bar itself starts collapsed (see index.css's
+       phone breakpoint) and this button expands it in place, right of the
+       tab pill. Hidden by CSS above that breakpoint, where the full search
+       bar is already always visible. Same glass icon as .home-search-icon
+       -- reused, not redrawn. #}
+    <button type="button" class="home-search-toggle" id="searchToggleBtn"
+            title="{{ _('Search') }}" aria-label="{{ _('Search') }}"
+            aria-expanded="false" aria-controls="searchInput">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+    </button>
+    {{ home_searchbar() }}
+    {% if dash_enabled and not all_in_one %}
+    {# Dashboard tools (lock the arrangement, add a card) -- meaningless
+       against "All in one page"'s button-bar Dashboard, which has neither.
+       Dashboard-only otherwise: hidden via CSS while the Discover tab is open (see
+       [data-home-tab-open="disc"] in index.css). Locked state (icon +
+       title/aria-label) is toggled by static/home_panels.js against the
+       home_dash_locked preference. #}
+    {# Both padlocks ship; index.css shows the one that matches .is-locked,
+       which static/home_panels.js toggles. Drawing the state the button
+       WOULD switch to is the other convention and is the more confusing one
+       here -- this button says what the board is, not what the click does,
+       same as its aria-pressed. #}
+    <button type="button" class="dash-lock-btn" id="dashLockBtn"
+            title="{{ _('Lock the dashboard layout') }}"
+            aria-label="{{ _('Lock the dashboard layout') }}" aria-pressed="false">
+      <svg class="dash-lock-open" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="5" y="11" width="14" height="10" rx="2"/>
+        <path d="M8 11V7a4 4 0 0 1 8 0"/>
+      </svg>
+      <svg class="dash-lock-shut" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="5" y="11" width="14" height="10" rx="2"/>
+        <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+      </svg>
+    </button>
+    {# Dashboard-only, same visibility rule as the lock button above. The menu
+       itself is built client-side by static/home_panels.js (addMenuEntries())
+       from data the page already has in memory -- no markup to render here. #}
+    <div class="dash-add-wrap" id="dashAddWrap">
+      <button type="button" class="dash-add-btn" id="dashAddBtn"
+              title="{{ _('Add a widget') }}" aria-label="{{ _('Add a widget') }}"
+              aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 5v14M5 12h14"/>
+        </svg>
+      </button>
+      <div class="dash-add-menu" id="dashAddMenu" role="menu"
+           aria-label="{{ _('Add a widget') }}" hidden></div>
+    </div>
+    {% endif %}
+    {# Lives in the topstrip rather than only inside a pane so it is on
+       screen no matter which tab is open (or, in "All in one page" mode,
+       stays visible while scrolling past both) -- the Discover pane's own
+       toolbar (further down) keeps its copy too, so opening the modal from
+       there still works exactly as before. Same icon/handler as that one
+       and as the classic layout's #homeCustomize, all three open the same
+       modal (see static/start_page.js's openStartPageModal()). #}
+    <button type="button" class="feed-customize" id="topstripCustomize"
+            onclick="openStartPageModal()" title="{{ _('Customise this page') }}"
+            aria-label="{{ _('Customise this page') }}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
+        <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
+        <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
+        <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/>
+        <line x1="17" y1="16" x2="23" y2="16"/>
+      </svg>
+    </button>
+  </div>
+</div>
+{% endif %}
+<div class="container">
+  {# ── "try the new home page" ───────────────────────────────────────────
+     Only rendered on the classic layout, and only until this account has
+     either dismissed it or switched over once (app.py decides, see
+     show_new_home_promo). Not rendered at all otherwise: a banner that the
+     client hides after the fact still ships its text to everyone and still
+     flashes on a slow paint.
+
+     The switch is per ACCOUNT. Trying the new layout does not change what
+     anybody else sees, which is the whole reason this is an invitation and
+     not an announcement. #}
+  {% if show_new_home_promo %}
+  <div class="nh-promo" id="newHomePromo" role="region"
+       aria-label="{{ _('New home page') }}">
+    <span class="nh-promo-badge">{{ _('Beta') }}</span>
+    <div class="nh-promo-body">
+      <div class="nh-promo-title">{{ _('Try the new home page') }}</div>
+      <div class="nh-promo-text">{{ _('Rows grouped by question instead of by source, with your watch progress and watchlist on top. Only you see the change — switch back at any time in Settings.') }}</div>
+    </div>
+    <div class="nh-promo-actions">
+      <button type="button" class="nh-promo-btn primary" id="newHomePromoTry">
+        {{ _('Try it now') }}
+      </button>
+      <button type="button" class="nh-promo-btn" id="newHomePromoHide">
+        {{ _("Don't show again") }}
+      </button>
+    </div>
+    <button type="button" class="nh-promo-close" id="newHomePromoClose"
+            aria-label="{{ _("Don't show again") }}" title="{{ _("Don't show again") }}">&times;</button>
+  </div>
+  {% endif %}
+  {# The big "What do you want to download?" headline is the CLASSIC layout's
+     opening move. The two-tab layout above (new_home) puts the search field
+     in the sticky topstrip instead: with Dashboard and Discover competing
+     for the top of the page, a full-height hero pushed both of them below
+     the fold and the page opened on nothing but its own title. #}
+  {% if not new_home or all_in_one %}
+  <div class="site-hero home-hero">
+    <h1 id="pageHeading">{{ _('What do you want to download?') }}</h1>
+    <p class="hero-sub" id="pageSubtitle">{{ _('One title is enough — MediaForge asks every active source at once.') }}</p>
+  </div>
+  {# The Seerr modal reuses .search-bar, so the home-only pill styling hangs
+     off the extra .home-searchbar class instead of touching .search-bar
+     itself. "All in one page" has no topstrip to carry #topstripCustomize,
+     so its copy of the search bar gets the settings button inline instead. #}
+  {{ home_searchbar(show_customize=all_in_one) }}
+  {% endif %}
+  {# The panel-bar keys below (panel_*, hp_*) live in this template rather
+     than in routes/home_panels.py because babel.cfg extracts Jinja templates
+     ONLY -- a _() in Python source never reaches a catalogue. The server
+     sends the key, static/home_panels.js looks it up here.
+     Placeholders are written as "{}" and not "%s": Flask-Babel installs
+     newstyle gettext, which rewrites %s to {} in the rendered string while
+     the catalogue keeps %s -- "{}" keeps template, catalogue and JS in step.
+     NOTE: do not put a Jinja comment inside the dict below -- a comment is
+     not allowed inside an expression and takes the whole page down with a
+     TemplateSyntaxError. (Nor inside this one: the closing delimiter of a
+     nested comment ends the outer one and the rest leaks onto the page.) #}
+  {# Every string the home page renders client-side, translated here so it
+     goes through the same Flask-Babel catalogue as the rest of the app
+     instead of a hardcoded de/en pair in JavaScript. Rendered for both home
+     variants -- the search box below is shared.
+
+     The `status_*` keys are the filter dropdown that answers "have I already
+     got this?", as opposed to the Type menu's "what is it?". Both of its
+     entries are on by default, and both are worded exactly like the badges
+     they remove ("Vorhanden" and the Sync pill) -- a different word for the
+     same thing is a filter people have to try out to understand.
+
+     NEVER put a bare percent sign in one of these msgids. Newstyle gettext
+     runs the rendered string through %-formatting, so "% m" is read as a
+     format spec and raises ValueError -- which 500s the entire home page.
+     `fy_match` therefore reads "{} match" and home_foryou.js hands it a
+     value that already carries its own "%". #}
+  <script>
+    window.__HOME_I18N = {{ {
+      'sources': _('Sources'),
+      'type': _('Type'),
+      'series': _('Series'),
+      'movies': _('Movies'),
+      'off': _('off'),
+      'offline': _('offline'),
+      'disabled_in_settings': _('Switched off in Settings'),
+      'english_only': _('English-only source'),
+      'filter_none': _('None'),
+      'many_sources': _('sources'),
+      'many_types': _('types'),
+      'status': _('Status'),
+      'many_status': _('states'),
+      'status_all': _('Everything'),
+      'status_library': _('Already downloaded'),
+      'status_autosync': _('On Auto-Sync'),
+      'status_library_hint': _('Switch off to hide titles you already have'),
+      'status_autosync_hint': _('Switch off to hide titles an Auto-Sync job already covers'),
+      'also_on': _('Also available from other sources — click to choose'),
+      'empty_filters': _('Nothing to show with these filters.'),
+      'source_down': _('{} is not responding right now.'),
+      'feed_failed': _('The feed could not be loaded.'),
+      'try_again': _('Try again'),
+      'movie': _('Movie'),
+      'episode': _('Episode'),
+      'episodes_short': _('episodes'),
+      'minutes_left': _('{} min left'),
+      'hours_left': _('{} h left'),
+      'player_loading': _('Player loading…'),
+      'recent_searches': _('Recent searches'),
+      'clear_history': _('Clear history'),
+      'remove_entry': _('Remove'),
+      'panel_loading': _('Loading…'),
+      'panel_failed': _('This panel could not be loaded.'),
+      'panel_unavailable': _('This panel is not available right now.'),
+      'panel_empty': _('Nothing to show here.'),
+      'panel_open': _('Open'),
+      'hp_p_queue': _('Queue'),
+      'hp_p_activity': _('Activity'),
+      'hp_p_library': _('Library'),
+      'hp_p_storage': _('Storage'),
+      'hp_p_system': _('System'),
+      'hp_running': _('Running'),
+      'hp_waiting': _('Waiting'),
+      'hp_failed': _('Failed'),
+      'hp_paused': _('Paused'),
+      'hp_yes': _('Yes'),
+      'hp_no': _('No'),
+      'hp_titles': _('Titles'),
+      'hp_series': _('Series'),
+      'hp_movies': _('Movies'),
+      'hp_episodes': _('Episodes'),
+      'hp_size': _('Size'),
+      'hp_version': _('Version'),
+      'hp_encoding': _('Encoding'),
+      'hp_upscaling': _('Upscaling'),
+      'hp_queue': _('Queue'),
+      'hp_state_running': _('Running'),
+      'hp_state_paused': _('Paused'),
+      'hp_fullest': _('Fullest volume'),
+      'hp_open_queue': _('Open the queue'),
+      'hp_open_history': _('Open the history'),
+      'hp_open_library': _('Open the library'),
+      'hp_open_settings': _('Open the settings'),
+      'hp_empty_queue': _('Nothing is downloading right now.'),
+      'hp_empty_history': _('Nothing has been downloaded yet.'),
+      'hp_empty_library': _('Your library is still empty.'),
+      'hp_empty_storage': _('No download path could be read.'),
+      'hp_empty_system': _('Nothing needs your attention.'),
+      'hp_download_failed': _('Download failed'),
+      'hp_badge_queue': _('{} downloads are running or waiting'),
+      'hp_badge_system': _('{} things need your attention: failed downloads, plus a paused queue'),
+      'hp_ep_of': _('Episode {} of {}'),
+      'hp_used': _('{} of {} used'),
+      'hp_just_now': _('just now'),
+      'hp_min_ago': _('{} min ago'),
+      'hp_h_ago': _('{} h ago'),
+      'hp_d_ago': _('{} d ago'),
+      'missing_count': _('{} missing'),
+      'gap_ignore': _('Not interested — hide this series'),
+      'gap_ignored': _('Hidden. You can bring it back on the statistics page.'),
+      'gap_ignore_failed': _('Could not hide this series.'),
+      'density': _('Density'),
+      'density_comfortable': _('Comfortable'),
+      'density_compact': _('Compact'),
+      'density_list': _('List'),
+      'suggest_library': _('In your library'),
+      'suggest_watchlist': _('On your watchlist'),
+      'suggest_history': _('Recent searches'),
+      'onboard_title': _('Finish setting up MediaForge'),
+      'onboard_dismiss': _('Hide this'),
+      'onboard_sources': _('Switch on the sources you want'),
+      'onboard_tmdb': _('Add a TMDB key for posters and genres'),
+      'onboard_library': _('Scan a library folder'),
+      'onboard_modules': _('Discover the module store'),
+      'onboard_mediaplayer': _('Link your Jellyfin/Plex profile'),
+      'onboard_open': _('{} of {} done'),
+      'mode_kids': _('Kids'),
+      'hp_p_wrapped': _('Review'),
+      'hp_wrapped_period': _('Period'),
+      'hp_wrapped_watched': _('Watched'),
+      'hp_wrapped_downloads': _('Downloads'),
+      'hp_wrapped_volume': _('Volume'),
+      'hp_wrapped_total': _('Downloads, all time'),
+      'hp_wrapped_total_volume': _('Volume, all time'),
+      'hp_wrapped_most_watched': _('most watched'),
+      'hp_wrapped_top_genre': _('top genre'),
+      'hp_wrapped_source': _('{} downloads'),
+      'hp_wrapped_biggest': _('biggest download, {}'),
+      'hp_wrapped_empty': _('Nothing happened in this period.'),
+      'hp_wrapped_link': _('Link a Jellyfin/Plex profile on your profile page to see what you watched.'),
+      'hp_wrapped_approx': _('Jellyfin reports the last play per title, so repeats are not counted.'),
+      'hp_open_stats': _('Open the statistics'),
+      'status_downloading': _('Downloading'),
+      'status_encoding': _('{} encoding'),
+      'status_upscaling': _('{} upscaling'),
+      'status_fullest': _('{} full'),
+      'status_open_queue': _('Queue'),
+      'status_last_error': _('Last error'),
+      'search_back': _('Back'),
+      'search_results_for': _('Results for'),
+      'mode_switch': _('Mode'),
+      'mode_default': _('Standard'),
+      'mode_locked': _('Wrong PIN — this mode is protected.'),
+      'mode_failed': _('The mode could not be switched.'),
+      'mode_no_session': _('You are not signed in any more — reload the page.'),
+      'mode_notice': _('This page is limited to age {} and below. Titles without a rating are still shown.'),
+      'mode_disabled': _('Kids mode is not switched on for this instance.'),
+      'tab_dash': _('Dashboard'),
+      'tab_disc': _('Discover'),
+      'fy_heading': _('Could be for you'),
+      'fy_hint': _('derived from your library — not in it yet'),
+      'fy_match': _('{} match'),
+      'fy_match_label': _('Match'),
+      'fy_because_one': _('Because you have {} in your library'),
+      'fy_because_two': _('Because you have {} and {} in your library'),
+      'fy_because_genre': _('Because you have {} titles in {}'),
+      'fy_download': _('Download now'),
+      'fy_details': _('Details'),
+      'fy_skip': _('Not interested'),
+      'fy_skipped': _('Hidden. It will not come back on this account.'),
+      'fy_failed': _('The recommendations could not be loaded.'),
+      'fy_reroll_empty': _('Still nothing new — check back later.'),
+      'fy_reason_all': _('All recommendations'),
+      'fy_reason_genre': _('Because you like {}'),
+      'fy_gate_title': _('Recommendations need CineInfo'),
+      'fy_gate_text': _('“Could be for you” derives suggestions from your library and shows them with a backdrop, plot and genres. CineInfo supplies that metadata — without a configured source the section stays empty.'),
+      'fy_gate_ok_library': _('Library scanned'),
+      'fy_gate_no_key': _('No TMDB key stored'),
+      'fy_gate_no_source': _('No CineInfo source configured'),
+      'fy_gate_setup': _('Set up CineInfo'),
+      'fy_gate_what': _('What is CineInfo?'),
+      'dash_now': _('Running now'),
+      'dash_activity': _('Recent activity'),
+      'dash_overview': _('Overview'),
+      'dash_gaps': _('Fill the gaps'),
+      'dash_gap_count': _('{} missing episodes'),
+      'dash_gap_fetch': _('Fetch'),
+      'dash_gaps_all': _('Show all gaps'),
+      'dash_empty_gaps': _('Nothing is missing.'),
+      'dash_today': _('Today in the calendar'),
+      'dash_empty_today': _('Nothing airs today.'),
+      'dash_open_calendar': _('Open the calendar'),
+      'dash_sources_online': _('{} / {} online'),
+      'dash_online': _('online'),
+      'dash_empty_sources': _('No source is switched on.'),
+      'continue_watching': _('Continue watching'),
+      'your_watchlist': _('Your watchlist'),
+      'new_in_library': _('New in your library'),
+      'dash_resume': _('Resume'),
+      'dash_open': _('Open'),
+      'dash_open_list': _('Show all'),
+      'dash_lock': _('Lock the dashboard layout'),
+      'dash_unlock': _('Unlock the dashboard layout'),
+      'dash_remove': _('Remove this card'),
+      'dash_add_empty': _('Everything is already on your board.'),
+      'dash_loading': _('Loading…'),
+      'dash_page_prev': _('Previous page'),
+      'dash_page_next': _('Next page')
+    }|tojson }};
+  </script>
+  {# The panel bar: buttons under the search field, one panel below them.
+     Both are empty until /api/home-panels answers -- which panels an account
+     may even see is decided server-side (Storage and System are admin-only),
+     so rendering the buttons here would mean rendering buttons that 403. The
+     bar hides itself when nothing is available. #}
+  {# The panel bar moved INSIDE the Dashboard pane (further down) — it is the
+     dashboard, so leaving it above the tab strip would have shown instance
+     stats while the Discover tab was open. #}
+  {# Which sources a search actually hits. Filled by renderSourceChips() in
+     app.js once /api/settings answered; empty (and invisible) until then.
+     The new home page does NOT render this: its own chip row (below) says
+     the same thing *and* filters, and two rows of identical source names
+     stacked on top of each other is a puzzle, not a control. #}
+  {% if not new_home %}
+  <div class="home-chips" id="homeSourceChips"></div>
+  {# The way in to "which home page do I want", on the classic layout too.
+     Not optional politeness: /settings redirects a non-admin to "/", so this
+     modal is the ONLY place a normal account can pick a layout -- and the
+     promo banner above is gone for good once it has been answered. Without
+     this, dismissing the banner would be a one-way door onto v1. #}
+  <div class="home-customize-row">
+    <button type="button" class="feed-customize" id="homeCustomize"
+            onclick="openStartPageModal()" title="{{ _('Customise this page') }}"
+            aria-label="{{ _('Customise this page') }}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
+        <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
+        <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
+        <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/>
+        <line x1="17" y1="16" x2="23" y2="16"/>
+      </svg>
+      <span>{{ _('Your home page') }}</span>
+    </button>
+  </div>
+  {% endif %}
+  {# Only rendered while something is downloading -- see renderHomeRunStrip(),
+     fed by the queue poll that runs anyway. #}
+  <div class="home-run" id="homeRunStrip" style="display:none; margin-top:10px;"></div>
+  <div class="spinner" id="searchSpinner">{{ _('Searching...') }}</div>
+  {# The way back out of a search. Its OWN element, above #results and not
+     inside it: doSearch() replaces #results.innerHTML wholesale when the
+     answers arrive, so a header rendered in there survived exactly until the
+     first result landed. #}
+  <div class="search-head" id="searchHead" hidden></div>
+  <div class="results" id="results"></div>
+  <div id="sourceStatusBanner"></div>
+  {# Dashboard widgets from enabled extensions (see
+     register_thirdparty(dashboard_widget_template=...) in
+     web/thirdparties/registry.py) — each entry's own template is included
+     as-is, so the widget's markup/behaviour is entirely up to the
+     extension; this just provides the slot + consistent spacing
+     (.browse-provider-block, reused for its margin only — no provider dot
+     styling implied). Nothing renders here if no extension registered one.
+
+     Classic layout only -- it has no Dashboard sections at all, so this
+     plain block-per-widget rendering is all it ever needs. On the two-tab
+     layout the same registry entries instead render inside the "Modules"
+     section, wrapped in .dash-card markup, so they are real draggable/
+     hideable cards (see the loop in that section below, and
+     home_panels.js's "thirdparty-template" handling). Rendered here,
+     outside both panes, a module widget used to show up on Discover as
+     well -- fixed by moving that loop, not this one. #}
+  {% if not new_home %}
+  {% for widget in dashboard_widgets %}
+  <div class="browse-provider-block dashboard-widget" id="widget-{{ widget.id }}">
+    {# "ignore missing" -- a widget template that was removed/renamed after
+       being registered (e.g. mid-upgrade) silently disappears instead of
+       taking down the entire home page for every user. #}
+    {% include widget.template ignore missing %}
+  </div>
+  {% endfor %}
+  {% endif %}
+  {# Settings -> General -> "Use the new home page": one row per question,
+     every enabled source mixed into it, instead of one block per source. The
+     classic block below stays the default and is what modules extend. #}
+  {% if new_home %}
+  <div id="homeFeed" class="home-feed">
+  {# ── Tab 1: Dashboard ────────────────────────────────────────────────────
+     What is happening on THIS instance: the panel bar, anything that needs
+     attention, and the rows that are about the user's own material. Nothing
+     in here asks a source a question, so it renders without waiting on the
+     network.
+
+     Skipped entirely (not just hidden) when the account switched the
+     Dashboard tab off -- "turning it off" should also mean MediaForge stops
+     building and fetching all of this every load, not just stop showing it. #}
+  {% if dash_enabled %}
+  <div class="home-pane" id="homePaneDash" role="tabpanel" aria-labelledby="homeTabBtnDash">
+    <div class="feed-alerts" id="feedAlerts"></div>
+    {# What this instance still needs, above the cards: it is the one thing on
+       this page that asks the user to go and do something, and underneath six
+       cards it was furniture. Filled by static/home_2_1.js and absent
+       entirely on a fully set-up instance. #}
+    <div class="home-onboard" id="homeOnboard" hidden></div>
+    {% if all_in_one %}
+    {# "All in one page": the pre-v3-grid Dashboard design instead of the
+       card grid -- a button row plus ONE panel below (queue/activity/
+       library/storage/system), built entirely client-side by the revived
+       static/home_panel_bar.js against the same /api/home-panels(-/<id>)
+       endpoints the grid's /api/home-panels/all also reads. See that file's
+       own docstring for why it was retired and why it is back for exactly
+       this mode. Both start empty/hidden: which panels an account may even
+       see is a server answer (Storage/System are admin-only). #}
+    <div class="mf-segmented home-panel-bar" id="homePanelBar" role="group"
+         aria-label="{{ _('Instance overview') }}"></div>
+    <div class="home-panel-body" id="homePanelBody" hidden></div>
+    {% else %}
+    {# The Dashboard is 2 or 3 columns (dash_columns, per account). A card
+       picks a COLUMN and a position inside it, and that is the whole
+       arrangement model -- there are no named groups any more, so nothing
+       here decides what a card "is about", only where it sits.
+
+       Which card starts in which column is a static id->column map in
+       static/home_panels.js (COLUMN_OF); a module panel or dashboard widget
+       with no entry there starts in the middle column. A saved
+       home_dash_card_layout overrules both, for position as well as column.
+
+       The columns are rendered server-side, empty, because they are the
+       drop targets home_panels.js places cards into -- and because an
+       account with three columns must not see them appear one paint late.
+       On a phone the .dash-col wrappers dissolve (display: contents, see
+       index.css) so the cards stack in DOM order: column 1 top to bottom,
+       then column 2, then column 3. One arrangement, two viewports. #}
+    <div class="dash-columns" id="homeDashColumns" data-cols="{{ dash_columns }}"
+         aria-label="{{ _('Instance overview') }}">
+      {% for col in range(dash_columns) %}
+      <div class="dash-col" data-col="{{ col }}" id="dashCol-{{ col }}">
+        {# Module dashboard widgets start in the middle column, the same
+           default COLUMN_OF gives a module PANEL. Server-rendered here (not
+           built by JS) because their markup is the module's own Jinja. #}
+        {% if col == 1 %}
+        {% for widget in dashboard_widgets %}
+        {{ dashboard_widget_card(widget) }}
+        {% endfor %}
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {# Personal rows: what you were doing beats what a site published. Each
+       one hides itself when its source has nothing to say (no playback
+       position yet, no favourites, calendar switched off), so a fresh install
+       shows an empty Dashboard and everything worth looking at under
+       Discover. #}
+    <div class="browse-section feed-section feed-personal" data-feed-row="continue" style="display:none">
+      <h2 class="browse-heading">{{ _('Continue watching') }}</h2>
+      <div class="browse-grid" id="feedContinueGrid"></div>
+    </div>
+    <div class="browse-section feed-section feed-personal" data-feed-row="watchlist" style="display:none">
+      <h2 class="browse-heading">{{ _('Your watchlist') }}</h2>
+      <div class="browse-grid" id="feedWatchlistGrid"></div>
+    </div>
+    <div class="browse-section feed-section feed-personal" data-feed-row="library" style="display:none">
+      <h2 class="browse-heading">{{ _('New in your library') }}</h2>
+      <div class="browse-grid" id="feedLibraryGrid"></div>
+    </div>
+    <div class="browse-section feed-section feed-personal" data-feed-row="upcoming" style="display:none">
+      <h2 class="browse-heading">{{ _('Airing next') }}</h2>
+      <div class="browse-grid" id="feedUpcomingGrid"></div>
+    </div>
+    {# The only row that asks something of you rather than offering something,
+       which is why its default position is last among the personal rows (see
+       _FEED_DEFAULT_ORDER in routes/browse.py). #}
+    <div class="browse-section feed-section feed-personal" data-feed-row="gaps" style="display:none">
+      <h2 class="browse-heading">{{ _('Fill the gaps') }}</h2>
+      <div class="browse-grid" id="feedGapsGrid"></div>
+    </div>
+    {# "Head over to Discover" makes sense as a nudge to switch tabs -- in
+       "All in one page" there is no other tab to head over to, Discover is
+       already the very next thing on the page, so the message would just be
+       a slightly wrong sentence sitting above it. mfHomeSyncDashEmpty()
+       (home_2_1.js) already no-ops without #homeDashEmpty. #}
+    {% if not all_in_one %}
+    <div class="mf-empty" id="homeDashEmpty" style="display:none">
+      {{ _('Nothing needs your attention. Head over to Discover.') }}
+    </div>
+    {% endif %}
+    {# Module dashboard widgets render inside the "Modules" section above, as
+       real .dash-card elements -- see the loop there and
+       resolve_dashboard_widgets() in web/thirdparties/registry.py. A second
+       copy used to render here too; removed, it would have produced
+       duplicate DOM ids for every registered widget. #}
+  </div>
+  {% endif %}
+
+  {# ── Tab 2: Discover ─────────────────────────────────────────────────────
+     Everything that comes from outside: the recommendation hero, then the
+     source rows. This is also the only pane the source/type/status filters
+     apply to, which is why the toolbar lives in here and not above the
+     tabs. Starts visible (not hidden) whenever there is no tab pill to open
+     it later -- no Dashboard tab at all, or "All in one page" stacking both
+     with nothing to switch. home_2_1.js's showTab() still owns which pane
+     is open when there IS a pill; this is only the no-JS/first-paint state,
+     and wireTabs() already bails out before touching either pane when the
+     bar itself does not exist (see its own comment). #}
+  <div class="home-pane" id="homePaneDisc" role="tabpanel" aria-labelledby="homeTabBtnDisc"
+       {{ '' if (not dash_enabled or all_in_one) else 'hidden' }}>
+    {# ── "Could be for you" ──────────────────────────────────────────────
+       The only row on this page built from titles the user does NOT have.
+       Candidates come from the TMDB recommendations already sitting in the
+       cache for the titles they DO have, so the row costs no extra traffic;
+       only the five hero entries are looked up in full (backdrop + plot),
+       and those are cached for a day.
+
+       Both children start hidden: which one applies is a server answer
+       (/api/home-feed/foryou -> configured), and guessing here would flash
+       a setup prompt at every user who already set CineInfo up. #}
+    <section class="fy" id="fyBlock" hidden
+             data-hero-default="{{ '1' if foryou_hero_default else '' }}"
+             data-rail-default="{{ '1' if foryou_rail_default else '' }}">
+      <div class="fy-hero" id="fyHero" hidden>
+        <div class="fy-veil"></div>
+        <div class="fy-score" id="fyScore" hidden></div>
+        <div class="fy-in">
+          <div class="fy-why" id="fyWhy"></div>
+          <h2 class="fy-title" id="fyTitle"></h2>
+          <div class="fy-meta" id="fyMeta"></div>
+          <p class="fy-plot" id="fyPlot"></p>
+          <div class="fy-btns" id="fyBtns"></div>
+        </div>
+        {# Manual stepping alongside the dots -- a real <button> each, reachable
+           by keyboard, hidden by home_foryou.js when there is nothing to step
+           through (0 or 1 slide). #}
+        <button type="button" class="fy-nav fy-nav-prev" id="fyPrev"
+                aria-label="{{ _('Previous recommendation') }}">&lsaquo;</button>
+        <button type="button" class="fy-nav fy-nav-next" id="fyNext"
+                aria-label="{{ _('Next recommendation') }}">&rsaquo;</button>
+        <div class="fy-dots" id="fyDots" role="tablist" aria-label="{{ _('Could be for you') }}"></div>
+      </div>
+      {# Reason chips. Filled by static/home_foryou.js from the genres the
+         candidates actually carry -- "same studio" / "similar viewers" /
+         "completes a series" from the mockup have no data behind them and
+         are deliberately absent rather than faked. #}
+      <div class="fy-reasons" id="fyReasons" hidden></div>
+      <div class="browse-section feed-section" id="fySection" hidden>
+        <h2 class="browse-heading">{{ _('Could be for you') }}
+          <span class="browse-heading-src">{{ _('derived from your library — not in it yet') }}</span>
+          <button type="button" class="fy-reroll" id="fyReroll">{{ _('Shuffle') }}</button>
+        </h2>
+        <div class="browse-grid" id="fyGrid"></div>
+      </div>
+      {# The setup prompt. Rendered by static/home_foryou.js so the "what is
+         still missing" list can name the actual reason (no TMDB key vs. no
+         source) instead of a generic "not configured". #}
+      <div class="fy-gate" id="fyGate" hidden></div>
+    </section>
+    {# The chip row and the way in to "which rows do I even want". /settings
+       is admin-only, so this is where a normal account reaches its own
+       Start Page settings -- the same controls, same code, same storage. #}
+    <div class="feed-toolbar">
+      <div class="feed-filters" id="feedFilters"></div>
+      {# Density and modes are rendered by static/home_2_1.js: both depend on
+         a stored preference, and a server-rendered default would flash the
+         wrong one on every load. #}
+      <div class="feed-tools" id="feedTools"></div>
+      <button type="button" class="feed-customize" id="feedCustomize"
+              onclick="openStartPageModal()" title="{{ _('Customise this page') }}"
+              aria-label="{{ _('Customise this page') }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
+          <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
+          <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/>
+          <line x1="17" y1="16" x2="23" y2="16"/>
+        </svg>
+      </button>
+    </div>
+    {# "Because you watched X". The heading carries a {} placeholder that
+       home_feed.js fills with the seed title -- the row is the only guess on
+       this page, and naming what it guessed FROM is what makes a wrong card
+       read as "wrong guess" instead of "why is this here". #}
+    <div class="browse-section feed-section feed-personal" data-feed-row="because" style="display:none">
+      <h2 class="browse-heading" data-feed-heading="because">{{ _('Because you watched {}') }}</h2>
+      <div class="browse-grid" id="feedBecauseGrid"></div>
+    </div>
+    <div class="browse-section feed-section" data-feed-row="new">
+      <h2 class="browse-heading">{{ _('New this week') }}</h2>
+      <div class="browse-grid" id="feedNewGrid"></div>
+    </div>
+    <div class="browse-section feed-section" data-feed-row="popular">
+      <h2 class="browse-heading">{{ _('Popular right now') }}</h2>
+      <div class="browse-grid" id="feedPopularGrid"></div>
+    </div>
+    <div class="browse-section feed-section" data-feed-row="movies">
+      <h2 class="browse-heading">{{ _('Movies') }}</h2>
+      <div class="browse-grid" id="feedMoviesGrid"></div>
+    </div>
+    <div class="mf-empty" id="feedEmpty" style="display:none">
+      {{ _('Nothing to show with these filters.') }}
+    </div>
+  </div>
+  </div>
+  {% else %}
+  <div id="browse">
+    <div class="browse-provider-block" data-provider="aniworld">
+      <div class="browse-provider-header browse-provider-aniworld">AniWorld</div>
+      <div class="browse-section" id="newAnimesSection" data-section="new">
+        <h2 class="browse-heading">{{ _('New Anime') }}</h2>
+        <div class="browse-grid" id="newAnimesGrid"></div>
+      </div>
+      <div class="browse-section" id="popularAnimesSection" data-section="popular">
+        <h2 class="browse-heading">{{ _('Popular Anime') }}</h2>
+        <div class="browse-grid" id="popularAnimesGrid"></div>
+      </div>
+    </div>
+    <div class="browse-provider-block" data-provider="sto">
+      <div class="browse-provider-header browse-provider-sto">SerienStream</div>
+      <div class="browse-section" id="newSeriesSection" data-section="new">
+        <h2 class="browse-heading">{{ _('New Series') }}</h2>
+        <div class="browse-grid" id="newSeriesGrid"></div>
+      </div>
+      <div class="browse-section" id="popularSeriesSection" data-section="popular">
+        <h2 class="browse-heading">{{ _('Popular Series') }}</h2>
+        <div class="browse-grid" id="popularSeriesGrid"></div>
+      </div>
+    </div>
+    <div class="browse-provider-block" data-provider="filmpalast">
+      <div class="browse-provider-header browse-provider-filmpalast">FilmPalast</div>
+      <div class="browse-section" id="newMoviesSection" data-section="new">
+        <h2 class="browse-heading">{{ _('New Movies') }}</h2>
+        <div class="browse-grid" id="newMoviesGrid"></div>
+      </div>
+    </div>
+    <div class="browse-provider-block" data-provider="megakino">
+      <div class="browse-provider-header browse-provider-megakino">MegaKino</div>
+      <div class="browse-section" id="megakinoNewMoviesSection" data-section="new_movies">
+        <h2 class="browse-heading">{{ _('New Movies') }}</h2>
+        <div class="browse-grid" id="megakinoNewMoviesGrid"></div>
+      </div>
+      <div class="browse-section" id="megakinoPopularMoviesSection" data-section="popular_movies">
+        <h2 class="browse-heading">{{ _('Popular Movies') }}</h2>
+        <div class="browse-grid" id="megakinoPopularMoviesGrid"></div>
+      </div>
+      <div class="browse-section" id="megakinoNewSeriesSection" data-section="new_series">
+        <h2 class="browse-heading">{{ _('New Series') }}</h2>
+        <div class="browse-grid" id="megakinoNewSeriesGrid"></div>
+      </div>
+      <div class="browse-section" id="megakinoPopularSeriesSection" data-section="popular_series">
+        <h2 class="browse-heading">{{ _('Popular Series') }}</h2>
+        <div class="browse-grid" id="megakinoPopularSeriesGrid"></div>
+      </div>
+    </div>
+    <div class="browse-provider-block" data-provider="filmo">
+      <div class="browse-provider-header browse-provider-filmo">filmo.to</div>
+      <div class="browse-section" id="filmoNewMoviesSection" data-section="new">
+        <h2 class="browse-heading">{{ _('New Movies') }}</h2>
+        <div class="browse-grid" id="filmoNewMoviesGrid"></div>
+      </div>
+      <div class="browse-section" id="filmoPopularMoviesSection" data-section="popular">
+        <h2 class="browse-heading">{{ _('Popular Movies') }}</h2>
+        <div class="browse-grid" id="filmoPopularMoviesGrid"></div>
+      </div>
+    </div>
+    <div class="browse-provider-block" data-provider="nineanime" style="display:none">
+      <div class="browse-provider-header browse-provider-nineanime">9anime <span class="browse-provider-en" title="{{ _('English-only source') }}">EN</span></div>
+      <div class="browse-section" id="nineanimeNewSection" data-section="new">
+        <h2 class="browse-heading">{{ _('New Anime') }}</h2>
+        <div class="browse-grid" id="nineanimeNewGrid"></div>
+      </div>
+      <div class="browse-section" id="nineanimePopularSection" data-section="popular">
+        <h2 class="browse-heading">{{ _('Popular Anime') }}</h2>
+        <div class="browse-grid" id="nineanimePopularGrid"></div>
+      </div>
+    </div>
+    <div class="browse-provider-block" data-provider="aniwaves" style="display:none">
+      <div class="browse-provider-header browse-provider-aniwaves">Aniwaves <span class="browse-provider-en" title="{{ _('English-only source') }}">EN</span></div>
+      <div class="browse-section" id="aniwavesNewSection" data-section="new">
+        <h2 class="browse-heading">{{ _('New Anime') }}</h2>
+        <div class="browse-grid" id="aniwavesNewGrid"></div>
+      </div>
+      <div class="browse-section" id="aniwavesPopularSection" data-section="popular">
+        <h2 class="browse-heading">{{ _('Popular Anime') }}</h2>
+        <div class="browse-grid" id="aniwavesPopularGrid"></div>
+      </div>
+    </div>
+    <div class="browse-provider-block" data-provider="hanime" style="display:none">
+      <div class="browse-provider-header browse-provider-hanime">hanime <span class="browse-provider-18">18+</span></div>
+      <div class="browse-section" id="hanimeNewSection" data-section="new">
+        <h2 class="browse-heading">{{ _('New') }}</h2>
+        <div class="browse-grid" id="hanimeNewGrid"></div>
+      </div>
+      <div class="browse-section" id="hanimeTrendingSection" data-section="trending">
+        <h2 class="browse-heading">{{ _('Trending') }}</h2>
+        <div class="browse-grid" id="hanimeTrendingGrid"></div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{# Start Page settings for this account. Same macro the Settings tab uses --
+   an admin sees the instance defaults there as well, everyone sees their own
+   here. Rendered on BOTH layouts: /settings redirects a non-admin, so this is
+   the only place a normal account can switch between them at all. #}
+<div class="directlink-overlay" id="startPageOverlay" onclick="closeStartPageModalOutside(event)" style="display:none">
+  <div class="directlink-modal sp-modal">
+    <button class="close" onclick="closeStartPageModal()" aria-label="{{ _('Close') }}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+        stroke-linejoin="round" style="width:16px;height:16px;">
+        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+      </svg>
+    </button>
+    {# Same icon as the "Customise this page" button that opens this modal
+       (topstrip/Discover toolbar/classic layout) -- opening it lands on a
+       bigger version of the exact button just clicked, instead of a plain
+       heading. #}
+    <div class="sp-modal-head">
+      <span class="sp-modal-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
+          <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
+          <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/>
+          <line x1="17" y1="16" x2="23" y2="16"/>
+        </svg>
+      </span>
+      <div>
+        <h3 class="dl-title">{{ _('Your home page') }}</h3>
+        <p class="dl-hint">{{ _('These settings are yours alone. Anything you do not change follows the instance default.') }}</p>
+      </div>
+    </div>
+    {{ startpage.start_page_form('user') }}
+  </div>
+</div>
+{# Kids-mode PIN. Its own overlay rather than window.prompt(): a system prompt
+   cannot mask the digits, is unstyled, blocks the tab, and on a phone appears
+   as a sheet that does not look like it belongs to MediaForge. #}
+{% if new_home %}
+<div class="directlink-overlay" id="homePinOverlay" style="display:none">
+  <div class="directlink-modal home-pin-modal" role="dialog" aria-modal="true"
+       aria-labelledby="homePinTitle">
+    <button class="close" data-pin-cancel="1" aria-label="{{ _('Close') }}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+           stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;">
+        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+      </svg>
+    </button>
+    <h3 class="dl-title" id="homePinTitle">{{ _('Leave kids mode') }}</h3>
+    <p class="dl-hint">{{ _('Enter the PIN to remove the age limit from this page.') }}</p>
+    <input type="password" class="mf-token-input" id="homePinInput"
+           inputmode="numeric" autocomplete="off"
+           placeholder="{{ _('PIN') }}" aria-describedby="homePinError">
+    <div class="home-pin-error" id="homePinError" role="alert"></div>
+    <div class="home-pin-actions">
+      <button type="button" class="btn btn-secondary" data-pin-cancel="1">{{ _('Cancel') }}</button>
+      <button type="button" class="btn btn-primary" data-pin-submit="1">{{ _('Unlock') }}</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% include "shared_modals.html" %}
+{# Same "Could be for you" Details button as above -- markup only needed
+   in the new_home layout. #}
+{% if new_home %}{% include "mf_detail_modal.html" %}{% endif %}
+{% endblock %} {% block scripts %}
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% if new_home %}<script src="{{ url_for('static', filename='home_feed.js') }}"></script>
+<script src="{{ url_for('static', filename='mf_detail_modal.js') }}"></script>
+<script src="{{ url_for('static', filename='home_panels.js') }}"></script>
+{# "All in one page" only -- self-gated on #homePanelBar/#homePanelBody, so
+   harmless to load whenever it finds neither (tabs/Discover-only modes). #}
+<script src="{{ url_for('static', filename='home_panel_bar.js') }}"></script>
+{# Settings -> Start Page's instance default for which tab opens first
+   (window._USER_PREFS.home_tab overrules it, same as everywhere else on this
+   page) -- home_2_1.js's wireTabs() reads this only when the account never
+   set a tab of its own. #}
+<script>window.__HOME_TAB_DEFAULT = {{ home_tab_default|tojson }};</script>
+<script src="{{ url_for('static', filename='home_2_1.js') }}"></script>
+<script src="{{ url_for('static', filename='home_foryou.js') }}"></script>{% endif %}
+{{ startpage.start_page_i18n() }}
+<script src="{{ url_for('static', filename='start_page.js') }}"></script>
+<script src="{{ url_for('static', filename='devinfo_banner.js') }}"></script>
+{% if devinfo_importants %}<script src="{{ url_for('static', filename='devinfo_important.js') }}"></script>{% endif %}
+{% if show_new_home_promo %}
+<script>
+  /* "Try the new home page" — see .nh-promo in index.css.
+     Inline and not a static file because the whole thing is three handlers
+     that only ever exist on the classic layout, and only until this account
+     has answered once. Both answers write the same preference, so neither
+     path can leave the banner coming back.
+     Both buttons also write new_home_promo_done, because "I tried it" is an
+     answer too -- coming back to v1 later must not re-open the pitch. */
+  (function () {
+    var promo = document.getElementById("newHomePromo");
+    if (!promo) return;
+
+    function save(prefs) {
+      return fetch("/api/user/preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(prefs),
+      }).then(function (r) {
+        if (!r.ok) throw new Error("save failed");
+        if (window._USER_PREFS) Object.assign(window._USER_PREFS, prefs);
+      });
+    }
+
+    function dismiss() {
+      /* Optimistic: the banner is gone the moment it is clicked. A failed
+         save is not worth a message here -- the worst case is that it shows
+         up again on the next visit, which is exactly what the user asked to
+         avoid but not something they need to read about now. */
+      promo.remove();
+      save({ new_home_promo_done: "1" }).catch(function () {});
+    }
+
+    document.getElementById("newHomePromoHide").addEventListener("click", dismiss);
+    document.getElementById("newHomePromoClose").addEventListener("click", dismiss);
+
+    document.getElementById("newHomePromoTry").addEventListener("click", function () {
+      var btn = this;
+      /* NOT optimistic, unlike dismiss(): this one reloads into a different
+         layout, so a save that did not land would drop the user back on the
+         classic page with no explanation. Wait for the answer, and stay put
+         with the button re-enabled if it never comes. */
+      btn.disabled = true;
+      save({ new_home: "1", new_home_promo_done: "1" })
+        .then(function () { window.location.reload(); })
+        .catch(function () { btn.disabled = false; });
+    });
+  })();
+</script>
+{% endif %}
+{% endblock %}

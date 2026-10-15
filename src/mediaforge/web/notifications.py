@@ -1,0 +1,1037 @@
+"""Notification helpers — Web Push (VAPID), Telegram, Pushover, Discord Webhook, WhatsApp.
+
+Event keys (used across all services):
+  - "on_completed"   — queue item finished without errors
+  - "on_errors"      — queue item finished with errors
+  - "on_cancelled"   — queue item was cancelled
+  - "on_autosync"    — auto-sync found new episodes for a series
+  - "on_sync_hold"   — auto-sync paused because custom path is unavailable
+  - "on_sync_resume" — auto-sync resumed because custom path is accessible again
+
+Storage:
+  - Global / admin settings  -> app_settings table (prefixed with "notif_")
+  - Per-user settings/prefs  -> user_notification_prefs table
+  - Push subscriptions       -> push_subscriptions table
+  - VAPID keys               -> ~/.mediaforge/vapid_keys.json  (auto-generated)
+
+Telemetry: flag.push_notifications is submitted whenever a notification is
+really handed to a transport (every enabled/pref check passed and the send
+thread is started) -- never for the very common "nothing configured, silent
+no-op" path. One notify_all() fan-out counts once, not once per channel: the
+flag means "a push notification went out", not "six services were tried".
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+import urllib.request
+import urllib.parse
+
+from ..telemetry import client as telemetry_client
+from ..telemetry import events as telemetry_events
+
+logger = logging.getLogger("mediaforge")
+
+
+# ---------------------------------------------------------------------------
+# Telemetry (flag.push_notifications)
+# ---------------------------------------------------------------------------
+# Per-thread fan-out marker. notify_all() runs the guard/build phase of every
+# channel synchronously in the calling thread (only the HTTP call itself is
+# threaded off), so a thread-local is enough to collapse one fan-out into a
+# single flag event. Values: None = no fan-out running (a direct notify_x()
+# call counts on its own), "open" = fan-out running and nothing counted yet,
+# "counted" = this fan-out was already counted.
+_push_telemetry_scope = threading.local()
+
+
+def _report_push_sent():
+    """Submit the flag.push_notifications stage-2 usage counter for one
+    notification that is actually being sent.
+
+    A pure counter -- build_feature_flag_event() takes no metadata at all, so
+    no channel, recipient, title or body is ever involved. Wrapped in its own
+    try/except so a telemetry bug can never affect a notification.
+    """
+    try:
+        state = getattr(_push_telemetry_scope, "fanout", None)
+        if state == "counted":
+            return  # another channel of the same fan-out already counted it
+        if state == "open":
+            _push_telemetry_scope.fanout = "counted"
+        telemetry_client.submit(
+            telemetry_events.build_feature_flag_event("flag.push_notifications"))
+    except Exception:
+        logger.debug("[Telemetry] failed to build/submit flag.push_notifications event",
+                     exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def tr(lang: str | None, de: str, en: str) -> str:
+    """Tiny DE/EN string picker -- the backend equivalent of the frontend's
+    t(de, en) helper (static/app.js) -- for every user-facing string the
+    notification layer builds itself. Deliberately NOT used for raw scraper
+    exception text (str(e)): that originates deep in the site models and
+    isn't ours to translate here.
+
+    Lives here (and not in autosync_worker.py, where it started out) because
+    the queue worker, the auto-sync worker, the notification routes and the
+    channel builders below all need the same picker.
+    """
+    return de if lang == "de" else en
+
+
+def notif_lang(username: str | None) -> str:
+    """Best-effort UI language ('en' or 'de') for *username*.
+
+    Flask's request-bound session -- and therefore app.py's get_locale() --
+    isn't available from the daemon threads that send notifications, but the
+    per-user language preference is persisted in the DB and can be read
+    directly from here. Falls back to "en" (the same default used everywhere
+    else -- see get_locale() / db.get_user_language()) if there is no user,
+    the lookup fails, or the users table doesn't exist (no-auth mode, see
+    db.get_user_id_by_username()'s docstring).
+    """
+    try:
+        from .db import get_user_id_by_username, get_user_language
+        uid = get_user_id_by_username(username)
+        if uid is None:
+            return "en"
+        return get_user_language(uid)
+    except Exception:
+        return "en"
+
+
+def media_count_text(lang: str | None, count: int, is_movie: bool) -> str:
+    """"1 Episode" / "12 Episoden" / "Film" -- the one place that decides how
+    a job's contents are named. A movie job is a single file and must never be
+    called an episode or a series, and a one-episode job must not read
+    "Episode(n)"."""
+    if is_movie:
+        return tr(lang, "Film", "Movie")
+    if count == 1:
+        return tr(lang, "1 Episode", "1 episode")
+    return tr(lang, f"{count} Episoden", f"{count} episodes")
+
+
+def error_count_text(lang: str | None, count: int) -> str:
+    """"1 Fehler" / "3 Fehler" / "1 error" / "3 errors"."""
+    if lang == "de":
+        return f"{count} Fehler"
+    return f"{count} error" if count == 1 else f"{count} errors"
+
+
+def episode_marker(season: int | None, episode: int | None) -> str:
+    """"S02E03" for a season/episode pair, "E03" when the source has no season
+    concept (MegaKino, hanime, 9anime, aniwaves -- all one-season sites), and
+    "" when there is no episode number at all (movies, Direct Link).
+
+    Language-independent on purpose: SxxExx is the same marker in every UI
+    language and matches the file names MediaForge writes to disk.
+    """
+    if episode is None:
+        return ""
+    if season is None:
+        return "E%02d" % episode
+    return "S%02dE%02d" % (season, episode)
+
+
+def episode_range_text(pairs) -> str:
+    """Condense (season, episode) pairs into one marker range.
+
+    One episode -> "S02E03", several -> "S02E02-S02E07" (first and last after
+    sorting; deliberately NOT every single episode, which would blow up a
+    24-episode job's notification body). Returns "" when nothing in *pairs*
+    carries an episode number -- movie jobs, where the caller must not print a
+    detail at all.
+    """
+    markers = []
+    for season, episode in (pairs or ()):
+        marker = episode_marker(season, episode)
+        if marker:
+            # -1 keeps season-less sources (E03) sorted among themselves rather
+            # than raising on None vs. int comparison.
+            markers.append(((season if season is not None else -1, episode), marker))
+    if not markers:
+        return ""
+    markers.sort(key=lambda entry: entry[0])
+    first, last = markers[0][1], markers[-1][1]
+    return first if first == last else f"{first}-{last}"
+
+
+def download_body_text(
+    lang: str | None,
+    title: str | None,
+    status: str,
+    count: int = 0,
+    successful: int = 0,
+    errors: int = 0,
+    is_movie: bool = False,
+    episode_range: str = "",
+) -> str:
+    """The notification body for one finished queue job -- the one place that
+    decides how a completed/partial/failed/cancelled download is worded.
+
+    Shape: title first (so a channel that shows only the body, or a phone that
+    truncates the heading, still says *what* finished), then what was
+    downloaded, then -- for series only -- which episodes:
+
+        "✅ The Witcher, 6 Episoden heruntergeladen (S02E02-S02E07)"
+        "✅ The Witcher, Film heruntergeladen"
+
+    A movie is a single file with no season/episode concept, so it never gets
+    the marker suffix (see `media_count_text`).
+    """
+    what = media_count_text(lang, count, is_movie)
+    errs = error_count_text(lang, errors)
+    name = title or tr(lang, "Unbekannt", "Unknown")
+    detail = f" ({episode_range})" if episode_range and not is_movie else ""
+    if status == "completed":
+        return tr(lang, f"✅ {name}, {what} heruntergeladen{detail}",
+                        f"✅ {name}, {what} downloaded{detail}")
+    if status == "partial":
+        # `successful > 0` is what makes a job partial, so a movie job here HAS
+        # its file -- only older failures are still open. Counting "x of Film"
+        # would be nonsense, so the movie wording drops the count.
+        if is_movie:
+            return tr(lang, f"⚠️ {name}, {what} heruntergeladen, {errs} offen",
+                            f"⚠️ {name}, {what} downloaded, {errs} still open")
+        return tr(lang,
+                  f"⚠️ {name}, {successful} von {what} heruntergeladen, {errs} offen{detail}",
+                  f"⚠️ {name}, {successful} of {what} downloaded, {errs} still open{detail}")
+    if status == "cancelled":
+        return tr(lang, f"⏹️ {name}, Download abgebrochen",
+                        f"⏹️ {name}, download cancelled")
+    if is_movie:
+        return tr(lang, f"❌ {name}, Film-Download fehlgeschlagen, {errs}",
+                        f"❌ {name}, movie download failed, {errs}")
+    return tr(lang, f"❌ {name}, Download fehlgeschlagen{detail}, {errs}",
+                    f"❌ {name}, download failed{detail}, {errs}")
+
+
+def _pref_enabled(prefs: dict, key: str, default: bool = True) -> bool:
+    val = prefs.get(key)
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() not in ("0", "false", "no", "")
+
+
+def _get_setting(key: str, default: str = "") -> str:
+    from .db import get_setting
+    return get_setting(key) or default
+
+
+def _get_user_prefs(username: str | None) -> dict:
+    from .db import get_user_id_by_username, get_user_notif_prefs_all
+    if not username:
+        # No-auth mode: uid=0 is the synthetic admin pseudo-user whose
+        # prefs are saved from the notification settings UI.
+        try:
+            return get_user_notif_prefs_all(0)
+        except Exception:
+            return {}
+    uid = get_user_id_by_username(username)
+    if uid is None:
+        # A named user that doesn't resolve to a row is NOT the no-auth
+        # pseudo-user -- falling back to uid 0's prefs here used to leak
+        # the admin's own Telegram/Pushover/etc. config (and "enabled"
+        # defaults) to an unrelated/unresolvable person, so an unrelated
+        # user's opt-out was silently bypassed. Return no prefs instead;
+        # every notify_*() already treats a missing chat_id/user_key/phone
+        # as "nothing to send to", so this is a clean no-op.
+        return {}
+    return get_user_notif_prefs_all(uid)
+
+
+
+def _format_errors_text(errors: list, max_items: int = 5, lang: str | None = None) -> str:
+    """Format a list of {url, error} dicts into a compact human-readable string."""
+    if not errors:
+        return ""
+    lines = []
+    for e in errors[:max_items]:
+        ep = (e.get("url") or "?").rstrip("/").split("/")[-1]
+        err = (e.get("error") or "?")[:100]
+        lines.append(f"  • {ep}: {err}")
+    text = "\n".join(lines)
+    rest = len(errors) - max_items
+    if rest > 0:
+        text += tr(lang, f"\n  ... und {rest} weitere", f"\n  ... and {rest} more")
+    return text
+
+def _post_json(url: str, payload: dict, headers: dict | None = None) -> int:
+    data = json.dumps(payload).encode("utf-8")
+    h = {
+        "Content-Type": "application/json",
+        "User-Agent": "MediaForge/1.0 (https://github.com/PD-Codes/MediaForge)",
+    }
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=data, headers=h, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except Exception as exc:
+        logger.warning("[Notif] HTTP POST to %s failed: %s", url, exc)
+        return 0
+
+
+def _utc_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# VAPID key management (file-based — auto-generated infrastructure)
+# ---------------------------------------------------------------------------
+
+def _vapid_keys_file():
+    import pathlib
+    return pathlib.Path.home() / ".mediaforge" / "vapid_keys.json"
+
+
+def _ensure_vapid_keys() -> tuple:
+    import base64
+    priv_env = os.environ.get("MEDIAFORGE_VAPID_PRIVATE_KEY", "").strip()
+    pub_env  = os.environ.get("MEDIAFORGE_VAPID_PUBLIC_KEY", "").strip()
+    email    = os.environ.get("MEDIAFORGE_VAPID_CLAIMS_EMAIL", "").strip()
+    if priv_env and pub_env:
+        return priv_env, pub_env, email or "push@mediaforge.local"
+
+    keys_file = _vapid_keys_file()
+    if keys_file.exists():
+        try:
+            data = json.loads(keys_file.read_text())
+            priv = data.get("private_key", "")
+            if priv and not priv.startswith("-----"):
+                return priv, data["public_key"], data.get("email", "push@mediaforge.local")
+            keys_file.unlink(missing_ok=True)
+        except Exception:
+            keys_file.unlink(missing_ok=True)
+
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, generate_private_key
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        priv_key  = generate_private_key(SECP256R1())
+        priv_raw  = priv_key.private_numbers().private_value.to_bytes(32, "big")
+        priv_b64  = base64.urlsafe_b64encode(priv_raw).decode().rstrip("=")
+        pub_bytes = priv_key.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+        pub_b64   = base64.urlsafe_b64encode(pub_bytes).decode().rstrip("=")
+
+        auto_email = "push@mediaforge.local"
+        keys_file.parent.mkdir(parents=True, exist_ok=True)
+        keys_file.write_text(json.dumps(
+            {"private_key": priv_b64, "public_key": pub_b64, "email": auto_email}, indent=2
+        ))
+        logger.info("[WebPush] Auto-generated VAPID keys -> %s", keys_file)
+        return priv_b64, pub_b64, auto_email
+    except Exception as exc:
+        logger.debug("[WebPush] Could not generate VAPID keys: %s", exc)
+        return None, None, ""
+
+
+# ---------------------------------------------------------------------------
+# Web Push
+# ---------------------------------------------------------------------------
+
+def add_push_subscription(sub: dict, user_id: int | None = None) -> None:
+    from .db import db_add_push_subscription
+    ep     = sub.get("endpoint", "")
+    auth   = (sub.get("keys") or {}).get("auth", "")
+    p256dh = (sub.get("keys") or {}).get("p256dh", "")
+    if not (ep and auth and p256dh):
+        return
+    db_add_push_subscription(ep, auth, p256dh, user_id)
+    logger.debug("[WebPush] Subscription stored (user_id=%s)", user_id)
+
+
+def remove_push_subscription(endpoint: str) -> None:
+    from .db import db_remove_push_subscription
+    db_remove_push_subscription(endpoint)
+    logger.debug("[WebPush] Subscription removed: %s", endpoint[:60])
+
+
+def get_push_subscriptions(user_id: int | None = None) -> list:
+    from .db import db_get_push_subscriptions
+    return db_get_push_subscriptions(user_id)
+
+
+def notify_webpush(
+    title: str,
+    body: str,
+    event: str | None = None,
+    username: str | None = None,
+) -> None:
+    if _get_setting("notif_webpush_enabled", "1") == "0":
+        return
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError:
+        return
+
+    priv_key, pub_key, email = _ensure_vapid_keys()
+    if not priv_key:
+        return
+
+    from .db import get_user_id_by_username, get_user_notif_prefs_all
+    if username:
+        uid = get_user_id_by_username(username)
+    else:
+        uid = 0  # no-auth mode: uid=0 is the synthetic admin pseudo-user
+
+    if uid is None:
+        # A named user that doesn't resolve to a row -- same identity gap as
+        # _get_user_prefs() above. Broadcasting to every subscription here
+        # bypassed everyone's per-user opt-out, so treat it as "nobody to
+        # notify" instead.
+        return
+    if event:
+        prefs = get_user_notif_prefs_all(uid)
+        _pref_event = "on_sync_hold" if event == "on_sync_resume" else event
+        if not _pref_enabled(prefs, "webpush_" + _pref_event):
+            return
+    subs = get_push_subscriptions(user_id=uid)
+    # If user has no personal subscriptions, broadcast to all
+    if not subs:
+        subs = get_push_subscriptions()
+
+    if not subs:
+        return
+
+    data = json.dumps({"title": title, "body": body})
+
+    def _send_all():
+        dead = []
+        for sub in subs:
+            sub_info = {"endpoint": sub["endpoint"], "keys": sub["keys"]}
+            try:
+                resp = webpush(
+                    subscription_info=sub_info,
+                    data=data,
+                    vapid_private_key=priv_key,
+                    vapid_claims={"sub": "mailto:" + email},
+                )
+                if resp and resp.status_code == 410:
+                    dead.append(sub["endpoint"])
+            except WebPushException as exc:
+                if "410" in str(exc):
+                    dead.append(sub["endpoint"])
+                else:
+                    logger.warning("[WebPush] Send failed: %s", exc)
+            except Exception as exc:
+                logger.warning("[WebPush] Send failed: %s", exc)
+        for ep in dead:
+            remove_push_subscription(ep)
+
+    _report_push_sent()
+    threading.Thread(target=_send_all, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Discord Webhook
+# ---------------------------------------------------------------------------
+
+def notify_discord(title: str, status: str, episode_count: int, errors: list,
+                   is_movie: bool = False, lang: str | None = None,
+                   episode_range: str = "") -> None:
+    if _get_setting("notif_discord_enabled", "1") == "0":
+        return
+    webhook_url = (
+        _get_setting("notif_discord_webhook_url")
+        or os.environ.get("MEDIAFORGE_DISCORD_WEBHOOK", "")
+    ).strip()
+    if not webhook_url:
+        return
+    if status == "completed" and not errors:
+        event_key   = "on_completed"
+        color       = 0x57F287
+        status_text = tr(lang, "Erfolgreich abgeschlossen", "Completed successfully")
+    elif status == "completed" and errors:
+        event_key   = "on_errors"
+        color       = 0xFEE75C
+        status_text = tr(lang,
+                         "Abgeschlossen mit " + error_count_text("de", len(errors)),
+                         "Completed with " + error_count_text("en", len(errors)))
+    elif status == "partial":
+        event_key   = "on_partial"
+        color       = 0xE67E22
+        status_text = tr(lang, "Teilweise erfolgreich", "Partially successful")
+    elif status == "failed":
+        event_key   = "on_errors"
+        color       = 0xED4245
+        status_text = tr(lang, "Download fehlgeschlagen", "Download failed")
+    elif status == "cancelled":
+        event_key   = "on_cancelled"
+        color       = 0x95A5A6
+        status_text = tr(lang, "Download abgebrochen", "Download cancelled")
+    else:
+        return
+
+    if _get_setting("notif_discord_" + event_key, "1") == "0":
+        return
+
+    # A movie is one file: name it, don't count it. Only episode jobs get a
+    # number, and that number decides singular vs. plural.
+    if is_movie:
+        count_field = {"name": tr(lang, "Inhalt", "Content"),
+                       "value": tr(lang, "Film", "Movie"), "inline": True}
+    else:
+        count_field = {"name": tr(lang, "Episoden", "Episodes"),
+                       "value": str(episode_count), "inline": True}
+    fields = [
+        count_field,
+        {"name": "Status", "value": status_text, "inline": True},
+    ]
+    # Which episodes, not just how many. Movies have no marker (see
+    # episode_range_text), so the field simply doesn't appear for them.
+    if episode_range and not is_movie:
+        fields.append({"name": tr(lang, "Folgen", "Episodes"),
+                       "value": episode_range, "inline": True})
+    if errors:
+        lines = []
+        for e in errors[:5]:
+            url_part = e.get("url", "?").split("/")[-1]
+            err_part = e.get("error", "?")[:80]
+            lines.append("- " + url_part + ": " + err_part)
+        error_text = "\n".join(lines)
+        if len(errors) > 5:
+            error_text += tr(lang, "\n... und " + str(len(errors) - 5) + " weitere",
+                             "\n... and " + str(len(errors) - 5) + " more")
+        fields.append({"name": tr(lang, "Fehler", "Errors"),
+                       "value": error_text, "inline": False})
+
+    payload = {
+        "embeds": [{
+            "title":     title,
+            "color":     color,
+            "fields":    fields,
+            "footer":    {"text": "MediaForge"},
+            "timestamp": _utc_iso(),
+        }]
+    }
+
+    def _send():
+        code = _post_json(webhook_url, payload)
+        if code and code not in (200, 204):
+            logger.warning("[Discord] Webhook returned HTTP %s", code)
+
+    _report_push_sent()
+    threading.Thread(target=_send, daemon=True).start()
+
+
+def notify_discord_autosync(title: str, new_count: int, lang: str | None = None) -> None:
+    if _get_setting("notif_discord_enabled", "1") == "0":
+        return
+    webhook_url = (
+        _get_setting("notif_discord_webhook_url")
+        or os.environ.get("MEDIAFORGE_DISCORD_WEBHOOK", "")
+    ).strip()
+    if not webhook_url:
+        return
+    if _get_setting("notif_discord_on_autosync", "1") == "0":
+        return
+
+    payload = {
+        "embeds": [{
+            "title":     title,
+            "color":     0x5865F2,
+            "fields":    [
+                {"name": tr(lang, "Neue Folge" if new_count == 1 else "Neue Folgen",
+                            "New episode" if new_count == 1 else "New episodes"),
+                 "value": str(new_count), "inline": True},
+                {"name": "Status",
+                 "value": tr(lang, "Online verfuegbar", "Available online"), "inline": True},
+            ],
+            "footer":    {"text": "MediaForge - Auto-Sync"},
+            "timestamp": _utc_iso(),
+        }]
+    }
+
+    _report_push_sent()
+    threading.Thread(target=lambda: _post_json(webhook_url, payload), daemon=True).start()
+
+
+def notify_discord_system(title: str, body: str, event: str) -> None:
+    """Discord embed for system events: on_sync_error, on_disk_space_low, on_sync_hold, on_sync_resume."""
+    if _get_setting("notif_discord_enabled", "1") == "0":
+        return
+    webhook_url = (
+        _get_setting("notif_discord_webhook_url")
+        or os.environ.get("MEDIAFORGE_DISCORD_WEBHOOK", "")
+    ).strip()
+    if not webhook_url:
+        return
+    _setting_event = "on_sync_hold" if event == "on_sync_resume" else event
+    if _get_setting("notif_discord_" + _setting_event, "1") == "0":
+        return
+    color_map = {
+        "on_sync_error":   0xED4245,  # Red
+        "on_sync_hold":    0xFEE75C,  # Yellow
+        "on_sync_resume":  0x57F287,  # Green
+        "on_disk_space_low": 0xFEE75C,
+    }
+    color = color_map.get(event, 0xFEE75C)
+    payload = {
+        "embeds": [{
+            "title":       title,
+            "description": body,
+            "color":       color,
+            "footer":      {"text": "MediaForge"},
+            "timestamp":   _utc_iso(),
+        }]
+    }
+    _report_push_sent()
+    threading.Thread(target=lambda: _post_json(webhook_url, payload), daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
+
+def _tg_escape(text: str) -> str:
+    """Escape special characters for Telegram MarkdownV2."""
+    special = r"\_*[]()~`>#+-=|{}.!"
+    return "".join(("\\" + c) if c in special else c for c in str(text))
+
+
+def notify_telegram(
+    title: str,
+    body: str,
+    event: str | None = None,
+    username: str | None = None,
+    errors: list | None = None,
+) -> None:
+    # These are all routine, expected no-ops (not configured / intentionally
+    # disabled), not error conditions — every notify_all() call goes through
+    # here for every user regardless of whether they use Telegram at all, so
+    # this fires constantly for anyone who hasn't set it up. Logging them at
+    # WARNING made an unconfigured Telegram integration look like it was
+    # repeatedly "trying to activate itself" on every download event/restart,
+    # when in fact nothing was ever sent. Keep these at DEBUG, matching the
+    # global-disabled check below.
+    if _get_setting("notif_telegram_enabled", "1") == "0":
+        logger.debug("[Telegram] Skipping — globally disabled (notif_telegram_enabled=0)")
+        return
+    bot_token = _get_setting("notif_telegram_bot_token").strip()
+    if not bot_token:
+        logger.debug("[Telegram] Skipping — no bot token configured")
+        return
+    prefs   = _get_user_prefs(username)
+    if not _pref_enabled(prefs, "telegram_enabled"):
+        logger.debug("[Telegram] Skipping — telegram_enabled=0 in user prefs (username=%s)", username)
+        return
+    chat_id = prefs.get("telegram_chat_id", "").strip()
+    if not chat_id:
+        logger.debug("[Telegram] Skipping — no telegram_chat_id in user prefs (username=%s)", username)
+        return
+    _pref_event = "on_sync_hold" if event == "on_sync_resume" else event
+    if event and not _pref_enabled(prefs, "telegram_" + _pref_event):
+        logger.debug("[Telegram] Skipping — event %s disabled in user prefs (username=%s)", event, username)
+        return
+
+    _lang     = notif_lang(username)
+    err_text  = _format_errors_text(errors or [], lang=_lang)
+    _err_head = tr(_lang, "\n\n*Fehler:*\n", "\n\n*Errors:*\n")
+    full_body = _tg_escape(body) + (_err_head + _tg_escape(err_text) if err_text else "")
+    text    = "*" + _tg_escape(title) + "*\n" + full_body
+    url     = "https://api.telegram.org/bot" + bot_token + "/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2"}
+
+    def _send():
+        code = _post_json(url, payload)
+        if code in (200, 201):
+            logger.info("[Telegram] Message sent OK (event=%s, username=%s)", event, username)
+        elif code:
+            logger.warning("[Telegram] sendMessage returned HTTP %s (event=%s, username=%s)", code, event, username)
+        else:
+            logger.warning("[Telegram] sendMessage failed — no HTTP response (event=%s, username=%s)", event, username)
+
+    _report_push_sent()
+    threading.Thread(target=_send, daemon=True).start()
+
+
+def telegram_detect_chat_id(bot_token: str) -> str | None:
+    """Poll getUpdates for the most recent chat that has messaged the bot,
+    used by the Settings UI to auto-fill a user's chat_id after they send
+    the bot a message (avoids having the user look up the ID manually).
+
+    Used by: routes/push_notifications.py's Telegram chat-id auto-detect API.
+    """
+    url = "https://api.telegram.org/bot" + bot_token + "/getUpdates?limit=10&offset=-10"
+    req = urllib.request.Request(url)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        logger.warning("[Telegram] getUpdates failed: %s", exc)
+        return None
+
+    for update in reversed(data.get("result", [])):
+        msg = update.get("message") or update.get("channel_post")
+        if msg and "chat" in msg:
+            return str(msg["chat"]["id"])
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Pushover
+# ---------------------------------------------------------------------------
+
+def notify_pushover(
+    title: str,
+    body: str,
+    event: str | None = None,
+    username: str | None = None,
+    errors: list | None = None,
+) -> None:
+    if _get_setting("notif_pushover_enabled", "1") == "0":
+        return
+    app_token = _get_setting("notif_pushover_app_token").strip()
+    if not app_token:
+        return
+    prefs    = _get_user_prefs(username)
+    if not _pref_enabled(prefs, "pushover_enabled"):
+        return
+    user_key = prefs.get("pushover_user_key", "").strip()
+    if not user_key:
+        return
+    _pref_event = "on_sync_hold" if event == "on_sync_resume" else event
+    if event and not _pref_enabled(prefs, "pushover_" + _pref_event):
+        return
+
+    _lang = notif_lang(username)
+    err_text = _format_errors_text(errors or [], lang=_lang)
+    full_body = body + (tr(_lang, "\n\nFehler:\n", "\n\nErrors:\n") + err_text if err_text else "")
+    payload = {"token": app_token, "user": user_key, "title": title, "message": full_body}
+
+    def _send():
+        code = _post_json("https://api.pushover.net/1/messages.json", payload)
+        if code and code not in (200, 201):
+            logger.warning("[Pushover] API returned HTTP %s", code)
+
+    _report_push_sent()
+    threading.Thread(target=_send, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp (via Twilio)
+# ---------------------------------------------------------------------------
+
+def notify_whatsapp(
+    title: str,
+    body: str,
+    event: str | None = None,
+    username: str | None = None,
+    errors: list | None = None,
+) -> None:
+    if _get_setting("notif_whatsapp_enabled", "1") == "0":
+        return
+    sid        = _get_setting("notif_whatsapp_sid").strip()
+    auth_token = _get_setting("notif_whatsapp_auth_token").strip()
+    from_num   = _get_setting("notif_whatsapp_from").strip()
+    if not (sid and auth_token and from_num):
+        return
+    prefs = _get_user_prefs(username)
+    if not _pref_enabled(prefs, "whatsapp_enabled"):
+        return
+    phone = prefs.get("whatsapp_phone", "").strip()
+    if not phone:
+        return
+    _pref_event = "on_sync_hold" if event == "on_sync_resume" else event
+    if event and not _pref_enabled(prefs, "whatsapp_" + _pref_event):
+        return
+
+    if not from_num.startswith("whatsapp:"):
+        from_num = "whatsapp:" + from_num
+    if not phone.startswith("whatsapp:"):
+        phone = "whatsapp:" + phone
+
+    _lang = notif_lang(username)
+    err_text = _format_errors_text(errors or [], lang=_lang)
+    full_body = body + (tr(_lang, "\n\nFehler:\n", "\n\nErrors:\n") + err_text if err_text else "")
+    text      = title + "\n" + full_body
+    api_url   = "https://api.twilio.com/2010-04-01/Accounts/" + sid + "/Messages.json"
+    post_data = urllib.parse.urlencode({"From": from_num, "To": phone, "Body": text}).encode()
+
+    import base64
+    creds   = base64.b64encode((sid + ":" + auth_token).encode()).decode()
+    headers = {
+        "Authorization": "Basic " + creds,
+        "Content-Type":  "application/x-www-form-urlencoded",
+    }
+
+    def _send():
+        req = urllib.request.Request(api_url, data=post_data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status not in (200, 201):
+                    logger.warning("[WhatsApp] Twilio returned HTTP %s", resp.status)
+        except urllib.error.HTTPError as exc:
+            logger.warning("[WhatsApp] Twilio error HTTP %s", exc.code)
+        except Exception as exc:
+            logger.warning("[WhatsApp] Send failed: %s", exc)
+
+    _report_push_sent()
+    threading.Thread(target=_send, daemon=True).start()
+
+
+
+# ---------------------------------------------------------------------------
+# Synchronous Discord send — used by the test endpoint to return real HTTP status
+# ---------------------------------------------------------------------------
+
+def send_discord_sync(webhook_url, payload):
+    """Send a Discord webhook synchronously. Returns (http_status, error_msg).
+
+    Used by: routes/push_notifications.py's Discord "send test message" API,
+    which needs the real HTTP status/error to show the admin immediately
+    (unlike notify_discord*, which fire-and-forget on a background thread).
+    """
+    import json as _json2
+    url = webhook_url.strip()
+    if not url:
+        # The route already rejects an empty webhook with a localized message,
+        # so this is a guard, not a user-facing string.
+        return 0, "webhook url not configured"
+    data = _json2.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "MediaForge/1.0 (https://github.com/PD-Codes/MediaForge)",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, None
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            pass
+        return exc.code, body
+    except Exception as exc:
+        return 0, str(exc)
+
+
+# ---------------------------------------------------------------------------
+# NTFY
+# ---------------------------------------------------------------------------
+
+def _post_text(url: str, text: str, headers: dict | None = None) -> int:
+    """POST plain text to a URL and return HTTP status (0 on error)."""
+    data = (text or "").encode("utf-8")
+    h = {
+        "Content-Type": "text/plain",
+        "User-Agent": "MediaForge/1.0 (https://github.com/PD-Codes/MediaForge)",
+    }
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=data, headers=h, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except Exception as exc:
+        logger.warning("[NTFY] HTTP POST to %s failed: %s", url, exc)
+        return 0
+
+
+def notify_ntfy(
+    title: str,
+    body: str,
+    event: str | None = None,
+    username: str | None = None,
+    errors: list | None = None,
+) -> None:
+    """Send a notification to a ntfy topic.
+
+    Settings (app_settings keys):
+      - notif_ntfy_enabled (default "1")
+      - notif_ntfy_server  (base URL, required)
+      - notif_ntfy_topic   (topic name, required)
+      - notif_ntfy_auth_token (optional bearer token)
+      - notif_ntfy_user / notif_ntfy_password (optional basic auth)
+"""
+    if _get_setting("notif_ntfy_enabled", "1") == "0":
+        return
+
+    server = _get_setting("notif_ntfy_server", "").strip()
+    topic = _get_setting("notif_ntfy_topic", "").strip()
+    if not (server and topic):
+        return
+
+    prefs = _get_user_prefs(username)
+    if not _pref_enabled(prefs, "ntfy_enabled"):
+        return
+    _pref_event = "on_sync_hold" if event == "on_sync_resume" else event
+    if event and not _pref_enabled(prefs, "ntfy_" + _pref_event):
+        return
+
+    _lang = notif_lang(username)
+    err_text = _format_errors_text(errors or [], lang=_lang)
+    full_body = body + (tr(_lang, "\n\nFehler:\n", "\n\nErrors:\n") + err_text if err_text else "")
+
+    # build URL and headers
+    topic_quoted = urllib.parse.quote(topic, safe="")
+    url = server.rstrip("/") + "/" + topic_quoted
+    headers: dict = {"Title": title}
+
+    token = _get_setting("notif_ntfy_auth_token", "").strip()
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    else:
+        user = _get_setting("notif_ntfy_user", "").strip()
+        pwd = _get_setting("notif_ntfy_password", "").strip()
+        if user and pwd:
+            import base64
+
+            creds = base64.b64encode((user + ":" + pwd).encode()).decode()
+            headers["Authorization"] = "Basic " + creds
+
+    def _send():
+        code = _post_text(url, full_body, headers=headers)
+        if code and code not in (200, 201, 204):
+            logger.warning("[NTFY] send returned HTTP %s", code)
+
+    _report_push_sent()
+    threading.Thread(target=_send, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Convenience: notify all services for a single event
+# ---------------------------------------------------------------------------
+
+def notify_all(
+    title: str,
+    body: str,
+    event: str,
+    username: str | None = None,
+    status: str | None = None,
+    episode_count: int = 0,
+    errors: list | None = None,
+    is_movie: bool = False,
+    episode_range: str = "",
+) -> None:
+    """Fan out one notification to every configured channel (WebPush,
+    Telegram, Pushover, NTFY, WhatsApp, Discord), then to every third-party
+    channel/event hook a module has registered (see
+    ``web/thirdparties/registry.py``'s ``register_notification_channel`` /
+    ``register_event_hook``). Each channel/hook is called in its own
+    try/except so one failing/misconfigured service never blocks the
+    others; individual notify_* functions handle their own enabled/pref
+    checks and send asynchronously in a background thread.
+
+    Used by: queue_worker.py (download completion/error/cancel events) and
+    autosync_worker.py (auto-sync found episodes / sync hold / resume).
+    """
+    # Telemetry: open a fan-out scope so the channels below produce ONE
+    # flag.push_notifications event for this notification instead of one per
+    # channel (see _report_push_sent()). The whole fan-out runs inside a
+    # try/finally so the scope is closed again on every exit path.
+    _push_telemetry_scope.fanout = "open"
+    try:
+        try:
+            notify_webpush(title=title, body=body, event=event, username=username)
+        except Exception as exc:
+            logger.error("[Notif] Webpush notification failed: %s", exc, exc_info=True)
+        try:
+            notify_telegram(title=title, body=body, event=event, username=username, errors=errors)
+        except Exception as exc:
+            logger.error("[Notif] Telegram notification failed: %s", exc, exc_info=True)
+        try:
+            notify_pushover(title=title, body=body, event=event, username=username, errors=errors)
+        except Exception as exc:
+            logger.error("[Notif] Pushover notification failed: %s", exc, exc_info=True)
+        try:
+            notify_ntfy(title=title, body=body, event=event, username=username, errors=errors)
+        except Exception as exc:
+            logger.error("[Notif] NTFY notification failed: %s", exc, exc_info=True)
+        try:
+            notify_whatsapp(title=title, body=body, event=event, username=username, errors=errors)
+        except Exception as exc:
+            logger.error("[Notif] WhatsApp notification failed: %s", exc, exc_info=True)
+    
+        try:
+            # Discord has no per-user prefs, but the embed labels still follow
+            # the language of the user this notification is about.
+            _lang = notif_lang(username)
+            if event == "on_autosync":
+                notify_discord_autosync(title=title, new_count=episode_count, lang=_lang)
+            elif event in ("on_sync_error", "on_disk_space_low", "on_sync_hold", "on_sync_resume"):
+                notify_discord_system(title=title, body=body, event=event)
+            elif status is not None:
+                notify_discord(
+                    title=title,
+                    status=status,
+                    episode_count=episode_count,
+                    errors=errors or [],
+                    is_movie=is_movie,
+                    lang=_lang,
+                    episode_range=episode_range,
+                )
+        except Exception as exc:
+            logger.error("[Notif] Discord notification failed: %s", exc, exc_info=True)
+
+        # Third-party notification channels (see registry.register_notification_channel).
+        try:
+            from .thirdparties.registry import (
+                call_with_supported_kwargs, notification_channels)
+            for _channel_id, _send_fn in notification_channels().items():
+                try:
+                    call_with_supported_kwargs(
+                        _send_fn,
+                        title=title,
+                        body=body,
+                        event=event,
+                        username=username,
+                        status=status,
+                        episode_count=episode_count,
+                        errors=errors,
+                        is_movie=is_movie,
+                        episode_range=episode_range,
+                    )
+                except Exception as exc:
+                    logger.error("[Notif] Module channel '%s' failed: %s", _channel_id, exc, exc_info=True)
+        except Exception as exc:
+            logger.error("[Notif] Failed to fan out to module notification channels: %s", exc, exc_info=True)
+
+        # Generic lifecycle event hooks (see registry.register_event_hook) --
+        # for modules reacting to the event itself rather than sending a message.
+        try:
+            from .thirdparties.registry import fire_event_hooks
+            fire_event_hooks(
+                event,
+                title=title,
+                body=body,
+                username=username,
+                status=status,
+                episode_count=episode_count,
+                errors=errors,
+                is_movie=is_movie,
+                episode_range=episode_range,
+            )
+        except Exception as exc:
+            logger.error("[Notif] Failed to fire module event hooks: %s", exc, exc_info=True)
+    finally:
+        # Telemetry: close the fan-out scope again -- a later direct notify_x()
+        # call on this thread must count on its own. This runs in a finally so
+        # even a BaseException (SystemExit at shutdown, or a module channel
+        # raising a non-Exception) cannot leave the thread-local stuck on
+        # "counted", which would silently disable flag.push_notifications for
+        # the rest of this long-lived worker thread's life.
+        _push_telemetry_scope.fanout = None

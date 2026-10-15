@@ -1,0 +1,329 @@
+{# ===================================================================
+   Start Page controls — used twice, with two different scopes:
+
+     scope="user"    what I see           -> /api/user/preferences
+     scope="global"  what a new account
+                     sees by default      -> PUT /api/settings (admin)
+
+   Both render the same objects, so learning one teaches the other. The
+   ids carry the scope so the settings page can show both at once, and
+   static/start_page.js drives them from the same code path.
+
+   Each scope is ONE card. Rows, cards-per-row and the filters are facets
+   of a single decision ("what does this home page look like"), not three
+   unrelated settings -- rendering them as three separate cards made the
+   page read as six independent things and buried the fact that the whole
+   lower half is just the same form again for a different audience.
+
+   The row labels/hints are rendered here (through Flask-Babel) and read
+   by the JS from window.__STARTPAGE_I18N -- the row list itself is built
+   client-side from /api/home-feed/sources, because which sources exist
+   depends on which modules are installed.
+   =================================================================== #}
+
+{# NB: never put a Jinja comment INSIDE the dict expression below -- one
+   inside a {{ ... }} expression is a syntax error that takes the whole page
+   down (and Jinja comments do not nest, so this one cannot show you the
+   token either). "column_n" carries the column number as %(n)s filled with
+   a literal brace pair here, because Flask-Babel's newstyle gettext turns a
+   bare "%s" into that same brace pair in the rendered catalogue string, and
+   it is what static/start_page.js replaces at runtime. #}
+{% macro start_page_i18n() %}
+<script>
+  window.__STARTPAGE_I18N = {{ {
+    'rows': {
+      'continue':  _('Continue watching'),
+      'library':   _('New in your library'),
+      'watchlist': _('Your watchlist'),
+      'upcoming':  _('Airing next'),
+      'new':       _('New this week'),
+      'popular':   _('Popular right now'),
+      'movies':    _('Movies'),
+      'gaps':      _('Fill the gaps'),
+      'because':   _('Because you watched…')
+    },
+    'hints': {
+      'playback':   _('from your playback progress'),
+      'library':    _('from your library'),
+      'favourites': _('from your favourites'),
+      'calendar':   _('from the calendar'),
+      'sources':    _('from your sources')
+    },
+    'move_up': _('Move up'),
+    'move_down': _('Move down'),
+    'drag': _('Drag to reorder'),
+    'show_row': _('Show this row'),
+    'saved': _('Saved'),
+    'save_failed': _('Could not be saved'),
+    'layout_saved': _('Saved — reload the home page'),
+    'reset_done': _('Reset to the instance default'),
+    'dash_order_home_only': _('Open this from the home page itself (the "Customise this page" button) to reorder cards.'),
+    'column_n': _('Column %(n)s', n='{}'),
+    'column': _('Column'),
+    'column_empty': _('Empty'),
+    'dash_add_empty': _('Everything is already on your board.'),
+    'using_default': _('Following the instance default'),
+    'using_own': _('You changed this — the instance default no longer applies')
+  }|tojson }};
+</script>
+{% endmacro %}
+
+
+{# heading/intro are optional: the settings page passes them so the card
+   carries its own title, the home page modal leaves them empty because the
+   modal already has a title of its own. #}
+{% macro start_page_form(scope, show_new_home_toggle=False, heading='', intro='') %}
+<div class="settings-section sp-form" data-sp-scope="{{ scope }}">
+  {% if heading %}
+  <h2>{{ heading }}</h2>
+  {% if intro %}<div class="settings-hint sp-intro">{{ intro }}</div>{% endif %}
+  {% endif %}
+
+  {# Layout comes first: it decides which home page the rows underneath are
+     rendered into at all, so the card reads from the biggest decision to the
+     smallest. #}
+  {% if show_new_home_toggle %}
+  <div class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Layout') }}</h3>
+    <label class="settings-checkbox-row" for="newHomeEnabled">
+      <input type="checkbox" class="chb-main" id="newHomeEnabled" onchange="saveNewHomeEnabled()" />
+      <span>{{ _('Use the new home page (Beta)') }}</span>
+    </label>
+    <div class="settings-hint">{{ _('Groups the discovery rows by question instead of by source: "New this week" and "Popular right now" mix every enabled source and each poster names where it came from. The classic layout keeps one block per source with its own rows. Reload the home page after changing this.') }}</div>
+    <div class="settings-hint">{{ _('This is the default for accounts that have not picked a layout themselves — everyone can overrule it on their profile page.') }}</div>
+  </div>
+
+  {# The instance-wide twin of the per-account "Home tabs" group further down
+     (scope="user") -- what a fresh account, or one that never opened
+     "Customise this page" itself, starts with. Same values, same select;
+     only the storage differs (PUT /api/settings, not the per-account
+     preferences endpoint), so it gets its own ids and its own handlers in
+     static/settings.js rather than reusing static/start_page.js's
+     per-scope bind()/load(), which is wired to window._USER_PREFS. #}
+  <div class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Home tabs') }}</h3>
+    <div class="settings-hint">{{ _('The default arrangement for accounts that have not chosen one themselves. Everyone can still overrule it on their profile page.') }}</div>
+    <div class="settings-row">
+      <select class="mf-token-input" id="dashModeDefault" onchange="saveDashModeDefault()">
+        <option value="">{{ _('Dashboard and Discover as tabs') }}</option>
+        <option value="0">{{ _('Discover only') }}</option>
+        <option value="all">{{ _('All in one page') }}</option>
+      </select>
+    </div>
+    <div id="startTabDefaultRow">
+      <h3 class="settings-subtitle">{{ _('Start on') }}</h3>
+      <div class="settings-row">
+        <select class="mf-token-input" id="startTabDefault" aria-label="{{ _('Start on') }}" onchange="saveStartTabDefault()">
+          <option value="">{{ _('Dashboard') }}</option>
+          <option value="disc">{{ _('Discover') }}</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  {# Instance-wide twin of the per-account "Recommendations" group further
+     down (scope="user") -- what a fresh account, or one that never touched
+     these two checkboxes, starts with. See db/ui_prefs.py's
+     foryou_hero_hidden/foryou_hidden and static/home_foryou.js's
+     heroHidden()/railHidden() for how the two are resolved together. #}
+  <div class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Recommendations') }}</h3>
+    <div class="settings-hint">{{ _('The default for accounts that have not chosen for themselves. Everyone can still overrule it on their profile page.') }}</div>
+    <label class="settings-checkbox-row" for="foryouHeroHiddenDefault">
+      <input type="checkbox" class="chb-main" id="foryouHeroHiddenDefault" onchange="saveForyouHeroHiddenDefault()" />
+      <span>{{ _('Show the top recommendation banner on the Discover tab') }}</span>
+    </label>
+    <label class="settings-checkbox-row" for="foryouRailHiddenDefault">
+      <input type="checkbox" class="chb-main" id="foryouRailHiddenDefault" onchange="saveForyouRailHiddenDefault()" />
+      <span>{{ _('Show "Could be for you" on the Discover tab') }}</span>
+    </label>
+  </div>
+  {% endif %}
+
+  {# The same decision for THIS account. A select and not a checkbox, because
+     "follow whatever the admin set" is a real third state and a checkbox
+     cannot say it: switching to the new layout and switching back are two
+     different things, and only one of them should keep following the
+     instance default afterwards. #}
+  {% if scope == 'user' %}
+  <div class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Layout') }}</h3>
+    <div class="settings-hint">{{ _('Which home page you see. Only you — nobody else on this instance is affected.') }}</div>
+    <div class="settings-row">
+      <select class="mf-token-input" id="spLayout-user">
+        <option value="">{{ _('Follow the instance default') }}</option>
+        <option value="0">{{ _('Classic home page') }}</option>
+        <option value="1">{{ _('New home page (Beta)') }}</option>
+      </select>
+    </div>
+  </div>
+
+  {# Only meaningful on the new (two-tab) layout, but shown regardless of
+     which layout this account currently has -- switching to the new layout
+     above does not reload this modal, and the choice should already be
+     there once it does. Same reasoning as the Layout select above: per
+     account, nobody else on the instance is affected. #}
+  <div class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Home tabs') }}</h3>
+    <div class="settings-hint">{{ _('Tabs switch between the two; "All in one page" stacks the Dashboard above Discover instead, with no switching.') }}</div>
+    <div class="settings-row">
+      <select class="mf-token-input" id="spDashMode-user">
+        <option value="">{{ _('Dashboard and Discover as tabs') }}</option>
+        <option value="0">{{ _('Discover only') }}</option>
+        <option value="all">{{ _('All in one page') }}</option>
+      </select>
+    </div>
+    {# Only worth asking while there are two SEPARATE tabs to pick a first one
+       from -- "Discover only" has no Dashboard tab, "All in one page" has no
+       tab switch either (both sections are simply stacked). This whole block
+       hides itself for both (see syncStartTabRow() in static/start_page.js). #}
+    <div id="spStartTabRow-user">
+      <h3 class="settings-subtitle">{{ _('Start on') }}</h3>
+      <div class="settings-row">
+        <select class="mf-token-input" id="spStartTab-user" aria-label="{{ _('Start on') }}">
+          <option value="">{{ _('Dashboard') }}</option>
+          <option value="disc">{{ _('Discover') }}</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  {# Hidden by syncOrderRows() in static/start_page.js whenever there is no
+     Dashboard to arrange ("Discover only" / "All in one page"). Both rows
+     are scope="user" only: this is a per-account arrangement, there is no
+     instance default to arrange for a fresh account. #}
+  <div id="spDashColumnsRow-user" class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Dashboard columns') }}</h3>
+    <div class="settings-hint">{{ _('How many columns the Dashboard is split into on a wide screen. A narrow window falls back to fewer on its own; on a phone the cards stack in one column, first column first. Reload the home page after changing this.') }}</div>
+    <div class="settings-row">
+      <select class="mf-token-input" id="spDashColumns-user">
+        <option value="3">{{ _('3 columns') }}</option>
+        <option value="2">{{ _('2 columns') }}</option>
+      </select>
+    </div>
+  </div>
+  <div id="spCardOrderRow-user" class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Card order') }}</h3>
+    <div class="settings-hint">{{ _('Which column each card sits in, and in which order. Dragging a card on the Dashboard itself writes the same setting.') }}</div>
+    <div class="mf-order-list" id="spCardOrder-user"></div>
+  </div>
+
+  {# "Could be for you" -- the recommendation hero + rail on the Discover
+     tab. Personal, same as every other Discover choice: one household
+     member finding the guesses noisy must not turn them off for everyone
+     else. static/home_foryou.js reads this pref before every load and
+     static/start_page.js's spForyouHidden handler below applies a toggle
+     immediately, without asking for a reload -- the row has no state of its
+     own to lose by hiding and showing it again. #}
+  <div class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Recommendations') }}</h3>
+    <label class="settings-checkbox-row" for="spForyouHeroHidden-{{ scope }}">
+      <input type="checkbox" class="chb-main" id="spForyouHeroHidden-{{ scope }}">
+      <span>{{ _('Show the top recommendation banner on the Discover tab') }}</span>
+    </label>
+    <label class="settings-checkbox-row" for="spForyouHidden-{{ scope }}">
+      <input type="checkbox" class="chb-main" id="spForyouHidden-{{ scope }}">
+      <span>{{ _('Show "Could be for you" on the Discover tab') }}</span>
+    </label>
+  </div>
+  {% endif %}
+
+  <div class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Rows') }}</h3>
+    <div class="settings-hint">
+      {% if scope == 'user' %}
+      {{ _('Which rows your home page shows, and in which order. Switch one off and MediaForge stops collecting its data as well.') }}
+      {% else %}
+      {{ _('The order and visibility a new account starts with. Every user can overrule this for themselves.') }}
+      {% endif %}
+    </div>
+    <div class="mf-order-list" id="spRows-{{ scope }}"></div>
+    {% if scope == 'user' %}
+    <div class="settings-hint" id="spState-{{ scope }}"></div>
+    {% endif %}
+  </div>
+
+  <div class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Cards per row') }}</h3>
+    <div class="settings-hint">{{ _('How many cards a discovery row holds at most. Fewer cards means less to fetch and a shorter page.') }}</div>
+    <div class="settings-row">
+      <select class="mf-token-input" id="spCards-{{ scope }}">
+        <option value="10">10</option>
+        <option value="20">20</option>
+        <option value="30">30</option>
+        <option value="40">40</option>
+        <option value="60">60</option>
+      </select>
+    </div>
+  </div>
+
+  {# The Jellyfin/Plex profile picker used to sit here, in the user scope. It
+     moved to /profile (templates/profile.html), which is where the account's
+     own settings belong -- it only landed in this modal because /settings is
+     admin-only and there was nowhere else a normal account could reach. #}
+
+  {% if scope == 'global' %}
+  <div class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Default filters') }}</h3>
+    <div class="settings-hint">{{ _('Which chips are off when someone opens the home page for the first time. This is a starting point, not a restriction — every user can switch them back on. To take a source away entirely, disable it under Sources.') }}</div>
+    {# One level below .settings-subtitle: these two only label the check
+       grids inside the "Default filters" group, so they must not compete
+       with the group headings themselves. #}
+    <div class="sp-sublabel">{{ _('Sources') }}</div>
+    <div id="spSources-{{ scope }}" class="sp-checks"></div>
+    <div class="sp-sublabel">{{ _('Type') }}</div>
+    <div id="spTypes-{{ scope }}" class="sp-checks"></div>
+  </div>
+
+  {# Kids mode is armed HERE, not on the home page. Instance-wide because it
+     is an instance decision: a per-account PIN would be set by the very
+     account it is supposed to restrict. The button only appears on the home
+     page once this is on AND a PIN exists -- both, because a mode nobody can
+     leave would lock the account out of its own home page. #}
+  <div class="sp-group">
+    <h3 class="settings-subtitle">{{ _('Kids mode') }}</h3>
+    <div class="settings-hint">{{ _('Adds a “Kids” button to the home page that limits it to an age rating. The limit is applied on the server while the rows are built, so it cannot be bypassed from the browser. Leaving the mode asks for the PIN; entering it never does.') }}</div>
+    {# .chb-main goes on the INPUT and .settings-checkbox-row on the label --
+       that is the pattern every other checkbox in this app uses. Putting
+       chb-main on the <label> gave the label itself the 16x16 checkbox
+       styling *with a real checkbox inside it*, which is why it looked like
+       two checkboxes nested in each other and the text spilled over the rows
+       below. #}
+    <div class="settings-row">
+      <label class="settings-checkbox-row" for="spKidsOn-{{ scope }}">
+        <input type="checkbox" class="chb-main" id="spKidsOn-{{ scope }}">
+        <span>{{ _('Offer kids mode on the home page') }}</span>
+      </label>
+    </div>
+    {# h3.settings-subtitle above the row, not an inline <label> beside the
+       control: that is how every other group in this form is labelled
+       ("Cards per row", "Default filters"), and .settings-label has no rule
+       of its own here at all -- it rendered as bare wrapping text. #}
+    <h3 class="settings-subtitle">{{ _('Age limit') }}</h3>
+    <div class="settings-row">
+      <select class="mf-token-input" id="spKidsFsk-{{ scope }}"
+              aria-label="{{ _('Age limit') }}">
+        <option value="0">0</option>
+        <option value="6" selected>6</option>
+        <option value="12">12</option>
+        <option value="16">16</option>
+      </select>
+    </div>
+
+    <h3 class="settings-subtitle">{{ _('PIN') }}</h3>
+    <div class="settings-row">
+      <input type="password" class="mf-token-input" id="spKidsPin-{{ scope }}"
+             autocomplete="new-password" inputmode="numeric"
+             aria-label="{{ _('PIN') }}" placeholder="{{ _('4–8 digits') }}">
+    </div>
+    <div class="settings-hint" id="spKidsState-{{ scope }}"></div>
+  </div>
+  {% endif %}
+
+  <div class="sp-group sp-reset">
+    <button type="button" class="btn btn-secondary" id="spReset-{{ scope }}">
+      {% if scope == 'user' %}{{ _('Reset to the instance default') }}{% else %}{{ _('Reset to the factory default') }}{% endif %}
+    </button>
+  </div>
+</div>
+{% endmacro %}

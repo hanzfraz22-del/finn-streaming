@@ -1,0 +1,961 @@
+{% extends "base.html" %} {% block title %}{{ _('Module Manager') }} — MediaForge{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='settings_rows.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='integrations.css') }}">
+<!-- Page-specific mobile/responsive fixes for the Module Manager + Module Store
+     views below -- both live in this one template, and both were overflowing
+     horizontally on narrow screens (unwrapped badge rows, a fixed-min-width
+     textarea, an unwrapped header button row). See extensions.css. -->
+<link rel="stylesheet" href="{{ url_for('static', filename='extensions.css') }}">
+<!-- mf_components.css is not loaded globally: the store toolbar uses .mf-search
+     and the catalog's empty state uses .mf-empty from it. -->
+<link rel="stylesheet" href="{{ url_for('static', filename='mf_components.css') }}">
+{% endblock %}
+{% block content %}
+<div class="settings-container extensions-page">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">{{ _('Module Manager') }}</h1>
+      <p class="page-subtitle">{{ _('Every discovered web/thirdparties/ folder, who made it, and a working on/off switch for what it registered') }}</p>
+      <!-- The app's own version, next to the per-module MODULE_VERSION badges
+           below: a module's compatibility range (MODULE_MIN/MAX_APP_VERSION)
+           is checked against exactly this, so an admin looking at a module
+           skipped as incompatible shouldn't have to go hunting for what it
+           was compared against. app_version is the same context variable the
+           sidebar brand uses (see app.py's context processor / base.html) —
+           the display version, so a dev install shows its -dev+<sha> suffix
+           here too. -->
+      {% if app_version %}
+      <p class="page-subtitle" style="opacity:.7;">
+        {{ _('MediaForge core version') }}: <code>v{{ app_version }}</code>
+      </p>
+      {% endif %}
+    </div>
+    <!-- The "Refresh" action lives in the rail (_extensions_nav.html), next to
+         the other page-level controls, instead of floating in the header. -->
+  </div>
+
+  <!-- Three views, one page. They used to be two behind a button ("Module
+       Manager" / "Module Store"), with the store's own configuration —
+       repositories, trust, folders, signing keys — stacked ABOVE the catalog,
+       so getting to the modules meant scrolling past settings nobody opened
+       the page to change. Split into a third view instead: the catalog starts
+       at the top of its own view, and the settings are one click away rather
+       than a screenful of scrolling.
+       The update count sits on the Store entry, so the reason to go there is
+       visible from the installed view without opening it. -->
+  <div class="ext-viewseg" id="extViewSeg" role="tablist"
+       aria-label="{{ _('Module Manager views') }}">
+    <button type="button" class="ext-viewseg-btn active" data-extview="installed"
+            role="tab" aria-selected="true">
+      {{ _('Installed') }}
+      <span class="ext-viewseg-n">{{ (extensions|length) + (theme_packs|length) }}</span>
+    </button>
+    {% if store_enabled %}
+    <button type="button" class="ext-viewseg-btn" data-extview="store" role="tab" aria-selected="false">
+      {{ _('Store') }}
+      <span class="integ-subsection-badge badge-update" id="extStoreUpdateBadge" style="display:none;"></span>
+    </button>
+    {% endif %}
+    <button type="button" class="ext-viewseg-btn" data-extview="settings" role="tab" aria-selected="false">
+      {{ _('Settings') }}
+    </button>
+  </div>
+
+  <!-- Restart banner. Everything the store does (install, update, uninstall)
+       is staged into web/thirdparties/_pending/ and applied at the next start
+       by apply_pending_changes() — Flask can add a Blueprint to a running app
+       but can't remove or replace one, so "restart required" is a real state
+       of the system, not politeness. Rendered server-side from pending_changes()
+       so it's correct on first paint, and kept in sync by module_store.js
+       after every staged action. -->
+  <div class="settings-section" id="extPendingBanner"
+       style="{% if not pending.install and not pending.remove %}display:none;{% endif %}border-color:var(--warning);">
+    <div class="settings-row" style="border-bottom:none;">
+      <div class="settings-row-left">
+        <div class="settings-row-label" style="color:var(--warning);">{{ _('Restart required') }}</div>
+        <div class="settings-row-desc" id="extPendingText">
+          {%- if pending.install %}{{ _('To be installed/updated') }}: {{ pending.install|join(', ') }}{% endif %}
+          {%- if pending.install and pending.remove %} · {% endif %}
+          {%- if pending.remove %}{{ _('To be removed') }}: {{ pending.remove|join(', ') }}{% endif %}
+        </div>
+        <div class="settings-row-desc">{{ _('These changes are applied the next time MediaForge starts.') }}</div>
+      </div>
+      <div class="settings-row-right" style="display:flex;gap:8px;align-items:center;">
+        <!-- The restart is not a chore attached to the update — it *is* the update. A
+             module upgrade can only be applied by a process that has not imported the
+             old version yet (see web/restart.py), so this button is the step that makes
+             the new code actually run. Without it the banner is a note asking the admin
+             to go and do the important part in a terminal. -->
+        {% if restart_supported %}
+        <button class="btn btn-primary" id="extRestartBtn">{{ _('Restart now') }}</button>
+        {% else %}
+        <span class="settings-row-desc">
+          {{ _('Restart MediaForge to apply — this process cannot restart itself (debug mode).') }}
+        </span>
+        {% endif %}
+        <button class="btn btn-secondary" id="extPendingCancelBtn">{{ _('Discard staged changes') }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Post-install hint for theme packs. A theme install changes nothing
+       visible on its own: it has to be picked in Settings → Design (per user)
+       or set as the instance default on its card below. The toast that used to
+       say so was wiped by the reload that follows the install, so the message
+       is carried across the reload in sessionStorage and shown here as a
+       banner that stays until it is dismissed. Filled by module_store.js. -->
+  <div class="settings-section" id="extThemeHintBanner"
+       style="display:none;border-color:var(--accent);">
+    <!-- flex-wrap so the two buttons drop under the text on phones instead of
+         squeezing it; .settings-row-left is flex:1/min-width:0 already. -->
+    <div class="settings-row" style="border-bottom:none;flex-wrap:wrap;gap:12px;">
+      <div class="settings-row-left">
+        <div class="settings-row-label" style="color:var(--accent);">
+          {{ _('Theme pack installed') }}
+        </div>
+        <div class="settings-row-desc" id="extThemeHintText"></div>
+        <div class="settings-row-desc">
+          {{ _('Pick it for your own account under Settings → Design → Theme Packs. Admins can make it the default for everyone with "Set as default" on the theme card below.') }}
+        </div>
+      </div>
+      <div class="settings-row-right" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <a class="btn btn-primary" href="{{ url_for('settings_page') }}#design">{{ _('Choose theme') }}</a>
+        <button class="btn btn-secondary" id="extThemeHintDismiss">{{ _('Dismiss') }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- View 1: what is installed here. Shown by default; module_store.js swaps it
+       for the store view (and back) when the header button is used. -->
+  {# The installed view is now two panels behind a floating side menu, so
+     modules and theme packs stop sharing one scroll. has-floating-menu makes
+     this element the flex container -- the menu and the panels have to be its
+     DIRECT children (see shell.css). #}
+  <div id="extInstalledView" class="has-floating-menu">
+  {% include "_extensions_nav.html" %}
+  <div class="settings-tab-panel active" id="exttab-modules">
+  {% if not extensions %}
+  <div class="settings-section">
+    <div class="settings-hint" style="padding:20px 24px;">{{ _('No extension folders discovered.') }}</div>
+  </div>
+  {% endif %}
+
+  <!-- One card per web/thirdparties/<name>/ folder — built from
+       resolve_extensions_overview() (see registry.py), which is fed by
+       every phase of discover_and_register() (routes/extensions.py /
+       web/thirdparties/__init__.py). A folder that failed to import, has
+       no register(app), or was skipped for an unmet DEPENDS_ON still gets
+       a card here, with the reason — that's the whole point of this page.
+       module_name/description/author come from the folder's own
+       MODULE_NAME/MODULE_DESCRIPTION/MODULE_AUTHOR constants (see
+       web/thirdparties/__init__.py's docstring), falling back to the
+       folder name / nothing when a module doesn't declare them. -->
+  {# Labels for registry.module_capabilities()'s kinds. Written as
+     "3 × provider" so neither language needs a plural form for twelve
+     different nouns. #}
+  {% set CAP_LABELS = {
+      'menu': _('menu entry'),
+      'settings_card': _('settings card'),
+      'dashboard_widget': _('dashboard widget'),
+      'provider_pill': _('provider pill'),
+      'provider': _('content source'),
+      'search_source': _('search source'),
+      'cineinfo_source': _('CineInfo source'),
+      'home_feed_source': _('home feed source'),
+      'home_panel': _('home page panel'),
+      'subtitle_source': _('subtitle source'),
+      'hoster': _('hoster'),
+      'mirrors': _('mirror list'),
+      'monitor': _('monitor entry'),
+      'notification_channel': _('notification channel'),
+      'event_hook': _('event hook'),
+      'background_worker': _('background worker')
+  } %}
+
+  {# The tally and the state filters moved into the left rail
+     (_extensions_nav.html): they answer the same question the Modules /
+     Theme Packs switch does, and having them in two places meant one of the
+     two was always scrolled away. Nothing else changed — the filter buttons
+     still carry data-mm-filter and are still driven by extension_cards.js
+     against each card's data-mm-state. #}
+
+  {% for ext in extensions %}
+  <!-- data-module-id carries the module's stable MODULE_ID (falls back to the
+       folder name). module_store.js matches an installed card to a store entry
+       by exactly this id when deciding where to hang the "Update: v…" badge —
+       the store computes update_available on MODULE_ID too, so matching on the
+       folder name (which can differ from the store's declared folder for a
+       hand-installed or renamed module) would attach the badge to nothing. -->
+  {# One state per card, not a row of badges. Everything the old header
+     carried as its own pill (version, author, "Loaded", "Enabled", Registry
+     API) is either the state itself or quiet meta text below the name -- the
+     badges that survive are the ones that are NOT the normal case: a
+     signature that does not check out, an unmet dependency, a pending
+     restart. "Unsigned" deliberately gets none: that is the ordinary state of
+     a third-party module, and labelling it trains people to ignore labels.
+
+     mm-state drives the filter buttons above (data-mm-state) and the sort
+     order (see extensions.py: problems first). #}
+  {% set mm_state = ext.state %}
+  <div class="settings-section integ-card collapsed mm-card mm-{{ mm_state }}"
+       id="integCard-ext-{{ ext.name }}" data-module-id="{{ ext.module_id }}"
+       data-mm-state="{{ mm_state }}">
+    <div class="integ-subsection-header integ-collapsible-header mm-head" style="padding:14px 20px !important;" onclick="toggleIntegCollapse('ext-{{ ext.name }}')">
+      <span class="integ-collapsible-chevron">▸</span>
+      <span class="mm-state">
+        <span class="mm-dot" aria-hidden="true"></span>
+        {%- if mm_state == "error" %}{{ _('Error') }}
+        {%- elif mm_state == "skipped" %}{{ _('Skipped') }}
+        {%- elif mm_state == "ok" %}{{ _('Running') }}
+        {%- else %}{{ _('Off') }}{% endif -%}
+      </span>
+      <span class="mm-ident">
+        <span class="mm-title-row">
+          <span class="integ-subsection-title">{{ ext.module_name }}</span>
+      {# Kind pill. Modules and theme packs sit in the same manager and are
+         installed from the same catalog, but one is Python running in this
+         process and the other is CSS — worth one word on every entry, in both
+         views, so nobody installs a skin expecting a feature. The store list
+         renders the same pill from the index's "type" field. #}
+      <span class="ext-pill ext-pill-module">{{ _('Module') }}</span>
+      <!-- MODULE_VERSION is no longer a badge -- it moved to the meta line
+           below the name. The module store still finds this card by
+           data-module-id and hangs its "Update: v…" badge in this header. -->
+      <!-- Trust, derived from the module's own MODULE.sig (see signing.py) and
+           never from anything a store or the module itself merely claims:
+             official  = signed by a MediaForge maintainer key
+             verified  = signed by a key trusted to bless third-party modules
+             unverified = unsigned, unknown key, or modified after signing
+           The last case is called out separately below, in red — a signature
+           that no longer matches the files is a different kind of event from
+           never having had one. -->
+      {% if ext.trust == 'official' %}
+      <span class="integ-subsection-badge badge-official" title="{{ _('Signed by') }} {{ ext.signature.signer }}">{{ _('Official') }}</span>
+      {% elif ext.trust == 'verified' %}
+      <span class="integ-subsection-badge badge-verified" title="{{ _('Signed by') }} {{ ext.signature.signer }}">{{ _('Verified') }}</span>
+      {% elif ext.signature.signed %}
+      <span class="integ-subsection-badge badge-incompatible" title="{{ ext.signature.reason }}">{{ _('Signature invalid') }}</span>
+      {% endif %}
+      {# No "Unsigned" badge on purpose: unsigned is the normal state of a
+         third-party module, and a warning on the normal case is noise. What
+         the module *does* is stated below instead. #}
+      {% if ext.incompatible_reason %}
+      <span class="integ-subsection-badge badge-incompatible" title="{{ ext.incompatible_reason }}">{{ _('Incompatible') }}</span>
+      {% endif %}
+      {% if ext.depends_on %}
+      <span class="integ-subsection-badge badge-depends" title="{{ _('DEPENDS_ON') }}">
+        → {{ ext.depends_on|join(', ') }}
+      </span>
+      {% endif %}
+        </span>
+        {# Identity as quiet text, not as four pills. #}
+        <span class="mm-meta">v{{ ext.version }}{% if ext.author %} · {{ ext.author }}{% endif %} · <code>{{ ext.module_id }}</code></span>
+        {# The line this page never had: what the module hung into the app.
+           Counts come from registry.module_capabilities(). #}
+        {% if ext.capabilities %}
+        <span class="mm-caps">
+          {% for cap in ext.capabilities %}
+          <span class="mm-cap{% if cap.hot %} mm-cap-hot{% endif %}">{{ cap.count }}&nbsp;×&nbsp;{{ CAP_LABELS.get(cap.kind, cap.kind) }}</span>
+          {% endfor %}
+        </span>
+        {% elif ext.registered == false or ext.imported == false %}
+        <span class="mm-caps"><span class="mm-cap mm-cap-none">{{ _('registered nothing') }}</span></span>
+        {% endif %}
+      </span>
+    </div>
+    <div class="integ-collapsible-body" style="padding:0 20px 16px;">
+      {% if ext.description %}
+      <div class="integ-subsection-hint">{{ ext.description }}</div>
+      {% endif %}
+
+      <!-- Version / module-store metadata line: MODULE_ID (the store's stable
+           id, which survives a folder rename — the folder name is shown too
+           when they differ, since that's what DEPENDS_ON and the log refer to),
+           the MODULE_MIN/MAX_APP_VERSION compatibility range (only shown when
+           the module declares one), MODULE_LICENSE and MODULE_HOMEPAGE. All
+           optional; a module declaring none of them shows just the id line. -->
+      <div class="settings-row" style="border-bottom:none;padding-bottom:0;">
+        <div class="settings-row-left">
+          <div class="settings-row-desc">
+            {{ _('Module ID') }}: <code style="opacity:.6;font-size:.9em;">{{ ext.module_id }}</code>
+            {%- if ext.module_id != ext.name %} · {{ _('Folder') }}: <code style="opacity:.6;font-size:.9em;">{{ ext.name }}</code>{% endif %}
+            {%- if ext.min_app_version %} · {{ _('Requires MediaForge') }} ≥ {{ ext.min_app_version }}{% endif %}
+            {%- if ext.max_app_version %} · {{ _('up to') }} ≤ {{ ext.max_app_version }}{% endif %}
+            · {{ _('Registry API') }}: v{{ ext.api_version }}
+            {%- if ext.requirements %} · {{ _('Requirements') }}: {{ ext.requirements|join(', ') }}{% endif %}
+            {%- if ext.license %} · {{ _('License') }}: {{ ext.license }}{% endif %}
+          </div>
+          {% if ext.homepage %}
+          <div class="settings-row-desc">
+            <a href="{{ ext.homepage }}" target="_blank" rel="noopener noreferrer">{{ ext.homepage }}</a>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- A signature that exists but doesn't verify is the one case worth
+           shouting about: either the module was modified after it was signed, or
+           it's signed by somebody this MediaForge has no reason to believe.
+           An *unsigned* module gets no warning at all — that's the normal state
+           of most third-party modules, not a fault. -->
+      {% if ext.signature.signed and not ext.signature.valid %}
+      <div class="settings-hint" style="color:var(--error);">
+        {{ _('This module carries a signature that does not check out.') }}
+        <code>{{ ext.signature.reason }}</code>
+      </div>
+      {% elif ext.signature.valid %}
+      <div class="settings-hint">
+        {{ _('Signed by') }}: {{ ext.signature.signer }}
+        <code style="opacity:.6;">{{ ext.signature.key_id }}</code>
+      </div>
+      {% endif %}
+
+      {% if ext.incompatible_reason %}
+      <div class="settings-hint" style="color:var(--error);">
+        {{ _('This module declares a MediaForge version range the running version is outside of, so it was not loaded.') }}
+        <code>{{ ext.incompatible_reason }}</code>
+      </div>
+      {% endif %}
+      <!-- ...and not the recorded error when that error IS the incompatibility
+           (which is exactly what discover_and_register() records as the skip
+           reason), or the same sentence would render twice in a row. -->
+      {# The recorded reason is what somebody has to paste into an issue, and
+         an import failure's reason is a whole traceback. One line of it is
+         useless, so it gets its own block: collapsed by default (it is long),
+         with a copy button that does not require selecting monospace text in a
+         scroll box. #}
+      {% if ext.error and ext.error != ext.incompatible_reason %}
+      <div class="mm-error-box">
+        {% if "\n" in ext.error %}
+        <div class="mm-error-head">
+          <button type="button" class="mm-error-toggle" data-mm-trace="mmTrace-{{ ext.name }}"
+                  aria-expanded="false" aria-controls="mmTrace-{{ ext.name }}">
+            ▸ {{ _('Show full error') }}
+          </button>
+          <button type="button" class="btn btn-ghost btn-sm mm-copy-btn"
+                  data-mm-copy="mmTrace-{{ ext.name }}">{{ _('Copy') }}</button>
+        </div>
+        <pre class="mm-trace" id="mmTrace-{{ ext.name }}" hidden>{{ ext.error }}</pre>
+        {% else %}
+        <div class="mm-error-head">
+          <div class="settings-hint" style="color:var(--error);padding:0;">{{ ext.error }}</div>
+          <button type="button" class="btn btn-ghost btn-sm mm-copy-btn"
+                  data-mm-copy="mmTrace-{{ ext.name }}">{{ _('Copy') }}</button>
+        </div>
+        <pre class="mm-trace" id="mmTrace-{{ ext.name }}" hidden>{{ ext.error }}</pre>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <!-- Needs a Python dependency it doesn't have. Previously this module was
+           simply skipped and the admin was left with a one-line reason and no
+           way to act on it — which is why module authors started vendoring pip
+           packages into their own folders. The dependency is installed into
+           ~/.mediaforge/module_deps/ (never into MediaForge's own environment,
+           never into the module folder) and the module is registered live if
+           that was all that was blocking it. See thirdparties/deps.py. -->
+      {% if ext.missing_requirements %}
+      <div class="settings-hint" style="color:var(--error);">
+        {{ _('This module needs a Python dependency that is not installed:') }}
+        <code>{{ ext.missing_requirements|join(', ') }}</code>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Install dependency') }}</div>
+          <div class="settings-row-desc">
+            {% if ext.deps_installable %}
+            {{ _('Downloads the package from PyPI into the MediaForge module folder and loads the module afterwards.') }}
+            {% else %}
+            {{ _('This build cannot install packages itself. Install the dependency into the environment MediaForge runs in.') }}
+            {% endif %}
+          </div>
+        </div>
+        <div class="settings-row-right">
+          <button class="btn btn-primary"
+                  {% if not ext.deps_installable %}disabled{% endif %}
+                  onclick="installModuleDeps('{{ ext.name }}', this)">
+            {{ _('Install now') }}
+          </button>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if ext.registered_items %}
+      <!-- Deliberately NOT the full settings card here (that used to be
+           render_settings_card(card), showing every extra_settings field —
+           e.g. Media Kalender's Lookahead/Cache/Reminder rows — duplicated
+           on top of the Integrations/Notifications page that already owns
+           them). The Modulmanager's job is just "is this module on, and
+           where do I configure it", not a second copy of every field: two
+           rows per registered item — a plain enable/disable toggle (same
+           generic /api/settings/thirdparty/<id> master toggle every card
+           uses, see extension_cards.js) and a jump link to that item's full
+           card on whichever settings_host/settings_tab it actually
+           registered onto (normally Integrations' Third Party tab). The
+           link's ?open=<id>#<tab> is read by integrations.js /
+           notifications.html on load to switch to the right tab, expand
+           that one card, and scroll it into view. -->
+      {% for item in ext.registered_items %}
+      {% set card = get_thirdparty_card(item.id) %}
+      {% if card %}
+      <div class="settings-row" style="border-bottom:none;padding-bottom:0;">
+        <div class="settings-row-left">
+          <div class="settings-row-desc">
+            <code style="opacity:.6;font-size:.9em;">{{ item.id }}</code>
+            {% if item.section %} · {{ _('Sidebar') }}: {{ _(item.section|capitalize) }}{% endif %}
+            · {{ _('Settings') }}:
+            {%- if item.settings_host in ['integrations', 'settings'] %} {{ _('Module Settings') }}
+            {%- else %} {{ _(item.settings_host|capitalize) }} / {{ item.settings_tab }}{% endif %}
+            {%- if item.has_dashboard_widget %} · {{ _('Dashboard widget') }}{% endif -%}
+            {%- if item.has_provider_pill %} · {{ _('Provider pill') }}{% endif %}
+            {%- if item.requires_enabled %} · {{ _('Requires') }}: {{ item.requires_enabled|join(', ') }}{% endif %}
+          </div>
+          {% if item.requires_enabled and not item.requires_enabled_ok %}
+          <div class="settings-row-desc" style="color:var(--error, #e74c3c);">
+            {{ _('One or more required modules are not currently enabled — this module will not work until they are.') }}
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Enable module') }}</div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" class="thirdparty-toggle" data-thirdparty-id="{{ card.id }}" onchange="saveThirdpartyToggle('{{ card.id }}', this)" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      {# Where "Open module" goes. Module cards no longer render on the
+         Integrations page (its Third Party tab is for the integrations
+         MediaForge ships) and never rendered inside the Settings page's own
+         tabs, so both of those hosts resolve to Module Settings -- the page
+         that actually holds the card. Only hosts that really keep a card of
+         their own (Notifications, Monitoring) still get a direct link.
+         Linking to a page that does not render the card is worse than no
+         button: it looks like the module lost its settings. #}
+      {% set _mod_hosts = ['integrations', 'settings'] %}
+      {% set _open_url = url_for('module_settings_page') ~ '?open=' ~ item.id
+                         if item.settings_host in _mod_hosts
+                         else url_for(item.settings_host + '_page') ~ '?open=' ~ item.id ~ '#' ~ item.settings_tab %}
+      <div class="settings-row" style="border-bottom:none;">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Open module') }}</div>
+          <div class="settings-row-desc">
+            {% if item.settings_host in _mod_hosts %}{{ _('Configure its settings under Module Settings') }}
+            {% else %}{{ _('Configure its settings on the') }} {{ _(item.settings_host|capitalize) }} {{ _('page') }}{% endif %}
+          </div>
+        </div>
+        <div class="settings-row-right">
+          <a class="btn btn-secondary" style="text-decoration:none;display:inline-block;" href="{{ _open_url }}">{{ _('Open module') }} →</a>
+        </div>
+      </div>
+      {% endif %}
+      {% endfor %}
+      {% else %}
+      <div class="settings-hint">{{ _('This folder registered no sidebar/settings item — could be a background-job-only integration, or one that failed before reaching register_thirdparty().') }}</div>
+      {% endif %}
+
+      <!-- Uninstall. Deliberately available for every folder, not just
+           store-installed ones and not just healthy ones: a module too broken
+           to import is one you especially want to be able to get rid of from
+           the UI. Staged, never immediate — see the restart banner above. -->
+      <div class="settings-row" style="border-bottom:none;">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Uninstall module') }}</div>
+          <div class="settings-row-desc">
+            {{ _('Removes the folder and its namespaced settings on the next start. Data in its own tables is kept.') }}
+          </div>
+        </div>
+        <div class="settings-row-right">
+          <button class="btn btn-danger ext-uninstall-btn" data-folder="{{ ext.name }}"
+                  data-label="{{ ext.module_name }}">{{ _('Uninstall') }}</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+
+  </div><!-- /#exttab-modules -->
+
+  <div class="settings-tab-panel" id="exttab-themes">
+  <!-- ── Installed theme packs (web/themes.py) ──────────────────────────────
+       Same card idiom as modules above, same store, different lifecycle:
+       themes are inert CSS/asset packs, so install, upgrade and uninstall are
+       always live — no restart banner ever applies to them. Invalid folders
+       (hand-copied, missing manifest, disallowed file types) are still listed
+       with their reasons, for the same "why isn't it showing up" job this
+       page does for modules. data-module-id carries the manifest id the store
+       matches on for the "Update: v…" badge, exactly like module cards. -->
+  {% if theme_packs %}
+  <div class="settings-section" style="padding:14px 20px;">
+    <span class="integ-subsection-title">{{ _('Theme Packs') }}</span>
+    <span class="integ-subsection-badge badge-version">{{ theme_packs | length }}</span>
+  </div>
+  {% endif %}
+  {% for tp in theme_packs %}
+  <div class="settings-section integ-card collapsed" id="integCard-theme-{{ tp.folder }}"
+       data-module-id="{{ tp.id }}" data-kind="theme">
+    <div class="integ-subsection-header integ-collapsible-header" style="padding:14px 20px !important;"
+         onclick="toggleIntegCollapse('theme-{{ tp.folder }}')">
+      <span class="integ-collapsible-chevron">▸</span>
+      <span class="integ-subsection-title">{{ tp.name }}</span>
+      <span class="ext-pill ext-pill-theme">{{ _('Theme') }}</span>
+      <span class="integ-subsection-badge badge-version">v{{ tp.version }}</span>
+      {% if tp.signature.tier == 'official' %}
+      <span class="integ-subsection-badge badge-official" title="{{ _('Signed by') }} {{ tp.signature.signer }}">{{ _('Official') }}</span>
+      {% elif tp.signature.tier == 'verified' %}
+      <span class="integ-subsection-badge badge-verified" title="{{ _('Signed by') }} {{ tp.signature.signer }}">{{ _('Verified') }}</span>
+      {% elif tp.signature.signed %}
+      <span class="integ-subsection-badge badge-incompatible" title="{{ tp.signature.reason }}">{{ _('Signature invalid') }}</span>
+      {% else %}
+      <span class="integ-subsection-badge badge-unsigned" title="{{ _('No MODULE.sig — nobody vouches for this theme') }}">{{ _('Unsigned') }}</span>
+      {% endif %}
+      {% if tp.author %}
+      <span class="integ-subsection-badge badge-author" title="{{ _('Author') }}">{{ tp.author }}</span>
+      {% endif %}
+      {% if not tp.valid %}
+      <span class="integ-subsection-badge badge-import-failed" title="{{ tp.errors | join('; ') }}">{{ _('Invalid') }}</span>
+      {% endif %}
+      {% if active_theme_folder == tp.folder %}
+      <span class="integ-subsection-badge badge-enabled">{{ _('Instance default') }}</span>
+      {% endif %}
+    </div>
+    <div class="integ-collapsible-body">
+      {% set desc = tp.description.get(ui_language) or tp.description.get('en') %}
+      {% if desc %}
+      <div class="settings-hint" style="padding:10px 20px 0;">{{ desc }}</div>
+      {% endif %}
+      {% if not tp.valid %}
+      <div class="settings-hint" style="padding:10px 20px 0;color:var(--error);">
+        {{ _('This theme pack is invalid and will not be offered:') }}
+        {{ tp.errors | join('; ') }}
+      </div>
+      {% endif %}
+      {% if tp.preview %}
+      <div style="padding:12px 20px 0;">
+        <img class="theme-pack-preview" loading="lazy" alt="{{ tp.name }} preview"
+             src="{{ url_for('theme_asset', folder=tp.folder, asset=tp.preview) }}?v={{ tp.version }}" />
+      </div>
+      {% endif %}
+      <div class="settings-row" style="padding:10px 20px;">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Instance default') }}</div>
+          <div class="settings-row-desc">
+            {{ _('Make this the theme every user sees unless they picked their own in Settings → Design.') }}
+          </div>
+        </div>
+        <div class="settings-row-right">
+          {% if active_theme_folder == tp.folder %}
+          <button class="btn btn-secondary theme-default-btn" data-folder="">{{ _('Revert to default look') }}</button>
+          {% elif tp.valid %}
+          <button class="btn btn-primary theme-default-btn" data-folder="{{ tp.folder }}">{{ _('Set as default') }}</button>
+          {% endif %}
+        </div>
+      </div>
+      <div class="settings-row" style="border-bottom:none;">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Uninstall theme') }}</div>
+          <div class="settings-row-desc">
+            {{ _('Deletes the theme folder immediately — themes are plain CSS and assets, no restart needed. Users who selected it fall back to the default look.') }}
+          </div>
+        </div>
+        <div class="settings-row-right">
+          <button class="btn btn-danger ext-uninstall-btn" data-folder="{{ tp.folder }}"
+                  data-kind="theme" data-label="{{ tp.name }}">{{ _('Uninstall') }}</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  </div><!-- /#exttab-themes -->
+  </div><!-- /#extInstalledView -->
+
+  <!-- ── View 3: settings ─────────────────────────────────────────────────
+       Where the modules come from and what this install is willing to run.
+       This used to sit on top of the catalog, which meant every visit to the
+       store scrolled past a trust-key table to reach the modules. It is
+       configuration, opened deliberately — so it gets its own view. -->
+  <div id="extSettingsView" style="display:none;">
+
+  <!-- Card 0: "anyone can build one". The store reads like a catalog somebody else
+       fills, which hides the actual situation: web/thirdparties/ and web/themes/ are
+       a documented public API, and a third party's module is a first-class citizen
+       here (see the "Additional repositories" row below -- a stranger's repository is
+       an ordinary store). So the three things a would-be author needs are stated at
+       the point where they realise they want one: worked examples with their own
+       READMEs, the reference docs, and where to actually submit the result.
+       Placed above the settings card because it is an invitation, not configuration,
+       and an invitation buried under a trust-key table is not one.
+       flex-wrap + the .ext-author-links helper (extensions.css) so the link row
+       stacks on phones instead of pushing the card sideways. -->
+  <div class="settings-section" id="extStoreAuthorCard">
+    <div class="integ-subsection-header" style="padding:14px 20px !important;">
+      <span class="integ-subsection-title">{{ _('Build your own module or theme') }}</span>
+      <span class="integ-subsection-badge badge-version">{{ _('Open to everyone') }}</span>
+    </div>
+    <div style="padding:0 20px 16px;">
+      <div class="settings-row" style="border-bottom:none;flex-wrap:wrap;gap:12px;">
+        <div class="settings-row-left">
+          <div class="settings-row-desc">
+            {{ _('The store is not ours alone: anyone can write a MediaForge module or theme pack and publish it here. Modules add providers, hosters, notification channels, pages and settings through a documented API; theme packs are plain CSS, no Python at all.') }}
+          </div>
+          <div class="settings-row-desc">
+            {{ _('Start from the ready-made examples — each folder is a working module with its own README explaining what it registers and why.') }}
+          </div>
+        </div>
+        {# Layout lives in extensions.css (.ext-author-links). It used to be an
+           inline style with max-width:35%, which combined with
+           .settings-row-right{flex-shrink:0} and .btn{white-space:nowrap} to
+           push the longest button — "Publish on the developer portal", longer
+           still once translated — straight out of the box. #}
+        <div class="settings-row-right ext-author-links">
+          <a class="btn btn-secondary" target="_blank" rel="noopener noreferrer"
+             href="https://github.com/PD-Codes/MediaForge/tree/main/.examples/thirdparties">
+            {{ _('Module examples') }}
+          </a>
+          <a class="btn btn-secondary" target="_blank" rel="noopener noreferrer"
+             href="https://github.com/PD-Codes/MediaForge/tree/main/.examples/themes">
+            {{ _('Theme examples') }}
+          </a>
+          <a class="btn btn-secondary" target="_blank" rel="noopener noreferrer"
+             href="https://github.com/PD-Codes/MediaForge/wiki/Modules">
+            {{ _('Developer docs') }}
+          </a>
+          <!-- The submission side of the same store this page reads from. Primary,
+               because it is the step that turns a finished folder into an entry in
+               the catalog below; a new submission starts out unreviewed, which is
+               exactly the state the "Allow unverified and unreviewed modules"
+               toggle further down decides whether to show. -->
+          <a class="btn btn-primary" target="_blank" rel="noopener noreferrer"
+             href="https://mediaforge.pd-codes.net">
+            {{ _('Publish on the developer portal') }}
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cards 1-3: where the modules come from, what this install is willing to
+       run, and where they physically live — three different questions, so
+       three cards in a grid (.ext-settings-grid, extensions.css) instead of
+       one long scroll. Reading a list of available modules and deciding
+       which repositories to trust are two different jobs, and stacking every
+       row into a single card made the modules look like just another
+       settings row. -->
+  <div class="ext-settings-grid">
+
+  <!-- Card 1: Repositories. -->
+  <div class="settings-section" id="extStoreSection">
+    <div class="integ-subsection-header" style="padding:14px 20px !important;">
+      <span class="integ-subsection-title">{{ _('Repositories') }}</span>
+      {% if store_enabled %}
+      <span class="integ-subsection-badge badge-version" id="extStoreName">{{ store_url }}</span>
+      {% else %}
+      <span class="integ-subsection-badge badge-disabled">{{ _('Not configured') }}</span>
+      {% endif %}
+    </div>
+    <div style="padding:0 20px 16px;">
+      <!-- The official store: read-only, on purpose. It is a constant in
+           thirdparties/store.py, not a setting — a field here would mean "talk
+           someone into pasting a URL and their official modules now come from
+           you". Shown, because an admin should be able to see where their modules
+           come from; not editable, because that is not their decision to make. -->
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Official store') }}</div>
+          <div class="settings-row-desc">
+            {{ _('Ships with MediaForge and cannot be changed here — this is the one repository whose modules this build is willing to call official.') }}
+          </div>
+        </div>
+        <div class="settings-row-right">
+          {% if store_url %}
+          <code style="opacity:.8;">{{ store_url }}</code>
+          {% else %}
+          <span class="settings-row-desc">{{ _('This build ships no official store.') }}</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Additional repositories: the part that IS the admin's to decide. An extra
+           repo is an ordinary store — same index format, same signature check, no
+           special standing. Its modules come out "unverified" in practice, because a
+           third-party repo doesn't hold the keys this build was compiled with. That's
+           the correct outcome, not a restriction. -->
+      <div class="settings-row" id="extStoreExtraRow" style="border-bottom:none;">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Additional repositories') }}</div>
+          <div class="settings-row-desc">
+            {{ _('One URL per line. Modules from a third-party repository are unverified unless they carry a signature this MediaForge trusts.') }}
+          </div>
+        </div>
+        <div class="settings-row-right ext-store-extra-controls" style="display:flex;gap:8px;align-items:flex-start;">
+          <textarea id="extStoreExtraUrls" rows="3" class="ext-store-extra-textarea"
+                    placeholder="https://someone-else.example/modules">{{ extra_urls|join('\n') }}</textarea>
+          <button class="btn btn-primary" id="extStoreExtraSaveBtn">{{ _('Save') }}</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Card 2: Trust. -->
+  <div class="settings-section">
+    <div class="integ-subsection-header" style="padding:14px 20px !important;">
+      <span class="integ-subsection-title">{{ _('Trust') }}</span>
+    </div>
+    <div style="padding:0 20px 16px;">
+      <!-- One switch, two consequences, and they belong together: it permits unverified
+           modules to be installed AND it makes the store list the ones nobody has reviewed
+           yet (its index-all.json — see thirdparties/store.py's fetch_index()). Splitting
+           them into two toggles would mean an admin could switch on "allow unverified" and
+           see no change whatsoever, because the catalog they are reading never mentions
+           any. -->
+      <div class="settings-row" id="extStoreUnverifiedRow" {% if not store_enabled %}style="display:none;"{% endif %}>
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Allow unverified and unreviewed modules') }}</div>
+          <div class="settings-row-desc">
+            {{ _('Unverified entries carry no signature this build trusts, and unreviewed ones are submissions nobody has read yet — they are shown only while this is on. Installing one runs it inside MediaForge with full access to your data.') }}
+          </div>
+        </div>
+        <div class="settings-row-right">
+          <label class="toggle">
+            <input type="checkbox" id="extStoreUnverified" {% if allow_unverified %}checked{% endif %}>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Trusted signing keys: shown, never editable. They are BUILTIN_KEYS in
+           thirdparties/trusted_keys.py, compiled into this build. A trust root a user
+           can paste into is a trust root an attacker can talk them into pasting into
+           ("add this key and my module shows up as Official"), and the badge would
+           stop meaning anything at all. So this row exists to answer "why is that
+           module official?" — not to change the answer. -->
+      <div class="settings-row" id="extStoreKeysRow" style="border-bottom:none;">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Trusted signing keys') }}</div>
+          <div class="settings-row-desc">
+            {{ _('Built into MediaForge and not configurable. A module is "Official" because one of these keys signed it — neither a store nor a setting can decide that.') }}
+          </div>
+        </div>
+        <div class="settings-row-right">
+          {% if trusted_keys %}
+          {% for key in trusted_keys %}
+          <span class="integ-subsection-badge {% if 'official' in key.tiers %}badge-official{% else %}badge-verified{% endif %}"
+                title="{{ key.key_id }} · {{ key.tiers|join(', ') }}">
+            {{ key.name }}
+          </span>
+          {% endfor %}
+          {% else %}
+          <span class="settings-row-desc">{{ _('This build trusts no signing keys — nothing can be official.') }}</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Card 3: Locations. Not settings — facts. Both live next to the database
+       so they survive an update; an admin needs them when installing a module
+       or theme by hand or looking for one the store put there. -->
+  <div class="settings-section">
+    <div class="integ-subsection-header" style="padding:14px 20px !important;">
+      <span class="integ-subsection-title">{{ _('Locations') }}</span>
+    </div>
+    <div style="padding:0 20px 16px;">
+      <div class="settings-row">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Module folder') }}</div>
+          <div class="settings-row-desc">
+            {{ _('Installed modules live here, outside MediaForge\'s program files — next to your database and cache, so they survive an update. A module installed by hand is simply a folder dropped in here; it is picked up on the next start.') }}
+          </div>
+        </div>
+        <div class="settings-row-right">
+          <code style="opacity:.8;">{{ modules_dir }}</code>
+        </div>
+      </div>
+      <!-- Same fact for theme packs (web/themes.py). -->
+      <div class="settings-row" style="border-bottom:none;">
+        <div class="settings-row-left">
+          <div class="settings-row-label">{{ _('Theme folder') }}</div>
+          <div class="settings-row-desc">
+            {{ _('Installed theme packs live here. A theme installed by hand is a folder with a theme.json dropped in here — it shows up on the next page load, no restart needed.') }}
+          </div>
+        </div>
+        <div class="settings-row-right">
+          <code style="opacity:.8;">{{ themes_dir }}</code>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  </div><!-- /.ext-settings-grid -->
+
+  </div><!-- /#extSettingsView -->
+
+  <!-- ── View 2: the catalog ──────────────────────────────────────────────
+       Three columns, not a grid of cards: browsing a catalog is picking a
+       shortlist and then reading ONE entry properly, and a card grid can only
+       do the first half — everything an entry actually has to answer before
+       an admin runs somebody else's Python in their process (what it
+       registers, who signed it, which repository it came from, whether it
+       fits this MediaForge) does not fit on a tile, and a modal for it would
+       close the list you were comparing against.
+
+       Left: what kind of thing and from where. Middle: the shortlist, one row
+       each, with the three pills that matter — kind, installed, update.
+       Right: the selected entry in full, list still visible next to it.
+
+       The catalog is fetched client-side (module_store.js) on page load even
+       when this view is closed: that is what puts the update count on the
+       Store tab and the "Update: v…" badges on the installed cards. A slow or
+       unreachable repository must not be able to delay the page whose actual
+       job is showing the modules already installed here. -->
+  <div id="extStoreView" style="display:none;">
+    <div class="ext-store-split">
+
+      <!-- Left rail: facets, all computed from the catalog in the browser. -->
+      <aside class="ext-store-rail" id="extStoreRail">
+        <div class="ext-rail-group">
+          <span class="ext-rail-label">{{ _('Type') }}</span>
+          <div class="ext-rail-facets" id="extTypeFilter" role="group" aria-label="{{ _('Filter by type') }}">
+            <button type="button" class="ext-facet active" data-type="">{{ _('All') }}
+              <span class="ext-facet-n" data-count-type=""></span></button>
+            <button type="button" class="ext-facet" data-type="module">{{ _('Modules') }}
+              <span class="ext-facet-n" data-count-type="module"></span></button>
+            <button type="button" class="ext-facet" data-type="theme">{{ _('Themes') }}
+              <span class="ext-facet-n" data-count-type="theme"></span></button>
+          </div>
+        </div>
+        <!-- Status + trust + category facets are filled by module_store.js:
+             their values come from the catalog, so the server cannot know them. -->
+        <div id="extStoreFacets"></div>
+      </aside>
+
+      <!-- Middle: search + the list itself. -->
+      <div class="ext-store-main">
+        <div class="ext-store-toolbar">
+          <div class="mf-search ext-store-search">
+            <svg class="mf-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="search" class="mf-search-input" id="extStoreSearch"
+                   placeholder="{{ _('Search modules and themes…') }}"
+                   aria-label="{{ _('Search modules and themes…') }}" autocomplete="off">
+            <button type="button" class="mf-search-clear" id="extStoreSearchClear"
+                    aria-label="{{ _('Clear search') }}" hidden>&times;</button>
+          </div>
+          <span class="integ-subsection-badge badge-version" id="extStoreCount" style="display:none;"></span>
+          <button class="btn btn-secondary" id="extStoreRefreshBtn"
+                  style="{% if not store_enabled %}display:none;{% endif %}">
+            {{ _('Refresh store') }}
+          </button>
+        </div>
+        <div id="extStoreCatalog" {% if not store_enabled %}style="display:none;"{% endif %}>
+          <div class="settings-hint" id="extStoreStatus">{{ _('Loading store…') }}</div>
+          <div id="extStoreList"></div>
+        </div>
+      </div>
+
+      <!-- Right: the selected entry. Rendered by module_store.js; on phones it
+           is not a column but a sheet over the list (see extensions.css). -->
+      <aside class="ext-store-detail" id="extStoreDetail" aria-live="polite"></aside>
+    </div>
+  </div><!-- /#extStoreView -->
+</div>
+<!-- Generic enable-toggle load/save helpers (see web/thirdparties/registry.py's
+     register_generic_settings_routes) -- the "Enable module" toggle above
+     is the same .thirdparty-toggle every settings card uses, populated and
+     saved via loadThirdpartyToggles()/saveThirdpartyToggle() from this file,
+     exactly like integrations.html/notifications.html. -->
+<script src="{{ url_for('static', filename='extension_cards.js') }}"></script>
+<!-- Module store client: the installed/store view switch, catalog rendering,
+     install/uninstall/discard actions, restart banner, extra repositories. The
+     official store URL and the trusted keys are compiled in and only displayed
+     here — see web/thirdparties/store.py and trusted_keys.py. -->
+<script src="{{ url_for('static', filename='module_store.js') }}"></script>
+<script>
+// "Refresh" button -- POST /api/extensions/rescan (see routes/extensions.py /
+// web/thirdparties/__init__.py's rescan_new_modules()) picks up any NEW
+// web/thirdparties/<name>/ folder live, no app restart needed. Simplest
+// correct way to show the result is a full page reload afterwards rather
+// than duplicating this template's card-rendering logic in JS -- this
+// button is clicked rarely (only right after dropping in a new module
+// folder), so the reload's cost doesn't matter.
+// extensions.html doesn't load app.js/integrations.js/etc. (the only
+// scripts that define a global showToast()), so calling the bare
+// showToast(...) here throws a ReferenceError -- which, since it happened
+// inside the try (and, worse, inside the catch's own error-toast call
+// too), silently aborted this whole handler before it ever reached the
+// btn.disabled=false / reload lines. That's why "Scanne…" used to get
+// stuck forever even on a fast, successful 200 response. Guard against
+// showToast not existing instead of assuming every page defines it.
+function extRescanToast(msg) {
+  if (window.showToast) { window.showToast(msg); return; }
+  console.log("[Modulmanager]", msg);
+}
+
+document.getElementById("extRescanBtn").addEventListener("click", async function () {
+  const btn = this;
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = t("Scanne…", "Scanning…");
+  try {
+    const resp = await fetch("/api/extensions/rescan", { method: "POST" });
+    const data = await resp.json();
+    const found = (data.new_modules || []).length;
+    extRescanToast(found
+      ? t(`${found} neue(s) Modul(e) gefunden und geladen: ${data.new_modules.join(", ")}`,
+          `${found} new module(s) found and loaded: ${data.new_modules.join(", ")}`)
+      : t("Keine neuen Module gefunden.", "No new modules found."));
+    if (found) {
+      setTimeout(() => window.location.reload(), 900);
+    } else {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  } catch (e) {
+    extRescanToast(t("Fehler: ", "Error: ") + e.message);
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+});
+
+// "Install dependency" -- POST /api/extensions/install-deps with the module's
+// FOLDER name. The requirements themselves come from the module's own
+// MODULE_REQUIREMENTS on the server side; nothing about which package gets
+// installed is decided here (see routes/extensions.py). pip can take a while on
+// a cold cache, so the button says so rather than looking hung.
+async function installModuleDeps(folder, btn) {
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = t("Installiere…", "Installing…");
+  try {
+    const resp = await fetch("/api/extensions/install-deps", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder: folder }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) {
+      throw new Error(data.error || ("HTTP " + resp.status));
+    }
+    if (data.registered) {
+      extRescanToast(t("Abhängigkeit installiert, Modul geladen.",
+                       "Dependency installed, module loaded."));
+    } else {
+      extRescanToast(t("Abhängigkeit installiert — Neustart nötig.",
+                       "Dependency installed — restart required."));
+    }
+    setTimeout(() => window.location.reload(), 900);
+  } catch (e) {
+    extRescanToast(t("Fehler: ", "Error: ") + e.message);
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+</script>
+{% endblock %}

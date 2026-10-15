@@ -1,0 +1,1392 @@
+/* ===================================================================
+   MediaForge — Modal / overlay components
+   The shared .overlay + .modal base (used by the Queue, Captcha and
+   Download modals, and reused as-is by several pages' own custom
+   modals — Auto-Sync, Stats, Seerr, History), the download-confirm
+   modal, and whatever series-detail-modal styling stayed global
+   because it's reused outside templates/shared_modals.html too (see
+   shared_modals.css for the parts that truly are exclusive to that
+   include).
+   =================================================================== */
+
+/* ===================================================================
+   MODALS (Queue, Captcha, Download)
+   =================================================================== */
+.queue-overlay,
+.captcha-overlay,
+.modal-overlay,
+.directlink-overlay,
+.directlink-format-overlay,
+.directlink-finalize-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: none;
+  overflow-y: auto;
+  /* Highest overlay tier in the app: sits above the .overlay/.download-overlay
+     tier (900, below) so a captcha or queue modal always wins if both are open */
+  z-index: 1000;
+  /* center content whether opened with display:block or display:flex */
+  padding: 20px 16px;
+}
+
+/* When JS uses style.display="block", grid centers the modal */
+.queue-overlay[style*="block"],
+.captcha-overlay[style*="block"],
+.modal-overlay[style*="block"],
+.directlink-overlay[style*="block"],
+.directlink-format-overlay[style*="block"],
+.directlink-finalize-overlay[style*="block"] {
+  display: grid !important;
+  place-items: center;
+}
+
+.queue-modal,
+.captcha-modal {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  width: 100%;
+  max-width: 560px;
+  max-height: calc(100vh - 80px);
+  margin: 0 auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: modal-in 0.2s ease;
+}
+
+/* Generic confirmation dialog (#confirmModal in base.html, shown app-wide via
+   showConfirm()). These styles used to live only in the library's own CSS, so on pages
+   that don't load it (e.g. Settings) the dialog rendered with no card
+   background. Kept here so the dialog looks right everywhere. */
+.confirm-modal {
+  position: relative;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 24px;
+  animation: modal-in 0.2s ease;
+}
+.confirm-modal-msg {
+  padding-bottom: 12px;
+}
+.confirm-modal-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.confirm-modal .lib-remove-title {
+  color: var(--error);
+  padding-bottom: 12px;
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Shared modal header */
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  transition: background var(--transition), color var(--transition);
+}
+
+/* ===================================================================
+   Telemetry: first-run consent dialog (templates/base.html,
+   TELEMETRY_PLAN.md §4.0). A genuinely global, app-wide component (can
+   appear on any page on first load), so it lives here alongside the other
+   modal/overlay primitives rather than in a page-specific stylesheet.
+
+   The two action buttons are intentionally IDENTICAL in size/weight/color
+   -- no accent-colored "primary" button, no pre-selection. That's a
+   deliberate deviation from this project's usual btn-primary/btn-secondary
+   pattern: an optically favoured "Yes" would undercut the "active, free
+   decision" this dialog exists to capture (GDPR reasoning, see
+   TELEMETRY_PLAN.md §7a). Do not add a primary/secondary distinction here.
+   =================================================================== */
+.telemetry-consent-overlay {
+  /* Highest tier: this dialog must win over anything else that could
+     conceivably be open on first load. */
+  z-index: 1100;
+}
+
+.telemetry-consent-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 28px;
+  animation: modal-in 0.2s ease;
+}
+
+.telemetry-consent-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 14px;
+}
+
+.telemetry-consent-text {
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin-bottom: 14px;
+}
+
+.telemetry-consent-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.telemetry-consent-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+
+.telemetry-consent-btn {
+  flex: 1;
+  min-width: 180px;
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.telemetry-consent-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
+}
+
+.modal-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.modal-close svg {
+  width: 18px;
+  height: 18px;
+}
+
+.modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+  white-space: nowrap;
+}
+
+.btn-ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  /* --border-hover isn't defined in :root; this always falls back to the literal value */
+  border-color: var(--border-hover, rgba(255, 255, 255, 0.2));
+}
+
+/* Queue filter toolbar */
+.queue-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.queue-filter-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.queue-filter-tab {
+  padding: 4px 11px;
+  border-radius: 20px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.77rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.queue-filter-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.queue-filter-tab.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+}
+
+.qf-count {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: 10px;
+  padding: 0 5px;
+  font-size: 0.70rem;
+  font-weight: 600;
+  min-width: 16px;
+  text-align: center;
+}
+
+.queue-filter-tab.active .qf-count {
+  /* Hardcoded purple (the default accent) instead of var(--accent-rgb) —
+     doesn't follow a custom accent color chosen in the Appearance popup */
+  background: rgba(124, 58, 237, 0.20);
+}
+
+/* Pause button in toolbar */
+.queue-pause-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.77rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+
+.queue-pause-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.queue-pause-btn--paused {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.4);
+  color: #22c55e;
+}
+
+.queue-pause-btn--paused:hover {
+  background: rgba(34, 197, 94, 0.22);
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.5);
+}
+
+/* Queue list */
+.queue-list {
+  padding: 12px 16px 16px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Queue item */
+.queue-item {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+}
+
+.queue-item-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.queue-item-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+  flex: 1;
+  min-width: 0;
+}
+
+.queue-item-status {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 99px;
+}
+
+.queue-item-status.status-downloading {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.queue-item-status.status-waiting {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+
+.queue-item-status.status-done {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success);
+}
+
+.queue-item-status.status-error {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--error);
+}
+
+.queue-item-meta {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.queue-item-progress .progress-wrap {
+  height: 5px;
+}
+
+.queue-item-cancel {
+  margin-top: 10px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: color var(--transition);
+  padding: 0;
+}
+
+.queue-item-cancel:hover {
+  color: var(--error);
+}
+
+/* Captcha */
+.captcha-hint {
+  padding: 14px 24px 8px;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.captcha-img-wrap {
+  padding: 0 16px 16px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.captcha-screenshot {
+  width: 100%;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  display: block;
+}
+
+/* ===================================================================
+   DOWNLOAD-CONFIRM MODAL
+   .download-overlay/.download-modal are not referenced by any current
+   template or script in the repo — appears to be dead/leftover CSS, kept
+   as-is in case something still targets these classes.
+   =================================================================== */
+.download-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 900;
+  padding: 16px;
+}
+
+.download-overlay.open {
+  display: flex;
+}
+
+.download-modal {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  width: 100%;
+  max-width: 600px;
+  max-height: 88vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: modal-in 0.2s ease;
+}
+
+.download-modal-body {
+  padding: 20px 24px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.download-modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+/* ===================================================================
+   SERIES-DETAIL MODAL (.overlay/.modal, id="overlay"/id="modal")
+   Poster, genres, language availability, episode/season picker, and the
+   download action buttons. Markup lives in shared_modals.html, but stays
+   global here because other pages (not just index) open it too.
+   =================================================================== */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  display: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* One tier below the Queue/Captcha overlays (1000, above) so those can
+     stack on top if opened from within this modal */
+  z-index: 900;
+  padding: 32px 16px;
+}
+
+.overlay[style*="block"] {
+  display: grid !important;
+  place-items: start center;
+  overflow-y: auto;
+}
+
+.modal {
+  position: relative;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 24px;
+  animation: modal-in 0.2s ease;
+}
+
+/* TMDB backdrop header. Hidden until a picture is actually set, so every
+   modal without one (no key, option off, title TMDB has no artwork for) keeps
+   the exact layout it had before this existed.
+
+   The picture is taken OUT OF FLOW and reaches down to the bottom of the
+   header text instead of ending in a band above it: a 168px strip that stops
+   right where the title starts reads as a banner glued on top of a dialog,
+   not as the title's own artwork. Its height comes from --mf-backdrop-h,
+   which _mfSetBackdrop() in app.js measures off the header (see there for why
+   this cannot be a CSS length). The fallback keeps the old band if the
+   measurement never runs. */
+.modal-backdrop {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--mf-backdrop-h, 168px);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  background-position: center 22%;
+  background-size: cover;
+  background-repeat: no-repeat;
+  /* Purely decorative: clicks belong to the poster/buttons lying on top. */
+  pointer-events: none;
+  z-index: 0;
+}
+
+.modal-backdrop.is-on { display: block; }
+
+/* Two jobs in one gradient: a scrim that keeps the text readable over a bright
+   or busy frame, and the fade INTO the modal body so the picture does not end
+   on a hard line. Light at the top (the hero strip stays a picture), dense
+   where the text sits, then --bg-elevated at the very bottom.
+
+   The stops are variables so a theme pack can retune them, and because the
+   scrim has to INVERT per theme: dark text on a light theme needs a *white*
+   veil, a black one would make it less readable, not more. */
+.modal-backdrop {
+    --mf-bd-top: rgba(0, 0, 0, 0.85);
+    --mf-bd-mid: rgba(0, 0, 0, 0.75);
+    --mf-bd-low: rgba(0, 0, 0, 0.65);
+}
+
+[data-theme="light"] .modal-backdrop {
+  --mf-bd-top: rgba(255, 255, 255, 0.45);
+  --mf-bd-mid: rgba(255, 255, 255, 0.82);
+  --mf-bd-low: rgba(255, 255, 255, 0.93);
+}
+
+.modal-backdrop.is-on::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg,
+    var(--mf-bd-top) 0%,
+    var(--mf-bd-mid) 42%,
+    var(--mf-bd-low) 74%,
+    var(--bg-elevated) 100%);
+}
+
+/* The header sits ON the picture now, so it only has to reserve the strip
+   above the poster (the old 168px band minus the 56px overlap, minus the
+   modal's own 24px top padding). */
+.modal.has-backdrop .modal-header {
+  position: relative;
+  z-index: 1;
+}
+
+/* Was 58px to push the title clear of the band. The title is meant to be on
+   the picture now, so it aligns with the top of the poster again. */
+.modal.has-backdrop .modal-meta {
+  padding-top: 0;
+}
+
+.modal.has-backdrop .modal-header img {
+  /* Reads as a card lying ON the picture rather than in front of it. */
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Over a bright backdrop the close button needs its own ground. The icon is
+   pinned light rather than following --text-primary: the ground is dark in
+   BOTH themes, so in the light theme the variable produced a near-black glyph
+   on a near-black disc. */
+.modal.has-backdrop > .close {
+  background: rgba(11, 14, 19, 0.55);
+  backdrop-filter: blur(6px);
+  color: #f0f0f8;
+  z-index: 2;
+}
+
+.modal.has-backdrop > .close:hover {
+  background: rgba(11, 14, 19, 0.75);
+  color: #fff;
+}
+
+.modal>.close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  font-size: 1.3rem;
+  line-height: 1;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+  /* .modal is position:relative, so this only needs to clear its own
+     in-flow siblings (modal-header, etc.), not the page's overlay tiers */
+  z-index: 1;
+}
+
+.modal>.close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* Overrides the shared .modal-header rule above (bottom border/padding) —
+   this is the poster+title row at the top of the series-detail modal, not
+   the divider-style header used by the Queue/Captcha modals */
+.modal .modal-header {
+  display: flex;
+  gap: 18px;
+  margin-bottom: 18px;
+  /* Clears the close button in the top-right corner. Without it a long title
+     wraps straight underneath the X -- which the old layout hid by accident,
+     because the title was short and everything else sat below it. */
+  padding: 0 34px 0 0;
+  border: none;
+}
+
+.modal .modal-header img {
+  width: 104px;
+  border-radius: var(--radius-md);
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-md);
+}
+
+.modal-meta {
+  flex: 1;
+  min-width: 0;
+  text-shadow: 1px 1px 1px black;
+}
+
+.modal-meta h2 {
+  font-size: 1.24rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  /* Was 8px with three more stacked blocks under it. The header is now
+     title -> one meta line -> chips -> text, so the title carries the gap. */
+  margin: 2px 0 5px;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  /* The rating badge is appended INSIDE the h2 (app.js), so the heading has
+     to behave like a row -- otherwise a long title pushes the badge onto a
+     line of its own with no baseline to sit on. */
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.genres {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+/* No genres (source has none and TMDB genres are switched off): no gap either.
+   Same for the provider pill row -- every optional block in this header has to
+   disappear completely rather than leave its margin behind. */
+.genres:empty,
+.tmdb-providers:empty { display: none; margin: 0; }
+
+.genres span,
+.genre-tag {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  font-weight: 450;
+  padding: 3px 5px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+}
+
+/* The one line that is always there. Kept as its own element (not merged into
+   the chips) because app.js writes plain text into #modalYear. */
+.year {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 9px;
+}
+
+.year:empty { display: none; }
+
+/* Clamped instead of scrolled: a scrollbar inside a paragraph inside a modal
+   is a second scroll context nobody expects, and it swallowed the wheel. */
+.desc {
+  font-size: 0.83rem;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-shadow: 0px 1px 0px black;
+}
+
+.desc.expanded {
+  -webkit-line-clamp: unset;
+  display: block;
+  /* Still bounded: a 40-line synopsis must not push the episode list off the
+     screen. This is the only place the old scroll behaviour survives. */
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.desc-more {
+  margin-top: 5px;
+  padding: 0;
+  background: none;
+  border: none;
+  font-family: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  text-shadow: 1px 1px 1px BLACK;
+}
+
+.desc-more:hover { text-decoration: underline; }
+
+/* One button, two labels -- so both strings go through the template catalogue
+   and no German/English pair ends up hardcoded in JavaScript. */
+.desc-more .dm-less,
+.desc-more[aria-expanded="true"] .dm-more { display: none; }
+.desc-more[aria-expanded="true"] .dm-less { display: inline; }
+
+/* Controls row (language/provider/path selects)
+   Each select sits in a labelled field now. The row is still flex with a
+   min-width floor, so two fields fill the width and three share it -- the
+   target-folder field is missing on most installs, and the row must look
+   deliberate either way. */
+.controls {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  z-index: 1;
+  position: relative;
+}
+
+.mf-fld {
+  flex: 1 1 150px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* One shared label line for every field, whether it holds just a caption or a
+   caption plus an inline toggle. The three fields sit in a flex row, so a
+   label area even two pixels off pushes that field's <select> out of line with
+   its neighbours.
+   Three deliberate choices, each one a bug that already happened:
+   * `height`, not `min-height` -- min-height still lets a taller child (the
+     toggle plus its border) grow the box.
+   * `margin: 0` -- forms.css sets `label { margin-bottom: 6px }` on the
+     ELEMENT, so a bare <label> got it and the .mf-fld-labelrow <div> did not.
+     Matching that number here would work until a theme pack changes it, so
+     the margin is dropped on both and the spacing below comes from .mf-fld's
+     own `gap` instead. Nothing here depends on a global element rule any more.
+   * 30px = the old 24px line plus the 6px margin it used to carry, so the
+     controls stay exactly where they were. It also gives the 20px pill room,
+     and centres caption and toggle on one line. */
+.mf-fld-label,
+.mf-fld-labelrow {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  margin: 0;
+  flex: none;
+}
+
+.mf-fld-label {
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.mf-fld-labelrow {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* The row is the box now, so the caption inside it must add nothing of its own
+   -- including the global label margin, which would push the text off-centre. */
+.mf-fld-labelrow .mf-fld-label {
+  height: 100%;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-fld-toggle {
+  position: relative;
+  flex: none;
+  background: none;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.16));
+  border-radius: 999px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-transform: uppercase;
+  /* Must stay under the label row's 24px, or it grows the row again. The tap
+     target is widened below instead, which costs no layout height. */
+  height: 20px;
+  padding: 0 9px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+/* The visible pill is 22px so the row stays aligned; this extends the actual
+   hit area to ~38px in both directions for touch. Invisible and unclickable
+   for anything else, since it sits behind nothing and has no background. */
+.mf-fld-toggle::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+}
+
+.mf-fld-toggle:hover {
+  color: var(--text-primary, #fff);
+  border-color: var(--accent);
+}
+
+.mf-fld-toggle[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.mf-fld-hint {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.controls select {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  font-size: 0.85rem;
+  border-radius: var(--radius-md);
+  padding: 0 12px;
+}
+
+/* ── "Already stored in" ────────────────────────────────────────────────
+   Where the files that already exist are sitting. Sits between the three
+   selects and the language pills for the same reason the pills sit under the
+   language field: it belongs to the "Target folder" select right above it.
+
+   Deliberately quiet -- one muted row, no card, no border box. It answers a
+   question the user only sometimes has, and a title that has never been
+   downloaded hides the row entirely (renderLibraryLocations in app.js), so it
+   must not compete with the episode list for attention when it IS there. */
+.lib-loc {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  min-width: 0;
+}
+
+.lib-loc-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  opacity: 0.75;
+}
+
+.lib-loc-lead { flex: none; }
+
+/* The one part worth reading at a glance, so it wraps onto a second line
+   rather than being cut off: a truncated path is exactly the case where the
+   ellipsis eats the part that tells the folders apart. min-width:0 lets it
+   shrink below its content width inside the flex row, and overflow-wrap
+   breaks a single unbroken segment (a long release name with no spaces)
+   instead of letting it push the modal wider than its 680px cap. */
+.lib-loc-name {
+  color: var(--text-primary);
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.lib-loc-count,
+.lib-loc-more {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--bg-hover, rgba(255, 255, 255, 0.05));
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+/* A split library is unusual enough to point at, so this one is not muted. */
+.lib-loc-more {
+  color: var(--warning);
+  cursor: help;
+}
+
+/* The per-season marker: only rendered on a season whose files sit somewhere
+   other than the primary location, so it is rare by construction. */
+.season-loc {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: rgba(245, 158, 11, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.3);
+  color: var(--warning);
+  font-size: 0.7rem;
+  font-weight: 600;
+  /* Same reasoning as .lib-loc-name: wrap rather than run past the season
+     row. inline-block so the chip's own box wraps as a unit. */
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  vertical-align: middle;
+}
+
+@media (max-width: 640px) {
+  /* The lead-in is the droppable part: the folder icon already says what the
+     row is about, and the name is what the user came for. */
+  .lib-loc-lead { display: none; }
+  /* Long folder names take the whole row instead of squeezing the badges. */
+  .lib-loc-name { flex: 1 1 100%; }
+  .season-loc { margin-left: 0; }
+}
+
+/* Language availability banner
+   Sits directly under the controls because it describes the language field
+   above it -- with 18px of margin in between it read as a separate section
+   about the episodes below. */
+.lang-avail-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+
+/* A pill is a button, not a label: it mirrors the language select above, so
+   clicking it picks that language (see the delegated handler in app.js). The
+   reset is explicit because a <button> brings its own font and background. */
+.lang-avail-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 99px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  cursor: pointer;
+  overflow: hidden;
+  isolation: isolate;
+  transition: border-color var(--transition, 0.15s ease);
+}
+
+/* The fill bar. --avail is set per pill by renderLangAvailBanner(); the bar
+   makes "277 of 279" readable at a glance instead of by comparing two
+   numbers. z-index/isolate keep it behind the label without needing a second
+   wrapper element around the text. */
+.lang-avail-pill::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--avail, 0%);
+  background: currentColor;
+  opacity: 0.16;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.lang-avail-pill:hover { border-color: currentColor; }
+
+/* The selected language. A ring rather than a colour change: the colour
+   already encodes availability, and one attribute must not mean two things. */
+.lang-avail-pill.is-active {
+  border-color: currentColor;
+  box-shadow: 0 0 0 1px currentColor;
+}
+
+.lang-avail-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.lang-avail-flag {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border-radius: 2px;
+  object-fit: cover;
+}
+
+/* The count is supporting detail once the bar carries the proportion. */
+.lang-avail-num {
+  font-weight: 500;
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Languages this series does not have at all, collapsed into one counter --
+   the names are in the tooltip. Muted on purpose: an absent language is the
+   least actionable thing in the row. */
+.lang-avail-missing {
+  align-self: center;
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 99px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  box-shadow: inset 0 0 0 1px var(--border);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.lang-avail-full {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: var(--success);
+}
+
+.lang-avail-partial {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: var(--warning);
+}
+
+/* .lang-avail-none is gone: a language with zero episodes no longer gets a
+   pill at all -- it is counted in .lang-avail-missing instead. Three red "0 /
+   279" pills spent most of the row stating that there was nothing to state. */
+
+@media (max-width: 640px) {
+  /* "Eng. Dub (Ger. Sub)" does not fit next to a flag and a count on a phone.
+     The name gives way rather than the number: the count is the information,
+     the flag already identifies the language, and the full label is still in
+     the tooltip and in the language select above. */
+  .lang-avail-pill {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .lang-avail-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .lang-avail-num { flex: none; }
+}
+
+/* Trailer + recommendations, side by side. flex-basis rather than a
+   two-column grid: either one can be switched off in Settings -> CineInfo (or
+   simply have no data), and the survivor should take the full width instead of
+   leaving a hole. Both hidden -> :empty-like collapse via the gap-free row. */
+.modal-extras {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 4px;
+  z-index: 1;
+  position: relative;
+}
+
+.modal-extras > .season-section {
+  flex: 1 1 240px;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+/* Open one of them and it takes the whole row. Half a modal is enough for two
+   closed headers and far too little for a 2-column poster grid of
+   recommendations or a 16:9 trailer -- which is exactly what the side-by-side
+   row produced. The row keeps its order, so the other header simply moves to
+   the second line. `:has()` rather than a class, because the expanded state is
+   toggled inline in shared_modals.html and nothing in JS knows about it. */
+.modal-extras > .season-section:has(.expanded) {
+  flex-basis: 100%;
+}
+
+/* Both open: back to one per row rather than a half-width pair. */
+.modal-extras:has(> .season-section .expanded) > .season-section {
+  flex-basis: 100%;
+}
+
+/* Episodes header */
+.episodes-header {
+  /* Was 12px; the header now separates two blocks rather than following one. */
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.episodes-header h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.select-all-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.select-all-label input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Season accordion */
+
+
+.season-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  transition: background var(--transition);
+  user-select: none;
+}
+
+.season-header:hover {
+  background: var(--bg-hover);
+}
+
+
+.episode-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition);
+  font-size: 0.86rem;
+  color: var(--text-secondary);
+}
+
+.episode-row:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.episode-row.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.episode-row input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* Status bar */
+.status-bar {
+  padding: 8px 4px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  min-height: 28px;
+}
+
+/* Modal actions (download buttons)
+   Sticky to the bottom edge of the modal: the episode list of a long-running
+   series is several screens tall, and "Download all" was reachable only after
+   scrolling past all of it. .overlay is the scroll container and .modal has no
+   overflow of its own, so position:sticky works here without wrapping the body
+   in a second scroller. The negative margins bleed the bar to the modal's
+   edges, past the 24px padding. */
+.modal-actions {
+  position: sticky;
+  bottom: -24px;
+  z-index: 2;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 16px -24px -24px;
+  padding: 14px 24px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+}
+
+.btn-download-selected,
+.btn-download-all,
+.btn-download-all-langs {
+  flex: 1;
+  min-width: 140px;
+  padding: 11px 18px;
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  transition: background var(--transition), box-shadow var(--transition);
+  text-align: center;
+}
+
+.btn-download-selected {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+
+.btn-download-selected:hover {
+  background: var(--bg-hover);
+}
+
+.btn-download-all {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-download-all:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 4px 14px var(--accent-glow);
+}
+
+.btn-download-all-langs {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.btn-download-all-langs:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ── Narrow screens ───────────────────────────────────────────────────
+   838 lines and no breakpoint until now. Flex rows here carry min-width
+   floors (180px for the consent buttons, 140px for the download buttons,
+   120px for the selects); at 360px minus padding those leave a few pixels
+   of slack at best, so below 480px the rows stack instead. */
+@media (max-width: 640px) {
+  /* A 168px picture plus a poster plus the title is most of a phone screen
+     before anything useful starts. */
+  .modal-backdrop {
+    /* Only the fallback band shrinks -- once measured, the height follows the
+       header, which is taller here because everything wraps. */
+    height: var(--mf-backdrop-h, 116px);
+  }
+
+  .modal.has-backdrop .modal-header { margin-top: 58px; }
+  .modal.has-backdrop .modal-meta { padding-top: 0; }
+
+  /* The series modal had no breakpoint of its own at all -- at 390px the
+     104px poster and the meta column fought over the same row. Poster on top,
+     text below, and the fields stack. */
+  .modal {
+    padding: 18px 16px;
+  }
+
+  .modal .modal-header {
+    gap: 14px;
+  }
+
+  .modal .modal-header img {
+    width: 84px;
+  }
+
+  .modal-meta h2 {
+    font-size: 1.06rem;
+  }
+
+  .mf-fld {
+    flex: 1 1 100%;
+  }
+
+  .modal-actions {
+    bottom: -18px;
+    margin: 14px -16px -18px;
+    padding: 12px 16px 18px;
+  }
+}
+
+@media (max-width: 480px) {
+  .telemetry-consent-btn,
+  .btn-download-selected,
+  .btn-download-all,
+  .btn-download-all-langs {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .modal-content,
+  .mf-modal-content {
+    padding-inline: 14px;
+  }
+}

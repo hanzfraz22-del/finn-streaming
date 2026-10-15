@@ -1,0 +1,911 @@
+/* ===================================================================
+   MediaForge — Card components
+   The generic .card/.series-card building blocks plus every card
+   family the frontend JS renders into the DOM at runtime: media
+   cards, browse cards (renderBrowseCards), search result cards
+   (renderResults), favorites cards (renderFavourites), and episode
+   accordion items (buildAccordion) — grouped here because they all
+   share the same "poster + title + meta" visual language.
+   =================================================================== */
+
+/* ===================================================================
+   CARDS
+   =================================================================== */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px 24px;
+  box-shadow: var(--shadow-sm);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.card-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Series / media cards
+   Note: .series-grid/.series-card are not referenced by any current
+   template or JS file (grid rendering now goes through .browse-card via
+   renderBrowseCards) — kept in case they're wired back up, not dead-code
+   cleanup material for a comments-only pass. */
+.series-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 480px) {
+  .series-grid {
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 12px;
+  }
+}
+
+.series-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+  position: relative;
+}
+
+.series-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md);
+  border-color: rgba(124, 58, 237, 0.3);
+}
+
+.series-card img {
+  width: 100%;
+  aspect-ratio: 2/3;
+  object-fit: cover;
+  display: block;
+  background: var(--bg-elevated);
+}
+
+.series-card-info {
+  padding: 10px 12px;
+}
+
+.series-card-title {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.series-card-sub {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+/* ===================================================================
+   MEDIA CARD
+   Note: like .series-card above, .media-card has no current callers in
+   app.js/templates (browse grids use .browse-card, search results use
+   .card inside .results) — kept for now, not touched in this pass.
+   =================================================================== */
+.media-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+  position: relative;
+}
+
+.media-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md);
+  border-color: rgba(124, 58, 237, 0.3);
+}
+
+.media-card img {
+  width: 100%;
+  aspect-ratio: 2/3;
+  object-fit: cover;
+  background: var(--bg-elevated);
+  display: block;
+}
+
+.media-card-title {
+  padding: 9px 10px 10px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+/* Result item (search result list)
+   Note: not currently referenced by app.js/templates either — search
+   results render via .results .card below (renderResults). Kept as-is. */
+.result-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--transition);
+  border: 1px solid transparent;
+}
+
+.result-row:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+}
+
+.result-row img {
+  width: 40px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  flex-shrink: 0;
+}
+
+.result-row-title {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* ===================================================================
+   BROWSE CARDS (renderBrowseCards in app.js → div.browse-card)
+   =================================================================== */
+.browse-card {
+  /* flex-shrink:0 + fixed width + scroll-snap-align pair with the parent
+     .browse-grid's horizontal scroll-snap carousel (index.css) */
+  flex-shrink: 0;
+  width: 140px;
+  scroll-snap-align: start;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+  position: relative;
+}
+
+.browse-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md);
+  border-color: rgba(124, 58, 237, 0.3);
+}
+
+/* --- Hover drawer -------------------------------------------------
+   The badge set (FSK, rating, genres) used to fade in over the whole
+   poster with no fixed reading order: on a card with four badges they
+   stacked across the artwork, collided with the "Vorhanden"/Sync
+   markers and hid the face of the poster. They now ride in on a panel
+   anchored to the *bottom edge of the poster* — the artwork above it
+   stays readable and the badges always start in the same place.
+
+   .browse-hover-overlay is now a pure clipping box, not a scrim: it
+   covers exactly the poster area (aspect-ratio 2/3, same as
+   .browse-card img), never the .browse-info title line below it, and
+   paints nothing itself. That is what lets the drawer *translate* out
+   of view at rest instead of merely fading — a faded-out scrim still
+   dulls the artwork wherever opacity gets rounded.
+
+   Hovering the visible title area below still counts as hovering
+   .browse-card (:hover applies to descendants), so the drawer stays
+   open either way. */
+.browse-hover-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* The drawer itself. Deliberately kept under the old class name: third-party
+   modules that build this overlay markup themselves (see
+   .examples/thirdparties/README.md) pick up the new look without a change. */
+.browse-hover-content {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 8px 9px;
+  /* Hard cap. A card is 140px wide, so a tag list is always at risk of
+     wrapping into a wall that covers the artwork the drawer exists to keep
+     visible — anything past this scrolls inside the drawer instead. */
+  max-height: 52%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  background: linear-gradient(to top, rgba(10, 10, 18, 0.97) 55%, rgba(10, 10, 18, 0.74) 100%);
+  border-top: 2px solid var(--accent);
+  /* 101%, not 100%: at exactly 100% a sub-pixel rounding error leaves a
+     hairline of the panel visible along the poster's bottom edge. */
+  transform: translateY(101%);
+  transition: transform 0.26s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.browse-card:hover .browse-hover-content,
+.browse-card:focus-within .browse-hover-content {
+  transform: translateY(0);
+}
+
+/* A drawer with no pills in it must not paint anything. While the badges
+   were individually positioned pills an empty overlay was invisible on its
+   own; as a bar with a background and an accent border it shows up as a
+   stripe over the artwork -- permanently open on touch, where the drawer
+   does not slide away. Third-party modules emit this markup themselves (see
+   .examples/thirdparties/README.md) and cannot be expected to omit the
+   wrapper, so the guard belongs here rather than in every caller. */
+.browse-hover-content:empty,
+.browse-hover-overlay:empty {
+  display: none;
+}
+
+/* :empty alone is not enough -- a template that indents its markup leaves a
+   whitespace text node behind, and that already defeats :empty. "no element
+   children" is the condition that actually holds. */
+.browse-hover-content:not(:has(*)),
+.browse-hover-overlay:not(:has(*)) {
+  display: none;
+}
+
+.browse-hover-content::-webkit-scrollbar {
+  width: 4px;
+}
+.browse-hover-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+.browse-hover-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 2px;
+}
+
+/* Pills inside the drawer. One shape for FSK, rating and genres so the row
+   reads as a single line of metadata instead of three competing styles.
+   Always light-on-dark — the drawer paints its own dark ground in both
+   themes, so these need no [data-theme="light"] variant. */
+.browse-hover-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.1);
+  color: #f0f0f8;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.browse-hover-pill--rating {
+  border-color: rgba(74, 222, 128, 0.4);
+  background: rgba(34, 197, 94, 0.14);
+  color: #4ade80;
+}
+
+.browse-hover-pill--rating svg {
+  flex-shrink: 0;
+}
+
+/* Official FSK (German age-rating) colours — same palette as .tmdb-fsk-* in
+   queue.css, so a title reads the same in the drawer and in the modal. */
+.browse-hover-pill--fsk {
+  border-color: rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+}
+
+.browse-fsk-0 {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.08);
+  color: #d1d5db;
+}
+
+.browse-fsk-6 {
+  border-color: rgba(234, 179, 8, 0.55);
+  background: rgba(234, 179, 8, 0.14);
+  color: #fbbf24;
+}
+
+.browse-fsk-12 {
+  border-color: rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.14);
+  color: #4ade80;
+}
+
+.browse-fsk-16 {
+  border-color: rgba(59, 130, 246, 0.5);
+  background: rgba(59, 130, 246, 0.14);
+  color: #60a5fa;
+}
+
+.browse-fsk-18 {
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.14);
+  color: #f87171;
+}
+
+/* Genres are a *text line*, not pills. At 140px card width a pill per genre
+   wraps one-per-row and the drawer grows into a wall covering the artwork;
+   "Drama · Action & Adventure · Mystery" says the same thing in two lines.
+   Pill shape stays reserved for the two single facts (FSK, rating), which
+   gives the drawer a hierarchy it did not have before.
+
+   NOTE the .browse-hover-content prefix. The element also carries .genres,
+   and modals.css — which loads AFTER cards.css in base.html — styles
+   `.genres` / `.genres span` at the same specificity, so the unprefixed
+   rules here silently lost every declaration they shared with it (that is
+   why the old hover tags looked like modal tags). The extra class lifts
+   these above modals.css independently of load order. */
+.browse-hover-content .hover-genres {
+  flex-basis: 100%;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0;
+  gap: 0;
+  font-size: 0.67rem;
+  line-height: 1.4;
+  color: rgba(228, 228, 245, 0.82);
+}
+
+.browse-hover-content .hover-genres span {
+  display: inline;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font-size: inherit;
+  font-weight: 500;
+}
+
+.browse-hover-content .hover-genres span + span::before {
+  content: " · ";
+  color: rgba(228, 228, 245, 0.45);
+}
+
+/* Touch: there is no hover, so the drawer rests open. Before this the badges
+   were unreachable on a phone — FSK/rating/genres were desktop-only. */
+@media (hover: none) {
+  .browse-hover-content {
+    transform: none;
+    max-height: 60%;
+    padding: 6px 7px 7px;
+    gap: 4px;
+  }
+
+  .browse-hover-pill {
+    font-size: 0.64rem;
+    padding: 1px 7px;
+  }
+
+  .browse-hover-content .hover-genres {
+    font-size: 0.63rem;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .browse-hover-content {
+    transition: none;
+  }
+}
+
+.browse-card img {
+  width: 100%;
+  aspect-ratio: 2/3;
+  object-fit: cover;
+  background: var(--bg-elevated);
+  display: block;
+}
+
+.browse-info {
+  padding: 9px 10px 11px;
+  /* NOT position:relative. .browse-src-pill is a DOM child of this element
+     (so list density can lay it out inline with the title/genre, see
+     index.css), but in poster mode it needs to anchor to the CARD, not this
+     block -- see .browse-src-pill for the two breakpoint-chasing attempts
+     that came from anchoring it here instead. Leaving this un-positioned is
+     what lets that absolute pill skip past this element to .browse-card
+     (also position:relative), its actual offset parent. */
+}
+
+.browse-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+  margin-bottom: 3px;
+}
+
+.browse-genre {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Downloaded badge on cards */
+.downloaded-badge {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  background: var(--success);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 99px;
+  line-height: 1.5;
+}
+
+
+/* ===================================================================
+   SEARCH RESULT CARDS (renderResults in app.js → div.card)
+   =================================================================== */
+.results .card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+  margin-bottom: 4px;
+  position: relative;
+}
+
+.results .card:hover {
+  background: var(--bg-hover);
+  border-color: rgba(124, 58, 237, 0.25);
+}
+
+.results .card img {
+  width: 42px;
+  height: 60px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--bg-elevated);
+  flex-shrink: 0;
+}
+
+.results .card .info {
+  flex: 1;
+  min-width: 0;
+}
+
+.results .card .title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Provider-colored pill; the .provider-* modifiers below aren't currently
+   applied by app.js (unrelated to the similarly-named .browse-provider-*
+   classes used for the Browse tab's provider sections) — kept as-is. */
+.result-source-pill {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  border: 1px solid currentColor;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+
+.result-source-pill.provider-aniworld {
+  color: var(--accent);
+}
+
+.result-source-pill.provider-sto {
+  color: var(--info);
+}
+
+.result-source-pill.provider-filmpalast {
+  color: #e8914a;
+}
+
+/* ===================================================================
+   FAVOURITES LIST + RESULT CARDS (renderFavourites → div.result-card)
+   =================================================================== */
+.fav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.result-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition), background var(--transition);
+  min-width: 0;
+}
+
+.result-card:hover {
+  border-color: rgba(124, 58, 237, 0.3);
+  background: var(--bg-hover);
+}
+
+.result-poster-wrap {
+  flex-shrink: 0;
+  width: 52px;
+  height: 74px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.result-poster {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.result-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.result-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+
+.result-meta {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.result-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+@media (max-width: 480px) {
+  .result-card {
+    flex-wrap: wrap;
+  }
+
+  .result-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+/* ===================================================================
+   EPISODE ITEMS (buildAccordion in app.js → div.episode-item)
+   =================================================================== */
+.episode-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.episode-item:hover {
+  background: var(--bg-elevated);
+}
+
+.episode-item input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.ep-num {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  min-width: 30px;
+  flex-shrink: 0;
+}
+
+.ep-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.ep-downloaded {
+  color: var(--success);
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.ep-langs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* Per-episode "stream now" button (stream-from-source) */
+.ep-stream-btn {
+  flex-shrink: 0;
+  margin-left: 6px;
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent, #4ea1ff);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--accent, #4ea1ff);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ep-stream-btn:hover {
+  background: var(--accent, #4ea1ff);
+  color: #fff;
+}
+.ep-stream-btn svg {
+  width: 13px;
+  height: 13px;
+}
+@media (max-width: 640px) {
+  .ep-stream-btn { width: 34px; height: 34px; min-width: 34px; } /* larger tap target on touch widths */
+}
+
+/* ── While the video player is open: pause background animations / glow
+   effects and disable expensive compositing so they don't compete with video
+   decoding and cause browser-wide stutter. The player overlay keeps its own
+   animations (e.g. the loading spinner). ── */
+body.player-open * {
+  animation-play-state: paused !important;
+  transition: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  scroll-behavior: auto !important;
+}
+body.player-open #playerOverlay,
+body.player-open #playerOverlay * {
+  animation-play-state: running !important;
+}
+
+.ep-lang-flag {
+  width: 20px;
+  height: 14px;
+  object-fit: cover;
+  border-radius: 2px;
+  opacity: 0.85;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* Season styles */
+.season-section {
+  margin-bottom: 6px;
+}
+
+.season-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition);
+}
+
+.season-header:hover {
+  background: var(--bg-hover);
+}
+
+.season-label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.season-arrow {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  transition: transform var(--transition);
+  display: inline-block;
+}
+
+.season-header.expanded .season-arrow {
+  transform: rotate(90deg);
+}
+
+.season-downloaded {
+  color: var(--success);
+  font-size: 0.8rem;
+}
+
+.season-all-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.season-all-label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+}
+
+.season-body {
+  display: none;
+  padding: 4px 0;
+}
+
+.season-body.expanded {
+  display: block;
+}
+
+/* Origin label on a browse card — used by the home feed, where a row mixes
+   several sources and the heading no longer says which one a poster is from.
+   Lives here next to .browse-card so module widgets that render browse cards
+   can use the same label. */
+/* IN FLOW inside .browse-tmdb-meta now (appended there by home_feed.js's
+   addSourcePills, alongside app.js's own streaming-service pill), not
+   absolutely positioned over the poster. Every earlier version of this pill
+   fought the poster for a spot on it -- the hover drawer that slides up to
+   cover it, or the Vorhanden/Sync badges pinned to a fixed corner -- because
+   an absolutely positioned element has no idea what else is competing for
+   the same pixels. A flex child of the same row the streaming pill lands in
+   has no such fight: it just takes the space the streaming pill would have,
+   and gives it back when Crunchyroll/Fernsehserien/TMDB actually has one.
+   position:relative (not absolute) only so .browse-src-menu, its own
+   dropdown, has this as its offset parent instead of drifting to whatever
+   the next positioned ancestor up the tree happens to be. */
+.browse-src-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(13, 13, 20, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #fff;
+  pointer-events: none;
+}
+
+.browse-src-pill-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A card that several sources have carries a "+N" pill; clicking it says
+   which ones and opens the one you pick. Without this the extra sources were
+   a tooltip and the card always opened the first source it happened to be
+   collected from. */
+.browse-src-pill.is-multi {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.browse-src-pill.is-multi:hover {
+  border-color: var(--accent);
+}
+
+.browse-src-menu {
+  position: absolute;
+  /* Opens UPWARD from the pill: .browse-tmdb-meta (where the pill now lives,
+     see .browse-src-pill) sits near the BOTTOM of the card, after the title
+     and genre -- there is little to no room below it inside .browse-card's
+     overflow: hidden box, but the whole poster is free space above it. */
+  bottom: calc(100% + 6px);
+  left: 0;
+  /* Above .browse-hover-overlay (z-index: 10): clicking the pill without the
+     mouse leaving the card first (hover still active, drawer still open)
+     must not open the menu underneath it. */
+  z-index: 12;
+  min-width: 150px;
+  padding: 5px;
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-modal);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.browse-src-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.browse-src-menu button:hover { background: var(--bg-hover); }

@@ -1,0 +1,746 @@
+/* ===================================================================
+   MediaForge — Seerr (Jellyseerr/Overseerr) requests page
+   -------------------------------------------------------------------
+   Sticky toolbar (search / status / type / sort / layout), bulk-select
+   bar, request cards in a list or poster-grid layout, hidden-requests
+   list, status pills, and the search modal's result rows.
+
+   All classes are namespaced `seerr-` and are not reused elsewhere.
+   Generic building blocks (.chb-main, .mf-segmented, .btn*) come from
+   forms.css / buttons.css, which base.html loads globally.
+
+   Used by: templates/seerr.html (markup) + static/seerr.js (rendering)
+   =================================================================== */
+
+.seerr-container {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 32px;
+}
+
+@media (max-width: 560px) {
+  .seerr-container { padding: 16px 12px; }
+}
+
+/* ===== Header ===== */
+.seerr-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.seerr-header-titles .page-title {
+  font-size: 1.7rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  margin-bottom: 4px;
+}
+
+.seerr-header-titles .page-subtitle {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+/* Connection indicator (dot + label) */
+.seerr-conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.seerr-conn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.seerr-conn-dot.is-on { background: var(--success, #22c55e); }
+.seerr-conn-dot.is-off { background: var(--error, #ef4444); }
+
+.seerr-conn-dot.is-starting {
+  background: var(--warning, #f59e0b);
+  animation: seerr-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes seerr-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* The toolbar, search field, icon buttons and facet counters now come from
+   mf_components.css (.mf-toolbar / .mf-search / .mf-icon-btn / .mf-facet) so
+   every page of the relaunch shares one vocabulary. Only the bits that are
+   genuinely specific to this page stay below. */
+
+/* Sort direction: the arrow points down for desc, up for asc. */
+#seerrSortDir.is-asc svg { transform: rotate(180deg); }
+
+.seerr-sort-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.seerr-sort-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+select.seerr-select {
+  height: 36px;
+  width: auto;
+  padding: 7px 10px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+select.seerr-select:focus { border-color: var(--accent); }
+
+/* ===== Bulk action bar ===== */
+.seerr-bulk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--accent-soft, rgba(124, 58, 237, 0.15));
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md, 10px);
+  padding: 10px 16px;
+  margin-bottom: 14px;
+  animation: seerr-fade-in 0.2s ease-out;
+}
+
+.seerr-bulk-bar[hidden] { display: none; }
+.seerr-bulk-bar.is-busy { opacity: 0.6; pointer-events: none; }
+
+@keyframes seerr-fade-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.seerr-bulk-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.seerr-bulk-selectall { display: inline-flex; align-items: center; }
+.seerr-bulk-info #seerrBulkCount { color: var(--accent); }
+
+.seerr-bulk-limit {
+  font-weight: 500;
+  font-size: 0.78rem;
+  color: var(--warning, #f59e0b);
+}
+
+.seerr-bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ===== Meta row ===== */
+.seerr-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  min-height: 18px;
+  margin-bottom: 12px;
+}
+
+.seerr-count {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.seerr-truncated {
+  font-size: 0.78rem;
+  color: var(--warning, #f59e0b);
+}
+
+/* ===================================================================
+   Request cards
+   -------------------------------------------------------------------
+   Two shapes for the same record, chosen by the layout toggle:
+
+     grid  -> .mf-poster-card  (mf_components.css) — artwork leads
+     list  -> .seerr-row       (below)             — density leads
+
+   Both keep the .seerr-card class so the shared behaviour in seerr.js
+   (hide, selection, "in sync" marker) does not care which is on screen.
+   =================================================================== */
+
+.seerr-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* --- Poster card additions on top of mf-poster-card --- */
+
+/* The synopsis only appears in the hover overlay: on the card face it
+   would compete with the title for a space that is already tight. */
+.seerr-poster-overview {
+  margin: 0 0 auto;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: rgba(228, 228, 245, 0.82);
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.mf-poster-actions .btn { width: 100%; }
+
+@media (hover: none) {
+  /* Actions sit under the card on touch, so the synopsis has no room. */
+  .seerr-poster-overview { display: none; }
+  .mf-poster-actions .btn { width: auto; }
+}
+
+/* Hide button: top-right, because the rotated corner flag owns the top-left
+   of a poster. The selection box takes the same spot in select mode, where
+   this button is hidden, and the "in sync" marker stacks underneath it. */
+.mf-poster-card .seerr-hide-btn {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  z-index: 4;
+}
+
+body.mf-select-mode .mf-poster-card .seerr-hide-btn { display: none; }
+
+.seerr-hide-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition), background var(--transition);
+}
+
+.seerr-card:hover .seerr-hide-btn,
+.seerr-card:focus-within .seerr-hide-btn,
+.seerr-hide-btn:focus-visible { opacity: 1; }
+
+.seerr-hide-btn:hover { background: rgba(220, 38, 38, 0.8); }
+
+@media (hover: none) {
+  .seerr-hide-btn { opacity: 1; }
+  /* Comfortable touch target — 27px is hard to hit reliably on a phone. */
+  .mf-poster-card .seerr-hide-btn { width: 32px; height: 32px; }
+}
+
+/* --- Compact row --- */
+.seerr-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 220px auto;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.seerr-row:hover {
+  border-color: rgba(124, 58, 237, 0.4);
+  background: var(--bg-elevated);
+}
+
+.seerr-row.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.seerr-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.seerr-row-art {
+  width: 44px;
+  height: 64px;
+  border-radius: 5px;
+  object-fit: cover;
+  display: block;
+  background: var(--bg-elevated) center / 62% no-repeat url("/static/placeholder.svg");
+}
+
+.seerr-row-main { min-width: 0; }
+
+.seerr-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 3px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  min-width: 0;
+}
+
+.seerr-row-title > :first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seerr-row-flag {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+/* Same four states as the poster corner flag, quieter for a dense list. */
+.seerr-row-flag--pending {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: var(--warning);
+}
+.seerr-row-flag--approved {
+  background: var(--accent-soft);
+  border-color: rgba(124, 58, 237, 0.4);
+  color: var(--accent);
+}
+.seerr-row-flag--partial {
+  background: rgba(59, 130, 246, 0.14);
+  border-color: rgba(59, 130, 246, 0.4);
+  color: var(--info);
+}
+.seerr-row-flag--done {
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.4);
+  color: var(--success);
+}
+
+.seerr-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.seerr-row-meta > :first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seerr-row-progress { min-width: 0; }
+
+.seerr-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  justify-self: end;
+}
+
+.seerr-row .seerr-hide-btn {
+  position: static;
+  background: none;
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+.seerr-row .seerr-hide-btn:hover {
+  background: var(--bg-hover);
+  color: var(--error);
+}
+
+.seerr-row-select {
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+body.mf-select-mode .seerr-row-select,
+.seerr-row.is-selected .seerr-row-select { display: inline-flex; }
+
+body.mf-select-mode .seerr-row,
+.seerr-row.is-selected {
+  grid-template-columns: 24px 44px minmax(0, 1fr) 220px auto;
+}
+
+/* --- "In sync" marker (AutoSync already covers this title) --- */
+.seerr-sync-pill {
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--success);
+  white-space: nowrap;
+}
+
+.seerr-sync-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.seerr-sync-pill[hidden] { display: none; }
+
+/* Top-right on the poster, stacked *below* the hide button (which shares that
+   corner with the selection box): the rotated corner flag owns the top-left,
+   and the scrim at the bottom already carries the facts line and the title.
+   The offset is unconditional — on touch the hide button is permanently
+   visible, so the marker must never be laid on top of it. */
+.mf-poster-card .seerr-sync-pill {
+  position: absolute;
+  top: 47px;
+  right: 12px;
+  z-index: 3;
+  display: none;
+  padding: 3px 9px 3px 7px;
+  border-radius: 999px;
+  background: rgba(6, 6, 12, 0.82);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  /* Purely informational — it must never swallow a tap meant for the card. */
+  pointer-events: none;
+  transition: opacity var(--transition);
+}
+
+/* While the action overlay is up, the marker would sit on top of the synopsis.
+   The overlay is what the pointer came for, so the marker steps back. */
+.mf-poster-card:hover .seerr-sync-pill,
+.mf-poster-card:focus-within .seerr-sync-pill { opacity: 0; }
+
+.mf-poster-card .seerr-sync-pill:not([hidden]) { display: inline-flex; }
+.seerr-row .seerr-sync-pill:not([hidden]) { display: inline-flex; }
+
+/* ===== Empty / error states ===== */
+.seerr-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 56px 24px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  background: var(--bg-card);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+
+.seerr-empty p { margin: 0; }
+.seerr-empty a { color: var(--accent); }
+.seerr-empty-error { color: var(--error); border-color: rgba(239, 68, 68, 0.4); }
+
+.seerr-empty-icon {
+  width: 40px;
+  height: 40px;
+  opacity: 0.5;
+}
+
+.seerr-empty-hint {
+  font-size: 0.82rem;
+  opacity: 0.85;
+  max-width: 46ch;
+}
+
+/* ===== Skeleton placeholders =====
+   appearance.css only shimmers `.skeleton` while body.skeleton-loader is on
+   (an opt-in appearance setting). These cards are shown on every load, so
+   they carry their own shimmer and do not depend on that setting. */
+.seerr-skeleton {
+  pointer-events: none;
+  border-style: dashed;
+}
+
+.seerr-skeleton:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--border);
+}
+
+.seerr-skeleton .skeleton {
+  background: linear-gradient(90deg,
+      var(--bg-elevated) 25%, var(--bg-hover) 37%, var(--bg-elevated) 63%);
+  background-size: 400% 100%;
+  animation: seerr-shimmer 1.4s ease infinite;
+  border-radius: 4px;
+}
+
+.seerr-skeleton-line {
+  height: 11px;
+  margin: 7px 0;
+}
+
+@keyframes seerr-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seerr-skeleton .skeleton,
+  .seerr-conn-dot.is-starting,
+  .seerr-bulk-bar,
+  .seerr-spinner { animation: none; }
+  .seerr-card { transition: none; }
+}
+
+/* ===== Infinite-scroll sentinel ===== */
+/* Invisible scroll marker; an IntersectionObserver in seerr.js watches this
+   element to trigger loading the next page of results. */
+.seerr-sentinel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px 0 8px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.seerr-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: seerr-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes seerr-spin { to { transform: rotate(360deg); } }
+
+/* ===== Modals ===== */
+.seerr-modal { max-width: 580px; }
+.seerr-modal-sm { max-width: 520px; }
+
+.seerr-modal-title {
+  font-size: 1.1rem;
+  margin: 0 0 14px;
+  padding-right: 36px;
+}
+
+.seerr-modal-search { margin-bottom: 12px; }
+
+.seerr-search-results {
+  max-height: 380px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.seerr-search-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition);
+  border: 1px solid transparent;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+
+.seerr-search-result:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+
+.seerr-search-result:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.seerr-search-poster {
+  width: 36px;
+  min-width: 36px;
+  height: 54px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-elevated);
+  flex-shrink: 0;
+}
+
+.seerr-search-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.seerr-search-title {
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+}
+
+.seerr-source-pill {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(124, 58, 237, 0.2);
+  letter-spacing: 0.02em;
+}
+
+.seerr-search-loading,
+.seerr-search-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 0;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
+.seerr-search-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.seerr-search-footer [hidden] { display: none; }
+
+/* ===== Hidden requests list ===== */
+.seerr-hidden-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.seerr-hidden-row:last-child { border-bottom: none; }
+
+.seerr-hidden-poster,
+.seerr-hidden-poster-placeholder {
+  width: 40px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+  background: var(--bg-elevated);
+}
+
+.seerr-hidden-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 1000px) {
+  /* The progress track needs room for three labels; below this it would
+     truncate to unreadable stubs, so the row drops it and keeps the flag. */
+  .seerr-row,
+  body.mf-select-mode .seerr-row,
+  .seerr-row.is-selected { grid-template-columns: 44px minmax(0, 1fr) auto; }
+  body.mf-select-mode .seerr-row,
+  .seerr-row.is-selected { grid-template-columns: 24px 44px minmax(0, 1fr) auto; }
+  .seerr-row-progress { display: none; }
+}
+
+@media (max-width: 620px) {
+  .seerr-sort-label { display: none; }
+  .seerr-sort-group { flex: 1 1 auto; }
+  .seerr-sort-group .seerr-select { flex: 1; }
+
+  .seerr-row,
+  body.mf-select-mode .seerr-row,
+  .seerr-row.is-selected {
+    grid-template-columns: 44px minmax(0, 1fr);
+    row-gap: 10px;
+  }
+  /* Actions wrap onto their own full-width line rather than squeezing the
+     title into two characters. */
+  .seerr-row-actions {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+    justify-content: flex-end;
+  }
+  body.mf-select-mode .seerr-row-select,
+  .seerr-row.is-selected .seerr-row-select {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 2;
+    padding: 3px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.45);
+  }
+
+  .seerr-bulk-bar { flex-direction: column; align-items: stretch; }
+  .seerr-bulk-actions .btn { flex: 1; }
+}
+
+/* Release / first-air date above the facts line on a poster card. Its own
+   line because "Releases 14 Mar 2026" plus type, seasons and rating on one
+   run wraps at the narrowest grid column. */
+.seerr-poster-release {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+  margin-bottom: 1px;
+}

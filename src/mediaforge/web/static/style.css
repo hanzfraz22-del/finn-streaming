@@ -1,0 +1,19 @@
+/* ===================================================================
+   MediaForge — this file has been split up.
+   style.css is no longer linked from any template. Its former content
+   (theme variables, reset, app shell, buttons, forms, cards, modals,
+   tables, feedback UI, detail-page blocks, queue UI, utilities) now
+   lives in the following files, all loaded together from base.html:
+
+     variables.css, base.css, appearance.css, shell.css, forms.css,
+     buttons.css, cards.css, tabs-badges.css, modals.css, tables.css,
+     feedback.css, detail-page.css, queue.css, utilities.css
+
+   Page-specific styles that used to live here were split out earlier
+   into: auth.css, index.css, shared_modals.css, favourites.css,
+   stats.css, settings_rows.css, settings.css, notifications.css,
+   seerr.css, and the pre-existing autosync.css.
+
+   This file is kept only so nothing 404s if something still points at
+   it by mistake — it intentionally contains no rules.
+   =================================================================== */

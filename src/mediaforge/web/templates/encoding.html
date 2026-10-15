@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ _('Encoding') }} — MediaForge{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='settings_rows.css') }}">{% endblock %}
+{% block content %}
+{# Standalone Encoding page (direct /encoding access). The same body is
+   embedded as a client-side panel inside the Settings page (tab "Encoding"),
+   so this is the single source of truth. #}
+<div class="settings-container">
+  {% include "_encoding_body.html" %}
+</div>
+{% endblock %}

@@ -1,0 +1,1378 @@
+/* ===================================================================
+   MediaForge — App shell (sidebar, topbar, main content)
+   The persistent navigation chrome from base.html: desktop sidebar
+   (nav links, language dropdown, user/footer actions), mobile top
+   bar + hamburger + backdrop, the <main> content offset, the queue/
+   update count badges shown on nav links, and the sidebar's own
+   scrollbar styling.
+   =================================================================== */
+
+/* Sidebar */
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--sidebar-width);
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-border);
+  display: flex;
+  flex-direction: column;
+  z-index: 200;                /* above .mobile-topbar/.sidebar-backdrop (190) so the open sidebar always sits on top */
+  transition: transform var(--transition-slow), width var(--transition-slow);
+  overflow: visible;           /* header + footer stay put via flex-shrink:0; only .sidebar-nav scrolls. visible (not hidden) so the floating collapse toggle and mini-mode flyout submenus can escape the sidebar edge */
+}
+
+/* Floating collapse/expand toggle — a round button pinned to the sidebar's
+   right edge. Permanently visible (opacity:1) per requirement, not just on
+   hover. Toggles the html.sidebar-mini state via toggleSidebarMini(). */
+.sidebar-toggle-btn {
+  position: absolute;
+  top: 20px;                   /* vertically aligned with the brand/logo in the header */
+  right: -12px;                /* centered on the sidebar's right border */
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  border: 1px solid var(--sidebar-border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-sm);
+  z-index: 1010;
+  opacity: 1;                  /* always visible */
+  pointer-events: auto;
+  transition: background var(--transition), color var(--transition), transform var(--transition);
+}
+
+.sidebar-toggle-btn:hover {
+  background: var(--brand-color);
+  color: #fff;
+  border-color: var(--brand-color);
+  transform: scale(1.1);
+}
+
+.sidebar-toggle-btn svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  stroke-width: 3;
+  fill: none;
+}
+
+/* Arrow direction: point left (collapse) when expanded, right (expand) when mini */
+.sidebar-toggle-btn .arrow-right-icon { display: none; }
+html.sidebar-mini .sidebar-toggle-btn .arrow-left-icon { display: none; }
+html.sidebar-mini .sidebar-toggle-btn .arrow-right-icon { display: block; }
+
+/* Sidebar Header */
+.sidebar-header {
+  padding: 20px 16px 12px;
+  border-bottom: 1px solid var(--sidebar-border);
+  flex-shrink: 0;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-primary);
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+  text-decoration: none;
+  transition: opacity var(--transition);
+}
+
+.sidebar-brand:hover {
+  opacity: 0.8;
+  color: var(--text-primary);
+}
+
+.sidebar-brand-icon {
+  width: 28px;
+  height: 28px;
+  color: var(--brand-color);
+  flex-shrink: 0;
+}
+
+.sidebar-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.sidebar-brand-text small {
+  font-size: 0.68rem;
+  font-weight: 400;
+  color: var(--text-muted);
+  letter-spacing: 0;
+}
+
+/* Sidebar Nav */
+.sidebar-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.sidebar-category {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 2PX §PX "PX";
+  user-select: none;
+  cursor: pointer;
+  pointer-events: auto !important;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: color var(--transition);
+}
+
+.sidebar-category:hover {
+  color: var(--text-secondary);
+}
+
+.sidebar-category::after {
+  content: '';
+  width: 15px;
+  height: 15px;
+  display: inline-block;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2355556a' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  transition: transform var(--transition, 0.2s ease);
+  opacity: 0.7;
+}
+
+.sidebar-category.collapsed::after {
+  transform: rotate(-90deg);
+}
+
+.sidebar-category:first-child {
+  padding-top: 4px;
+}
+
+/* Sidebar category group transitions */
+.sidebar-category-group {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+  opacity: 1;
+}
+
+.sidebar-category-inner {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0px;
+  padding-bottom: 6px;
+  padding-right: 5px;
+}
+
+.sidebar-category-group.collapsed {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0px 12px 10px;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: background var(--transition), color var(--transition), transform var(--transition);
+  position: relative;
+  text-decoration: none;
+  width: 100%;
+  text-align: left;
+  margin-top: 4px;
+  height: 28px;
+}
+
+.sidebar-link svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  /* --nav-ic is set per entry further down (see "Nav icon colours"). Items
+     without a mapping -- notably module-provided icons -- fall back to
+     currentColor and keep inheriting the link colour as before. */
+  stroke: var(--nav-ic, currentColor);
+}
+
+.sidebar-link:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-radius: var(--radius-md);
+  transform: translateX(4px);
+}
+
+.sidebar-link.active {
+  background: linear-gradient(90deg, var(--accent-soft) 0%, rgba(124, 58, 237, 0.03) 100%);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.sidebar-link.active svg {
+  color: var(--accent);
+  /* The active entry drops its individual colour and joins the accent
+     highlight, so the icon never fights the accent-tinted background. */
+  stroke: var(--accent);
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+
+.sidebar-link.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 4px;
+  border-radius: 99px;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+
+/* Sidebar Submenu (nested under Settings) */
+.sidebar-sub {
+  padding-left: 20px;
+  margin-top: 2px;
+  margin-bottom: 4px;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-sub.open {
+  display: flex;
+}
+
+/* Chevron toggle for Settings submenu */
+.sidebar-toggle-chevron {
+  margin-left: auto;
+  font-size: 1.1rem;
+  line-height: 1;
+  opacity: 0.6;
+  transition: transform var(--transition, 0.2s ease), opacity var(--transition, 0.2s ease);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+}
+
+.sidebar-toggle-chevron:hover {
+  opacity: 1;
+  
+}
+
+.sidebar-toggle-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+
+.sidebar-sub-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 20px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-decoration: none;
+  border-radius: var(--radius-sm, 6px);
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+  position: relative;
+  line-height: 1.3;
+}
+
+.sidebar-sub-link::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0.4;
+  transition: opacity 0.15s, background 0.15s, transform 0.15s;
+}
+
+.sidebar-sub-link:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover, rgba(255, 255, 255, 0.04));
+  transform: translateX(2px);
+}
+
+.sidebar-sub-link:hover::before {
+  opacity: 0.9;
+  transform: translateY(-50%) scale(1.3);
+}
+
+.sidebar-sub-link.active {
+  color: var(--accent, #6366f1);
+  background: var(--accent-bg, rgba(99, 102, 241, 0.08));
+  font-weight: 600;
+}
+
+.sidebar-sub-link.active::before {
+  background: var(--accent, #6366f1);
+  opacity: 1;
+  transform: translateY(-50%) scale(1.4);
+}
+
+/* ---- Nav icon colours ----
+   Each entry gets its own --nav-ic, keyed off the data-page attribute the
+   markup already carries (plus the two toggle buttons, which have no page).
+   Only var(--nav-ic-*) indirection here, no literal colours, so theme packs
+   can override the palette in variables.css. Entries with no rule below --
+   module-injected items -- inherit currentColor and stay monochrome. */
+.sidebar-link[data-page="index"]         { --nav-ic: var(--nav-ic-home); }
+.sidebar-sub-link[data-page="advanced_search"] { --nav-ic: var(--nav-ic-search); }
+.sidebar-sub-link[data-page="catalogue"] { --nav-ic: var(--nav-ic-catalogue); }
+.sidebar-sub-link[data-page="favourites"] { --nav-ic: var(--nav-ic-favourites); }
+.sidebar-link[data-page="library"],
+.sidebar-sub-link[data-page^="library_"]  { --nav-ic: var(--nav-ic-library); }
+.sidebar-link[data-page="calendar"]      { --nav-ic: var(--nav-ic-calendar); }
+.sidebar-link[data-page="syncplay"]      { --nav-ic: var(--nav-ic-syncplay); }
+.sidebar-link[data-page="seerr"]         { --nav-ic: var(--nav-ic-seerr); }
+.sidebar-link[data-page="autosync"]      { --nav-ic: var(--nav-ic-autosync); }
+.sidebar-link[data-page="monitoring"]    { --nav-ic: var(--nav-ic-monitoring); }
+.sidebar-link[data-page="notifications"] { --nav-ic: var(--nav-ic-notifications); }
+.sidebar-link[data-page="extensions"]    { --nav-ic: var(--nav-ic-store); }
+.sidebar-sub-link[data-page="module_settings"] { --nav-ic: var(--nav-ic-modules); }
+.sidebar-link[data-page="integrations"]  { --nav-ic: var(--nav-ic-integrations); }
+.sidebar-link[data-page="profile"]       { --nav-ic: var(--nav-ic-profile); }
+.sidebar-link[data-page="settings"]      { --nav-ic: var(--nav-ic-settings); }
+/* The two collapsible group headers carry no data-page. */
+.sidebar-link.sidebar-group-btn          { --nav-ic: var(--nav-ic-modules); }
+.sidebar-link.sidebar-queue-btn          { --nav-ic: var(--nav-ic-queue); }
+
+/* Sidebar Footer — compact: profile row (avatar + name + logout) plus a
+   4-column icon grid (Dev Infos, GitHub, Appearance, Language). */
+.sidebar-footer {
+  padding: 12px 12px 14px;
+  border-top: 1px solid var(--sidebar-border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.sidebar-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  font-size: 0.85rem;
+}
+
+/* Circular avatar showing the first letter of the username */
+.sidebar-user-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.8rem;
+  border: 1px solid rgba(124, 58, 237, 0.2);
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.15);
+  text-transform: uppercase;
+}
+
+.sidebar-username {
+  flex: 1;
+  color: var(--text-primary);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+/* The logout control is a submit button inside a form (POST), so it needs the
+   browser's button defaults reset to keep looking like the icon link it was. */
+.sidebar-logout-form {
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-logout {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  transition: color var(--transition);
+  padding: 2px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  line-height: 0;
+}
+
+.sidebar-logout svg {
+  width: 15px;
+  height: 15px;
+}
+
+.sidebar-logout:hover {
+  color: var(--error);
+}
+
+/* Footer icon grid */
+.footer-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  width: 100%;
+}
+
+.footer-action-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  cursor: pointer;
+  position: relative;
+  text-decoration: none;
+  transition: background var(--transition), color var(--transition), border-color var(--transition), transform var(--transition);
+}
+
+.footer-action-icon:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.1);
+  transform: translateY(-2px);
+}
+
+.footer-action-icon svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2;
+  fill: none;
+  stroke: currentColor;
+}
+
+/* Small count badge overlaid on a footer icon (e.g. Dev Infos count) */
+.icon-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  background: var(--badge-bg);
+  color: var(--badge-text);
+  font-size: 0.6rem;
+  font-weight: 700;
+  min-width: 14px;
+  height: 14px;
+  line-height: 12px;
+  border-radius: 50%;
+  text-align: center;
+  border: 1.5px solid var(--sidebar-bg);
+  padding: 0 2px;
+}
+
+/* Sidebar language dropdown */
+.sidebar-lang-dropdown {
+  position: relative;
+  width: 100%;
+}
+
+/* The language trigger is nested inside .sidebar-lang-dropdown, so it is not a
+   direct grid item and would size to its content (narrower than the other
+   footer icons). Force it to fill the cell so all four icons match. */
+.sidebar-lang-dropdown .footer-action-icon {
+  width: 100%;
+}
+
+.sidebar-lang-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.sidebar-lang-trigger:hover { background: var(--bg-hover); }
+
+.sidebar-lang-flag {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.sidebar-lang-label {
+  flex: 1;
+  text-align: left;
+}
+
+.sidebar-lang-chevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform var(--transition);
+}
+.sidebar-lang-dropdown.open .sidebar-lang-chevron {
+  transform: rotate(180deg);
+}
+
+.sidebar-lang-menu {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: auto;
+  right: 0;                    /* anchored to the language icon (rightmost footer cell); menu extends leftward, staying inside the sidebar */
+  min-width: 170px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.25);
+  overflow: hidden;
+  z-index: 210;                /* above the sidebar's own layer (200) so the menu sits over adjacent footer icons */
+}
+.sidebar-lang-dropdown.open .sidebar-lang-menu {
+  display: block;
+}
+
+.sidebar-lang-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.sidebar-lang-option:hover { background: var(--bg-hover); }
+.sidebar-lang-option.active { color: var(--accent); }
+
+/* Sidebar Footer Actions */
+.theme-toggle,
+.sidebar-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+  width: 100%;
+  transition: background var(--transition), color var(--transition);
+}
+
+.theme-toggle:hover,
+.sidebar-action-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.theme-toggle svg,
+.sidebar-action-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.theme-icon-dark,
+.theme-icon-light {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-theme="dark"] .theme-icon-light {
+  display: none;
+}
+
+[data-theme="light"] .theme-icon-dark {
+  display: none;
+}
+
+[data-theme="light"] .theme-icon-light {
+  display: flex;
+}
+/* Mobile top bar */
+.mobile-topbar {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--topbar-height);
+  background: var(--sidebar-bg);
+  border-bottom: 1px solid var(--sidebar-border);
+  align-items: center;
+  padding: 0 16px;
+  z-index: 190;
+}
+
+.mobile-brand {
+  flex: 1;
+  text-align: center;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.mobile-brand:hover {
+  color: var(--text-primary);
+  opacity: 0.8;
+}
+
+/* Hamburger */
+.hamburger {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  width: 32px;
+  height: 32px;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+}
+
+.hamburger:hover {
+  background: var(--bg-hover);
+}
+
+.hamburger span {
+  display: block;
+  height: 2px;
+  background: var(--text-secondary);
+  border-radius: 2px;
+  transition: transform var(--transition), opacity var(--transition), width var(--transition);
+  transform-origin: center;
+}
+
+.hamburger span:nth-child(1) {
+  width: 20px;
+}
+
+.hamburger span:nth-child(2) {
+  width: 14px;
+}
+
+.hamburger span:nth-child(3) {
+  width: 20px;
+}
+
+.hamburger.open span:nth-child(1) {
+  transform: translateY(7px) rotate(45deg);
+  width: 20px;
+}
+
+.hamburger.open span:nth-child(2) {
+  opacity: 0;
+}
+
+.hamburger.open span:nth-child(3) {
+  transform: translateY(-7px) rotate(-45deg);
+  width: 20px;
+}
+
+/* Mobile queue button */
+.mobile-queue-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  position: relative;
+  transition: background var(--transition), color var(--transition);
+}
+
+.mobile-queue-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.mobile-queue-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Sidebar backdrop */
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 190;                /* same layer as .mobile-topbar, below the sidebar (200) which sits on top when open */
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  transition: opacity var(--transition-slow);
+}
+
+.sidebar-backdrop.visible {
+  display: block;
+  opacity: 1;
+}
+
+/* Main content area */
+.main-content {
+  margin-left: var(--sidebar-width);
+  min-height: 100vh;
+  background: var(--bg-base);
+  transition: margin-left var(--transition-slow);
+}
+
+/* ===================================================================
+   QUEUE BADGE
+   =================================================================== */
+/* Small count pill on sidebar nav links (Queue, Upscaling, Seerr). Kept
+   global — .seerr-badge lives in the sidebar (base.html), rendered on
+   every page, not just the Seerr page itself. */
+.queue-badge,
+.seerr-badge {
+  background: var(--badge-bg);
+  color: var(--badge-text);
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 99px;
+  line-height: 1.4;
+  margin-left: auto;
+}
+
+.update-badge {
+  background: var(--accent, #e05c5c);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 99px;
+  line-height: 1.4;
+  margin-left: auto;
+}
+
+/* Module pill — a small accent-colored "M" next to any sidebar link that
+   came from a thirdparties/ module's register_thirdparty() call (see
+   thirdparties/registry.py's resolve_menu_items()), rather than one of
+   MediaForge's own built-in links. Same margin-left: auto trick as the
+   badges above to sit at the end of the .sidebar-link flex row; on an
+   .active link it switches to a light/inverted variant so it stays legible
+   against .sidebar-link.active's own accent-tinted background (see
+   .sidebar-link.active above) instead of blending into it. */
+.sidebar-module-pill {
+  background: transparent;
+  border: 1px solid rgba(124, 58, 237, 0.4);
+  color: var(--accent, #7c3aed);
+  font-size: 0.6rem;
+  font-weight: 600;
+  width: auto;
+  height: 16px;
+  line-height: 14px;
+  padding: 0 5px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+/* ── Library sub-menu: media kinds that are not implemented yet ───────
+   Listed rather than hidden, so the sub-menu shows where the library is
+   going. They still navigate (to a page that explains itself), but must not
+   compete with the shelves that actually hold something: no hover accent,
+   quieter text, and a "soon" tag carrying the meaning so the styling alone
+   never has to. Kept legible on purpose -- a greyed entry that fails
+   contrast reads as a rendering bug, not as a plan. */
+.sidebar-sub-link.sidebar-sub-soon {
+  color: var(--text-muted);
+  cursor: default;
+}
+.sidebar-sub-link.sidebar-sub-soon:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+.sidebar-sub-link.sidebar-sub-soon:hover::before { opacity: 0; }
+.sidebar-sub-link.sidebar-sub-soon svg { opacity: 0.6; }
+
+.sidebar-soon-pill {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 0 5px;
+  height: 15px;
+  line-height: 15px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: 0.55rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Small ringed dot before the "M", drawn in the accent colour */
+.sidebar-module-pill::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237c3aed' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z'/%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+}
+
+/* On an active link keep the outlined look but with a full-opacity border so
+   it stays legible against the accent-tinted active background. */
+.sidebar-link.active .sidebar-module-pill {
+  border-color: var(--accent, #7c3aed);
+}
+
+/* Dev Infos sidebar badge — sits inside .sidebar-action-btn (a flex row in
+   the footer, alongside GitHub), not a .sidebar-link nav item, so it uses
+   the same margin-left: auto trick as .seerr-badge/.update-badge to push
+   itself to the end of that flex row. Hidden via inline style when count
+   is 0, exactly like .seerr-badge. */
+.devinfo-badge {
+  background: var(--badge-bg);
+  color: var(--badge-text);
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 99px;
+  line-height: 1.4;
+  margin-left: auto;
+}
+
+
+/* ===================================================================
+   MINI / COLLAPSED SIDEBAR  (desktop only)
+   Toggled by the floating .sidebar-toggle-btn -> toggleSidebarMini(), which
+   sets html.sidebar-mini (persisted in localStorage, applied before paint to
+   avoid a flash). Collapses the sidebar to a 64px icon rail; submenus become
+   hover flyouts with an invisible hover bridge so the cursor can travel from
+   an icon into its flyout without losing hover. Wrapped in min-width:769px so
+   none of it applies on mobile — there the sidebar stays a full-width
+   slide-in drawer, exactly as before.
+   =================================================================== */
+@media (min-width: 769px) {
+  html.sidebar-mini .sidebar { width: 64px; }
+  html.sidebar-mini .main-content { margin-left: 64px; }
+  html.sidebar-mini #page-loader { left: 64px; }
+
+  /* The rail scrolls vertically when there are more icons than fit the
+     height; flyout submenus use position:fixed (below), so they escape this
+     clip instead of being cut off. */
+  html.sidebar-mini .sidebar-nav { overflow-y: auto; overflow-x: hidden; }
+  html.sidebar-mini .sidebar-category-inner,
+  html.sidebar-mini .sidebar-category-group { overflow: visible; }
+
+  /* In mini mode every category is forced open, regardless of the
+     collapse state persisted from the expanded sidebar, so all icons stay
+     reachable (collapsed groups otherwise get pointer-events:none). */
+  html.sidebar-mini .sidebar-category-group {
+    grid-template-rows: 1fr !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+
+  /* Header -> just the logo, centered. The base .sidebar-header is a block,
+     so force flex here to actually center the brand icon on the rail. */
+  html.sidebar-mini .sidebar-header {
+    padding: 12px 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  html.sidebar-mini .sidebar-brand { justify-content: center; gap: 0; }
+  html.sidebar-mini .sidebar-brand-text { display: none; }
+
+  /* Category headings removed entirely in mini mode — no label and no gap. */
+  html.sidebar-mini .sidebar-category { display: none; }
+
+  /* Links -> icon only, centered, no hover slide */
+  html.sidebar-mini .sidebar-link {
+    position: relative;
+    justify-content: center;
+    padding: 5px 0;
+    gap: 0;
+    transform: none !important;
+  }
+  html.sidebar-mini .sidebar-link > span:not([class]) { display: none; }
+  html.sidebar-mini .sidebar-link svg { width: 20px; height: 20px; }
+  html.sidebar-mini .sidebar-module-pill,
+  html.sidebar-mini .sidebar-toggle-chevron { display: none; }
+
+  /* Count badges re-anchored onto the icon */
+  html.sidebar-mini .sidebar-link .queue-badge,
+  html.sidebar-mini .sidebar-link .seerr-badge,
+  html.sidebar-mini .sidebar-link .update-badge {
+    position: absolute;
+    top: 0;
+    right: 8px;
+    margin-left: 0;
+    padding: 1px 5px;
+    font-size: 0.6rem;
+  }
+
+  /* Submenus become right-hand flyouts on hover (overrides .open). They use
+     position:fixed so the scrolling rail can't clip them; their vertical
+     position (top) and max-height are set per-hover in JS from the icon's
+     current viewport position, so they stay aligned even when the rail is
+     scrolled and scroll internally if taller than the viewport. */
+  /* Opening/closing is driven by JS (see the flyout script in base.html) via
+     the .flyout-open class, with a short close delay (hover-intent) so the
+     cursor can travel diagonally from the icon into the panel without it
+     snapping shut. left:64px sits it flush against the rail; top/max-height
+     are set per-hover from the icon's viewport position. */
+  html.sidebar-mini .sidebar-sub { display: none !important; }
+  html.sidebar-mini .sidebar-sub.flyout-open {
+    display: flex !important;
+    opacity: 1;
+    position: fixed;
+    left: 64px;
+    top: 0;
+    background: var(--bg-surface);
+    border: 1px solid var(--sidebar-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    padding: 8px;
+    min-width: 190px;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+    flex-direction: column;
+    z-index: 1000;
+  }
+
+  /* Footer -> stacked icon column */
+  html.sidebar-mini .sidebar-footer { padding: 12px 8px; align-items: center; }
+  html.sidebar-mini .sidebar-user { padding: 0; justify-content: center; }
+  html.sidebar-mini .sidebar-username,
+  html.sidebar-mini .sidebar-logout { display: none; }
+  html.sidebar-mini .footer-actions-grid { grid-template-columns: 1fr; gap: 8px; }
+
+  /* In the mini rail there is no room to the left, so the language menu (which
+     normally opens above-right of a wide footer button) would slide off-screen.
+     Anchor it as a fixed panel just right of the rail, near the bottom where the
+     language icon sits, so it stays fully visible. */
+  html.sidebar-mini .sidebar-lang-menu {
+    position: fixed;
+    left: 70px;
+    right: auto;
+    bottom: 14px;
+    min-width: 160px;
+  }
+}
+
+
+/* ===================================================================
+   RESPONSIVE — Mobile
+   =================================================================== */
+@media (max-width: 768px) {
+  .sidebar {
+    transform: translateX(-100%);
+  }
+
+  /* The floating collapse toggle is desktop-only; mobile uses the hamburger */
+  .sidebar-toggle-btn {
+    display: none;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+    box-shadow: var(--shadow-modal);
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .sidebar-backdrop.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .mobile-topbar {
+    display: flex;
+  }
+
+  .main-content {
+    margin-left: 0;
+    padding-top: var(--topbar-height);
+  }
+
+  /* Override .modal's desktop padding (24px, set in modals.css) for
+     narrow screens; !important guards against load-order specificity ties
+     between the two files. */
+  .modal{
+    padding: 15px !important;
+  }
+
+  
+  
+  
+
+  
+
+
+}
+/* ===================================================================
+   SCROLLBAR in sidebar
+   =================================================================== */
+.sidebar-nav::-webkit-scrollbar {
+  width: 3px;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background: var(--bg-hover);
+}
+
+/* ============================================================
+   Menu rework (2026-07) — sidebar group buttons + in-page
+   floating side menu (Settings / Integrations / Monitoring).
+   ============================================================ */
+
+/* Container-only sidebar rows (Queues) and the per-category "Modules" groups
+   are <button>s styled like a .sidebar-link; reset native button chrome. */
+.sidebar-group-btn {
+  background: none;
+  border: none;
+  /* font-family only -- NOT the `font` shorthand, which would reset font-size
+     back to the inherited (larger) value and make these rows taller than the
+     other .sidebar-links. */
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Queue entries render as sub-links (buttons) inside the Queues sub-menu.
+   Same font-size note as above: keep .sidebar-sub-link's own font-size. */
+.sidebar-sub-link.sidebar-queue-btn {
+  background: none;
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Sub-menu entries that carry an icon (Queues, per-category Modules, Home's
+   Advanced Search/Favorites, Module Settings). Give them the same left icon
+   slot as a top-level .sidebar-link and drop the little bullet dot so Queues
+   and Modules render identically. */
+/* Same font-size as top-level .sidebar-links so the whole menu is uniform. */
+.sidebar-sub-link { width: 100%; box-sizing: border-box; font-size: 0.8rem; }
+.sidebar-sub-link.has-icon {
+  padding-left: 12px;
+  gap: 10px;
+}
+.sidebar-sub-link.has-icon::before { display: none; }
+.sidebar-sub-link svg {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  stroke: var(--nav-ic, currentColor);
+}
+.sidebar-sub-link.active svg { stroke: var(--accent, #6366f1); }
+.sidebar-sub-link .sidebar-module-pill { margin-left: auto; }
+.sidebar-sub-link .queue-badge { margin-left: auto; }
+
+/* ---- In-page floating side menu ---- */
+/* The host container (Settings / Integrations settings-container, or the
+   Monitoring shell) becomes a two-column flex: menu + content. Inactive
+   .settings-tab-panels are display:none and drop out of the flow. */
+.has-floating-menu {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  column-gap: 32px;
+}
+/* Give the two-column layout more room so the content panel doesn't look
+   cramped next to the menu (default .settings-container is 1060px). */
+.settings-container.has-floating-menu {
+  max-width: 1340px;
+}
+.has-floating-menu > .page-header,
+.has-floating-menu > #envFileBanner {
+  flex: 1 1 100%;
+}
+.has-floating-menu > .floating-side-menu {
+  flex: 0 0 208px;
+  /* Pinned near the top and sticky, so it stays put and visible while the page
+     scrolls — consistent across all pages, and never floats detached over the
+     content (the viewport-centered variant did on tall pages). */
+  align-self: flex-start;
+  position: sticky;
+  top: 20px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+.has-floating-menu > .settings-tab-panel,
+.has-floating-menu > .monitoring-body {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+/* Turn the (previously horizontal) tab bar into a vertical menu card. */
+.floating-side-menu {
+  flex-direction: column !important;
+  gap: 2px !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-lg, 12px);
+  background: var(--bg-card);
+  padding: 8px !important;
+  margin-bottom: 0 !important;
+  overflow: visible !important;
+  cursor: default !important;
+}
+.floating-side-menu .settings-tab {
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: none !important;
+  border-radius: var(--radius-md, 8px);
+  margin-bottom: 0 !important;
+  padding: 8px 12px;
+}
+.floating-side-menu .settings-tab:hover {
+  transform: none;
+  background: var(--bg-hover, rgba(255, 255, 255, 0.05));
+}
+.floating-side-menu .settings-tab::before { display: none !important; }
+.floating-side-menu .settings-tab.active {
+  background: var(--accent-soft, rgba(124, 58, 237, 0.15));
+  color: var(--accent, #6366f1);
+  border-bottom: none !important;
+  box-shadow: inset 3px 0 0 var(--accent, #6366f1);
+}
+.floating-side-menu .settings-tab .sidebar-module-pill { margin-left: auto; }
+
+/* "Modules" sub-heading inside the Integrations floating menu. */
+.settings-tab-group-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  padding: 10px 12px 4px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+/* Monitoring shell (Statistics / Download History / Uptime share the look). */
+.monitoring-shell { padding: 32px; max-width: 1340px; margin: 0 auto; }
+.monitoring-body { display: block; }
+
+/* ---- Mobile: the floating menu becomes an off-canvas drawer opened by a
+   fixed side button (injected in base.html when a floating menu exists). ---- */
+.floating-menu-fab {
+  display: none;
+  position: fixed;
+  right: 14px;
+  /* Top-right, just below the mobile top bar. */
+  top: calc(var(--topbar-height, 56px) + 12px);
+  z-index: 1160;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--accent, #6366f1);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.floating-menu-fab svg { width: 22px; height: 22px; }
+.floating-menu-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1155;
+}
+.floating-menu-backdrop.show { display: block; }
+
+@media (max-width: 860px) {
+  /* Content spans full width; the menu slides in from the right on demand. */
+  .has-floating-menu > .settings-tab-panel,
+  .has-floating-menu > .monitoring-body {
+    flex: 1 1 100%;
+  }
+  .has-floating-menu > .floating-side-menu {
+    position: fixed;
+    top: 0;
+    right: 0;
+    height: 100dvh;
+    max-height: none;
+    width: 264px;
+    max-width: 82vw;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+    z-index: 1200;
+    overflow-y: auto;
+    align-self: stretch;
+  }
+  .has-floating-menu > .floating-side-menu.mobile-open { transform: translateX(0); }
+  .floating-menu-fab { display: flex; }
+}
+
+/* ---- Animated open/close of the left sidebar sub-menus (Home, Queues, the
+   per-category Modules groups, Module Manager). Replaces the instant
+   display:none/flex toggle with a height + fade transition. Mini-rail flyouts
+   are shown via JS (fixed, inline max-height) and handled separately below. ---- */
+.sidebar-sub {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  transition: max-height 0.28s ease, opacity 0.2s ease, margin 0.2s ease;
+}
+.sidebar-sub.open {
+  max-height: 700px;
+  opacity: 1;
+  margin-top: 3px;
+  margin-bottom: 3px;
+}
+/* Keep the mini-rail hover flyout fully visible despite the animation base. */
+.sidebar-sub.flyout-open { opacity: 1; }
+
+
+/* ===================================================================
+   Body scroll lock (see window.MFScrollLock in base.html)
+   Applied while an off-canvas menu is open so the page behind it cannot
+   be scrolled or rubber-banded. position:fixed is required on mobile:
+   overflow:hidden alone does not stop touch scroll chaining, which would
+   move the page behind the overlay and collapse the browser URL bar.
+   =================================================================== */
+body.mf-scroll-locked {
+  position: fixed;
+  left: 0;
+  right: 0;
+  width: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* The "M" pill on a settings CARD (Third Party, Notifications, Module
+   Settings — anything rendered by _settings_card_macro.html). Same pill as
+   the sidebar's, but it sits mid-header between the title and the badges
+   instead of at the end of a line, so it needs room on its right.
+
+   Its own class rather than a tweak to .sidebar-module-pill: that one is
+   tuned for a sidebar row, and widening it there would push every module
+   entry in the main menu around. Lives in shell.css because base.html loads
+   this file on every page — integrations.css is not loaded on the other two
+   pages that use the same macro. */
+.card-module-pill { margin-right: 15px; }
+
+/* ---------------------------------------------------------------- library move
+   A folder move keeps running on the server after its modal is minimized, so
+   the way back into it has to exist on every page -- not just the library one,
+   where this used to live (library_core.css, loaded only there). Minimizing a
+   move and navigating away left it running and unreachable.
+
+   Fixed to the viewport rather than sitting in the library header: base.html
+   has no shared header slot, and a running background job is exactly the kind
+   of thing that should stay put while the page scrolls. */
+.lib-move-pill-host {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 1200;   /* above page content, below .modal-overlay */
+  pointer-events: none;
+}
+
+.lib-move-pill {
+  display: none;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--warning, #f59e0b);
+  background: var(--bg-card, rgba(30, 30, 40, 0.96));
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 999px;
+  /* Comfortably tappable: the pill is the only way back into a running move,
+     and on a phone a 20px-tall target is a miss waiting to happen. */
+  padding: 9px 15px;
+  min-height: 44px;
+  box-sizing: border-box;
+  cursor: pointer;
+  pointer-events: auto;   /* the host is transparent to clicks, the pill is not */
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+}
+
+.lib-move-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.lib-move-pill-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(245, 158, 11, 0.25);
+  border-top-color: var(--warning, #f59e0b);
+  border-radius: 50%;
+  animation: lib-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.lib-move-pill-label { color: var(--text-muted); }
+
+/* The keyframes live in library_core.css, which is not loaded everywhere --
+   redeclaring by the same name is harmless and makes the pill self-contained. */
+@keyframes lib-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .lib-move-pill-spinner { animation: none; }
+}
+
+@media (max-width: 640px) {
+  /* Clear of the mobile bottom navigation. */
+  .lib-move-pill-host { right: 12px; bottom: 76px; }
+}

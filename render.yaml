@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: finn-streaming
+    runtime: python
+    buildCommand: pip install -r MeinStreamingProjekt/requirements_server.txt
+    startCommand: python MeinStreamingProjekt/backend.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: USE_WAITRESS
+        value: 1

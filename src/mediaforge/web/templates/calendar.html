@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block title %}{{ _('Calendar') }} — MediaForge{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='mf_components.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='calendar.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='mf_detail_modal.css') }}">
+{# The shared series modal (shared_modals.html) that "Search streams" opens --
+   same pair of files the Seerr page links for the same reason. #}
+<link rel="stylesheet" href="{{ url_for('static', filename='shared_modals.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="cal-page-container">
+  <div class="page-header cal-header">
+    <div class="cal-header-titles">
+      <h1 class="page-title">{{ _('Calendar') }}</h1>
+      <p class="page-subtitle">{{ _('Upcoming episode air dates for your AutoSync jobs') }}</p>
+      <p class="page-subtitle page-hint">{{ _('Please be aware that the calendar displays the airtime based on the country of origin. The time zone cannot currently be converted.') }}</p>
+      <div class="cal-status-row">
+        <!-- Scan badge -->
+        <span class="cal-scan-badge" id="calScanBadge">
+          <span class="cal-scan-spinner"></span>{{ _('Scanning…') }}
+        </span>
+        <!-- Watcher -->
+        <span class="cal-watcher-status" id="calWatcherTip" title="">
+          <span class="cal-watcher-dot" id="calWatcherDot"></span>
+          <span class="cal-watcher-label" id="calWatcherLabel">{{ _('Watcher…') }}</span>
+        </span>
+      </div>
+    </div>
+
+    <button type="button" class="btn btn-secondary btn-sm cal-feed-btn" id="calFeedBtn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/>
+        <circle cx="5" cy="19" r="1"/>
+      </svg>{{ _('Subscribe') }}
+    </button>
+  </div>
+
+  <!-- ===== Toolbar =====
+       Row 1 navigates and finds, row 2 shapes the view. See .mf-toolbar in
+       mf_components.css for why they are separate rows. -->
+  <div class="mf-toolbar">
+
+    <div class="mf-toolbar-row">
+      <button class="mf-icon-btn cal-nav-btn" id="calPrevBtn"
+              title="{{ _('Back') }}" aria-label="{{ _('Back') }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="15 18 9 12 15 6"></polyline></svg>
+      </button>
+      <button class="btn btn-secondary btn-sm cal-today-btn" id="calTodayBtn">{{ _('Today') }}</button>
+      <button class="mf-icon-btn cal-nav-btn" id="calNextBtn"
+              title="{{ _('Next') }}" aria-label="{{ _('Next') }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="9 18 15 12 9 6"></polyline></svg>
+      </button>
+      <span class="cal-period-label" id="calPeriodLabel"></span>
+
+      <div class="mf-toolbar-gap"></div>
+
+      <div class="mf-search cal-search">
+        <svg class="mf-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input type="search" class="mf-search-input" id="calSearch"
+               placeholder="{{ _('Filter titles…') }}" aria-label="{{ _('Filter titles…') }}"
+               autocomplete="off">
+        <button type="button" class="mf-search-clear" id="calSearchClear"
+                aria-label="{{ _('Clear search') }}" hidden>&times;</button>
+      </div>
+    </div>
+
+    <div class="mf-toolbar-row">
+      <div class="mf-segmented" id="calRangeToggle" role="group" aria-label="{{ _('View range') }}">
+        <button type="button" class="cal-seg-btn mf-segmented-btn active" data-range="month" aria-pressed="true">{{ _('Month') }}</button>
+        <button type="button" class="cal-seg-btn mf-segmented-btn" data-range="week" aria-pressed="false">{{ _('Week') }}</button>
+        <button type="button" class="cal-seg-btn mf-segmented-btn" data-range="agenda" aria-pressed="false">{{ _('Agenda') }}</button>
+      </div>
+
+      <span class="mf-toolbar-sep" aria-hidden="true"></span>
+
+      <div class="mf-segmented" id="calTypeToggle" role="group" aria-label="{{ _('Filter by media type') }}">
+        <button type="button" class="cal-seg-btn mf-segmented-btn active" data-type="all" aria-pressed="true">{{ _('All') }}</button>
+        <button type="button" class="cal-seg-btn mf-segmented-btn" data-type="tv" aria-pressed="false">{{ _('Series') }}</button>
+        <button type="button" class="cal-seg-btn mf-segmented-btn" data-type="movie" aria-pressed="false">{{ _('Movies') }}</button>
+      </div>
+
+      <div class="mf-toolbar-gap"></div>
+
+      <div class="mf-segmented" id="calLayoutToggle" role="group" aria-label="{{ _('Layout') }}">
+        <button type="button" class="cal-seg-btn mf-segmented-btn" data-layout="grid" aria-pressed="false"
+                title="{{ _('Grid view') }}" aria-label="{{ _('Grid view') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+               stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+        </button>
+        <button type="button" class="cal-seg-btn mf-segmented-btn active" data-layout="list" aria-pressed="true"
+                title="{{ _('List view') }}" aria-label="{{ _('List view') }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+               stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line>
+            <line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line>
+            <line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Source filter chips (populated by calendar.js when multiple sources exist) -->
+  <div class="cal-filters" id="calFilters"></div>
+
+  <div class="cal-meta-row">
+    <span class="cal-count" id="calCount"></span>
+  </div>
+
+  <!-- Loading -->
+  <div class="cal-loading" id="calLoading">
+    <span class="cal-spinner"></span>
+    <span>{{ _('Loading calendar...') }}</span>
+  </div>
+
+  <!-- No API key -->
+  <div class="cal-empty-state" id="calNoKey" style="display:none">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+    </svg>
+    <p>{{ _('A TMDB API key is required. Configure it under') }} <a href="/integrations#cineinfo" class="integ-link">CineInfo</a>.</p>
+  </div>
+
+  <!-- No events -->
+  <div class="cal-empty-state" id="calEmpty" style="display:none">
+    <!-- Default: nothing scheduled -->
+    <div id="calEmptyDefault">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line>
+        <line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line>
+      </svg>
+      <p>{{ _('No upcoming episode dates found for your AutoSync jobs.') }}</p>
+      <p class="cal-empty-hint" id="calEmptySeerrHint" style="display:none">{{ _('Seerr is active, but none of your open requests have an upcoming air or release date yet — so there is nothing to show here.') }}</p>
+    </div>
+    <!-- Initial sync in progress -->
+    <div id="calEmptySyncing" style="display:none">
+      <span class="cal-spinner"></span>
+      <p>{{ _('The first synchronization may take a while — your calendar is being filled in the background.') }}</p>
+    </div>
+    <!-- Everything filtered away -->
+    <div id="calEmptyFiltered" style="display:none">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+      </svg>
+      <p>{{ _('No entry matches your filters.') }}</p>
+      <button type="button" class="btn btn-secondary btn-sm" id="calResetFilters">{{ _('Reset filters') }}</button>
+    </div>
+  </div>
+
+  <!-- Calendar render targets -->
+  <div class="cal-view" id="calView" style="display:none"></div>
+</div>
+
+<!-- ===== ICS subscription modal ===== -->
+<div class="overlay" id="calFeedOverlay" style="display:none" role="dialog" aria-modal="true"
+     aria-labelledby="calFeedTitle">
+  <div class="modal cal-feed-modal">
+    <button type="button" class="close" id="calFeedClose" aria-label="{{ _('Close') }}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+    <h2 class="cal-feed-title" id="calFeedTitle">{{ _('Calendar subscription') }}</h2>
+    <p class="cal-feed-hint">
+      {{ _('Add this URL to Google Calendar, Apple Calendar, Thunderbird or any other app that supports iCal subscriptions. It updates automatically.') }}
+    </p>
+    <div class="cal-feed-url-row">
+      <input type="text" id="calFeedUrl" class="cal-feed-url" readonly
+             aria-label="{{ _('Subscription URL') }}">
+      <button type="button" class="btn btn-primary btn-sm" id="calFeedCopy">{{ _('Copy') }}</button>
+    </div>
+    <p class="cal-feed-warning">
+      {{ _('Anyone who has this URL can read your calendar — treat it like a password. Generate a new one if it leaks.') }}
+    </p>
+    <div class="cal-feed-actions">
+      <button type="button" class="btn btn-secondary btn-sm" id="calFeedRegen">{{ _('Generate new URL') }}</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="calFeedCloseBtn">{{ _('Close') }}</button>
+    </div>
+  </div>
+</div>
+
+{# Shared TMDB detail modal — opened when an event is clicked. #}
+{% include "mf_detail_modal.html" %}
+{# "Search streams" in the detail modal used to leave the page for /?q=<title>.
+   It now runs the cross-provider search in place and opens the same series modal
+   the search page and the Seerr page use -- one flow for "I want this episode",
+   no matter where you started. MFDetailModal already prefers
+   openAniSearchModal() when it exists (see its searchStreams()); all this page
+   was missing were the two files that define it. #}
+{% include "shared_modals.html" %}
+{% endblock %}
+
+{% block scripts %}
+{# app.js first: shared_modals.html's markup calls openSeries()/closeModal() and
+   the search itself by name, exactly as on the Seerr page. #}
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='mf_detail_modal.js') }}"></script>
+<script src="{{ url_for('static', filename='calendar.js') }}"></script>
+{% endblock %}

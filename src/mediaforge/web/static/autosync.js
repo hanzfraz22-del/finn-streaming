@@ -1,0 +1,1458 @@
+// Auto-Sync page logic
+
+const autosyncList = document.getElementById("autosyncList");
+const autosyncEmpty = document.getElementById("autosyncEmpty");
+
+// Schedule map for computing next check time
+const SCHEDULE_INTERVALS = {
+  "1min": 60,
+  "30min": 1800,
+  "1h": 3600,
+  "2h": 7200,
+  "4h": 14400,
+  "8h": 28800,
+  "12h": 43200,
+  "16h": 57600,
+  "24h": 86400,
+};
+const SCHEDULE_LABELS = {
+  "1min": "1 min",
+  "30min": "30 min",
+  "1h": "1h",
+  "2h": "2h",
+  "4h": "4h",
+  "8h": "8h",
+  "12h": "12h",
+  "16h": "16h",
+  "24h": "24h",
+};
+
+// Seconds per unit for the adaptive "retry after" interval (mirrors SYNC_ADAPTIVE_UNIT_MAP in app.py)
+const ADAPTIVE_UNIT_SECONDS = {
+  "days": 86400,
+  "weeks": 7 * 86400,
+  "months": 30 * 86400,
+};
+
+let currentSyncSchedule = "0";
+let currentSyncMode = "interval";
+let currentSyncDays = "0,1,2,3,4,5,6";
+let currentSyncTimes = "06:00";
+let adaptiveEnabled = false;
+let adaptiveRetryValue = 2;
+let adaptiveRetryUnit = "days";
+let customPathsCache = [];
+let langSepEnabled = false;
+let languageGroupsCache = [];
+let _runningJobs = new Set();
+let _pollTimer = null;
+
+let currentLayout = 'list';  // 'list' or 'grid'
+let currentPage = 1;
+let perPage = 25;
+
+// Grouping / view state
+let currentView = "__all__";        // "__all__" | "__adaptive__" | "g:<name>"
+let currentAutoGroup = "off";       // off | path | language | provider | user
+let currentSearch = "";
+let currentSort = "name-asc";
+let _visibleJobIds = new Set();      // ids currently rendered (select-all + toolbar)
+let _collapsedGroups = {};           // auto-group collapse state (persisted)
+let _lastAutoKeys = [];              // index -> full collapse key for the last render
+let _renameOldName = "";
+
+async function pollRunningJobs() {
+  try {
+    const res = await fetch("/api/autosync/running");
+    const data = await res.json();
+    const nowRunning = new Set(data.running || []);
+    const changed = nowRunning.size !== _runningJobs.size ||
+      [...nowRunning].some(id => !_runningJobs.has(id)) ||
+      [..._runningJobs].some(id => !nowRunning.has(id));
+    _runningJobs = nowRunning;
+    if (changed) loadAutosyncJobs();
+    if (_runningJobs.size > 0) {
+      _pollTimer = setTimeout(pollRunningJobs, 3000);
+    } else {
+      _pollTimer = null;
+    }
+  } catch (_) {}
+}
+
+function startPollingIfNeeded() {
+  if (_runningJobs.size > 0 && !_pollTimer) {
+    _pollTimer = setTimeout(pollRunningJobs, 3000);
+  }
+}
+
+async function loadSyncSchedule() {
+  try {
+    const resp = await fetch("/api/settings");
+    const data = await resp.json();
+    currentSyncSchedule = data.sync_schedule || "0";
+    currentSyncMode = data.sync_mode === "weekly" ? "weekly" : "interval";
+    currentSyncDays = String(data.sync_days || "0,1,2,3,4,5,6");
+    currentSyncTimes = String(data.sync_times || "06:00");
+    adaptiveEnabled = data.sync_adaptive_enabled === "1";
+    adaptiveRetryValue = parseInt(data.sync_adaptive_retry_value, 10) || 2;
+    adaptiveRetryUnit = data.sync_adaptive_retry_unit || "days";
+    langSepEnabled = data.lang_separation === "1";
+    languageGroupsCache = data.language_groups || [];
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+async function loadCustomPathsForEdit() {
+  try {
+    const resp = await fetch("/api/custom-paths");
+    const data = await resp.json();
+    customPathsCache = data.paths || [];
+  } catch (e) {
+    customPathsCache = [];
+  }
+}
+
+async function loadAutosyncJobs() {
+  try {
+    // Lade Custom Paths IMMER vor dem Rendern
+    await loadCustomPathsForEdit();
+    const [jobsRes, runningRes] = await Promise.all([
+      fetch("/api/autosync"),
+      fetch("/api/autosync/running"),
+    ]);
+    const jobsData = await jobsRes.json();
+    const runningData = await runningRes.json();
+    _runningJobs = new Set(runningData.running || []);
+    renderJobs(jobsData.jobs || []);
+    startPollingIfNeeded();
+  } catch (e) {
+    let msg = t('Sync-Jobs konnten nicht geladen werden.', 'Sync jobs could not be loaded.');
+    if (e && e.stack) {
+      msg += '<br><pre style="color:#f87171;font-size:.9em">' + esc(e.stack) + '</pre>';
+    } else if (e && e.message) {
+      msg += '<br><pre style="color:#f87171;font-size:.9em">' + esc(e.message) + '</pre>';
+    }
+    autosyncList.innerHTML = '<div class="queue-empty">' + msg + '</div>';
+    console.error(t('Fehler beim Laden der Sync-Jobs:',"Sync jobs could not be loaded."), e);
+  }
+}
+
+function _nextWeeklyCheck() {
+  const days = new Set(
+    currentSyncDays.split(",").map((x) => parseInt(x.trim(), 10)).filter((x) => !isNaN(x)),
+  );
+  const times = currentSyncTimes.split(",").map((s) => s.trim()).filter(Boolean)
+    .map((s) => s.split(":").map((n) => parseInt(n, 10)))
+    .filter((a) => a.length === 2 && !isNaN(a[0]) && !isNaN(a[1]));
+  if (!days.size || !times.length) return "—";
+  const now = new Date();
+  for (let d = 0; d < 8; d++) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + d);
+    const pyWeekday = (day.getDay() + 6) % 7; // JS Sun=0 -> Python Mon=0
+    if (!days.has(pyWeekday)) continue;
+    for (const [hh, mm] of times.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1])) {
+      const slot = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hh, mm);
+      if (slot > now) {
+        const pad = (n) => String(n).padStart(2, "0");
+        return pad(slot.getDate()) + "." + pad(slot.getMonth() + 1) + "." + slot.getFullYear() +
+               " " + pad(slot.getHours()) + ":" + pad(slot.getMinutes());
+      }
+    }
+  }
+  return "—";
+}
+
+function computeNextCheck(lastCheck, job) {
+  if (currentSyncMode === "weekly") return _nextWeeklyCheck();
+  if (!lastCheck || currentSyncSchedule === "0") return "—";
+  let interval = SCHEDULE_INTERVALS[currentSyncSchedule];
+  if (!interval) return "—";
+  // While a job is in Adaptive Auto-Sync pause mode it is re-checked on the
+  // wider "retry after" interval, not the regular schedule (mirrors the worker).
+  if (job && job.adaptive_paused && adaptiveEnabled) {
+    const unitSecs = ADAPTIVE_UNIT_SECONDS[adaptiveRetryUnit] || 86400;
+    interval = adaptiveRetryValue * unitSecs;
+  }
+  const lastMs = new Date(lastCheck + "Z").getTime();
+  const nextMs = lastMs + interval * 1000;
+  const now = Date.now();
+  if (!nextMs || nextMs <= now) return t("Bald", "Soon");
+  return formatDate(
+    new Date(nextMs)
+      .toISOString()
+      .replace("Z", "")
+      .replace("T", " ")
+      .slice(0, 19),
+  );
+}
+
+function onSortChange() {
+  currentSort = document.getElementById('sortSelect').value;
+  currentPage = 1;
+  _savePrefs();
+  clearSelection();
+  renderJobs(currentJobs);
+}
+
+function _sortJobs(jobs, sortKey) {
+  const [key, dir] = sortKey.split('-');
+  const mult = dir === 'desc' ? -1 : 1;
+  return [...jobs].sort((a, b) => {
+    switch (key) {
+      case 'name': return mult * (a.title || '').localeCompare(b.title || '');
+      case 'last_check': return mult * ((a.last_check || '') < (b.last_check || '') ? -1 : 1);
+      case 'next_check': {
+        const na = computeNextCheck(a.last_check, a);
+        const nb = computeNextCheck(b.last_check, b);
+        return mult * ((na || '') < (nb || '') ? -1 : 1);
+      }
+      case 'episodes': return mult * ((a.episodes_found || 0) - (b.episodes_found || 0));
+      case 'last_new': return mult * ((a.last_new_found || '') < (b.last_new_found || '') ? -1 : 1);
+      default: return 0;
+    }
+  });
+}
+
+function _renderStats(jobs) {
+  const el = document.getElementById('autosyncStats');
+  if (!el) return;
+  const total = jobs.length;
+  const enabled = jobs.filter(j => j.enabled).length;
+  const running = _runningJobs.size;
+  const episodes = jobs.reduce((s, j) => s + (j.episodes_found || 0), 0);
+  const pulseDot = running > 0 ? '<span class="autosync-stat-pulse"></span>' : '';
+  el.innerHTML = `
+    <span class="autosync-stat-chip">${total} ${t('Jobs','Jobs')}</span>
+    <span class="autosync-stat-chip">${enabled} ${t('Aktiv','Active')}</span>
+    <span class="autosync-stat-chip ${running > 0 ? 'stat-running' : ''}">${pulseDot}${running} ${t('Laufend','Running')}</span>
+    <span class="autosync-stat-chip">${episodes} ${t('Episoden','Episodes')}</span>
+  `;
+}
+
+function renderJobs(jobs) {
+  // Keep currentJobs in sync for batch ops
+  currentJobs = jobs;
+  // Drop selections for jobs that no longer exist
+  const existing = new Set(jobs.map((j) => j.id));
+  [...selectedJobIds].forEach((id) => { if (!existing.has(id)) selectedJobIds.delete(id); });
+
+  // Populate batch path dropdown
+  const batchPath = document.getElementById("batchPathSelect");
+  if (batchPath) {
+    while (batchPath.options.length > 1) batchPath.remove(1);
+    customPathsCache.forEach((p) => {
+      const o = document.createElement("option");
+      o.value = p.id; o.textContent = p.name + " (" + p.path + ")";
+      batchPath.appendChild(o);
+    });
+  }
+
+  rebuildViewDropdown(jobs);
+  rebuildGroupDatalist(jobs);
+
+  const viewSel = document.getElementById("viewSelect");
+  const autoOn = currentAutoGroup && currentAutoGroup !== "off";
+  if (viewSel) viewSel.disabled = autoOn;
+  _updateRenameBtn();
+
+  if (!jobs.length) {
+    _visibleJobIds = new Set();
+    autosyncList.innerHTML =
+      '<div class="queue-empty">' +
+      t("Noch keine Sync-Jobs. Füge eine Serie über die Suchseite hinzu.", "No sync jobs yet. Add a series via the search page.") +
+      "</div>";
+    _updateBatchToolbar();
+    return;
+  }
+
+  let filtered = jobs.filter(_matchSearch);
+  const countEl = document.getElementById('filterCount');
+  if (countEl) {
+    if (filtered.length < currentJobs.length) {
+      countEl.textContent = `${filtered.length} ${t('von','of')} ${currentJobs.length} ${t('Jobs','jobs')}`;
+      countEl.style.display = '';
+    } else {
+      countEl.style.display = 'none';
+    }
+  }
+  
+  filtered = _sortJobs(filtered, currentSort);
+  let result;
+  
+  if (autoOn) {
+    result = renderAutoGroups(filtered);
+    _renderPagination(filtered.length, 1);
+  } else {
+    const paged = _paginate(filtered);
+    result = renderManualView(paged.page);
+    _renderPagination(filtered.length, paged.totalPages);
+  }
+  
+  _visibleJobIds = result.ids;
+  autosyncList.innerHTML =
+    result.html ||
+    '<div class="queue-empty">' +
+      (currentSearch
+        ? t("Keine Treffer für die Suche.", "No matches for the search.")
+        : t("Keine Jobs in dieser Ansicht.", "No jobs in this view.")) +
+    "</div>";
+  _renderStats(currentJobs);
+  _updateBatchToolbar();
+}
+
+function _matchSearch(job) {
+  if (!currentSearch) return true;
+  return (job.title || "").toLowerCase().includes(currentSearch);
+}
+
+function groupNamesFromJobs(jobs) {
+  const set = new Set();
+  jobs.forEach((j) => {
+    const g = (j.group_name || "").trim();
+    if (g) set.add(g);
+  });
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+function rebuildViewDropdown(jobs) {
+  const sel = document.getElementById("viewSelect");
+  if (!sel) return;
+  const names = groupNamesFromJobs(jobs);
+  // If the selected group disappeared, fall back to "Alle"
+  if (currentView.startsWith("g:") && !names.includes(currentView.slice(2))) {
+    currentView = "__all__";
+    _savePrefs();
+  }
+  const counts = {};
+  jobs.forEach((j) => {
+    const g = (j.group_name || "").trim();
+    if (g) counts[g] = (counts[g] || 0) + 1;
+  });
+  const adaptiveCount = jobs.filter((j) => j.adaptive_paused).length;
+  const enabledCount = jobs.filter((j) => j.enabled && !j.adaptive_paused).length;
+  const disabledCount = jobs.filter((j) => !j.enabled).length;
+  sel.innerHTML = "";
+  const addOpt = (val, label) => {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label;
+    sel.appendChild(o);
+  };
+  addOpt("__all__", t("Alle", "All"));
+  addOpt("__enabled__", t("Aktiviert", "Enabled") + (enabledCount ? " (" + enabledCount + ")" : ""));
+  addOpt("__disabled__", t("Deaktiviert", "Disabled") + (disabledCount ? " (" + disabledCount + ")" : ""));
+  addOpt("__adaptive__", t("Adaptiver Auto-Sync", "Adaptive Auto-Sync") + (adaptiveCount ? " (" + adaptiveCount + ")" : ""));
+  names.forEach((n) => addOpt("g:" + n, n + " (" + (counts[n] || 0) + ")"));
+  sel.value = currentView;
+  if (sel.value !== currentView) { currentView = "__all__"; sel.value = "__all__"; }
+}
+
+function rebuildGroupDatalist(jobs) {
+  const dl = document.getElementById("groupDatalist");
+  if (!dl) return;
+  dl.innerHTML = "";
+  groupNamesFromJobs(jobs).forEach((n) => {
+    const o = document.createElement("option");
+    o.value = n;
+    dl.appendChild(o);
+  });
+}
+
+function _updateRenameBtn() {
+  const btn = document.getElementById("renameGroupBtn");
+  if (!btn) return;
+  const show = autosyncCanManage && currentAutoGroup === "off" && currentView.startsWith("g:");
+  btn.style.display = show ? "" : "none";
+}
+
+function onViewChange() {
+  const sel = document.getElementById("viewSelect");
+  currentView = sel ? sel.value : "__all__";
+  currentPage = 1;
+  _savePrefs();
+  clearSelection();
+  renderJobs(currentJobs);
+}
+
+function onAutoGroupChange() {
+  const sel = document.getElementById("autoGroupSelect");
+  currentAutoGroup = sel ? sel.value : "off";
+  currentPage = 1;
+  _savePrefs();
+  clearSelection();
+  renderJobs(currentJobs);
+}
+
+function onSearchInput(val) {
+  currentSearch = (val || "").trim().toLowerCase();
+  currentPage = 1;
+  renderJobs(currentJobs);
+}
+
+function _autoGroupValue(job, attr) {
+  if (attr === "path") {
+    if (job.custom_path_id != null && job.custom_path_id !== "") {
+      const cp = customPathsCache.find((p) => String(p.id) === String(job.custom_path_id));
+      return cp ? cp.name : "Custom #" + job.custom_path_id;
+    }
+    return t("Standard", "Default");
+  }
+  if (attr === "language") return job.language_label || job.language || "—";
+  if (attr === "provider") return job.provider || "—";
+  if (attr === "user") return job.added_by || "—";
+  return "—";
+}
+
+function renderManualView(filtered) {
+  let list, grayedFn;
+  if (currentView === "__adaptive__") {
+    list = filtered.filter((j) => j.adaptive_paused);
+    grayedFn = () => false;
+  } else if (currentView === "__enabled__") {
+    // Adaptive-paused jobs have their own view, so exclude them here.
+    list = filtered.filter((j) => j.enabled && !j.adaptive_paused);
+    grayedFn = () => false;
+  } else if (currentView === "__disabled__") {
+    list = filtered.filter((j) => !j.enabled);
+    grayedFn = () => false;
+  } else if (currentView.startsWith("g:")) {
+    const name = currentView.slice(2);
+    list = filtered.filter((j) => (j.group_name || "").trim() === name);
+    grayedFn = (j) => !!j.adaptive_paused;
+  } else {
+    // "Alle": show every job, including those in Adaptive Auto-Sync pause mode
+    // (shown greyed out, like in the grouped/auto views).
+    list = filtered;
+    grayedFn = (j) => !!j.adaptive_paused;
+  }
+  const ids = new Set(list.map((j) => j.id));
+  if (!list.length) return { html: "", ids };
+  let html = `<div class="${currentLayout === 'grid' ? 'sync-card-grid' : 'sync-card-list'}">`;
+  list.forEach((j) => { html += currentLayout === 'grid' ? _buildCompactCard(j, grayedFn(j)) : _buildJobCard(j, grayedFn(j)); });
+  html += "</div>";
+  return { html, ids };
+}
+
+function renderAutoGroups(filtered) {
+  const attr = currentAutoGroup;
+  const groups = {};
+  filtered.forEach((j) => {
+    const key = _autoGroupValue(j, attr);
+    (groups[key] = groups[key] || []).push(j);
+  });
+  const keys = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+  const ids = new Set(filtered.map((j) => j.id));
+  _lastAutoKeys = keys.map((k) => attr + ":" + k);
+  if (!keys.length) return { html: "", ids };
+  let html = "";
+  keys.forEach((k, idx) => {
+    const arr = groups[k];
+    const collapsed = !!_collapsedGroups[attr + ":" + k];
+    html +=
+      '<div class="autosync-group' + (collapsed ? " collapsed" : "") + '" data-idx="' + idx + '">' +
+        '<div class="autosync-group-header" onclick="toggleAutoGroupCollapse(' + idx + ')">' +
+          '<span class="autosync-group-chevron"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><polyline points="9 18 15 12 9 6"/></svg></span>' +
+          '<span class="autosync-group-name">' + esc(k) + "</span>" +
+          '<span class="autosync-group-count">' + arr.length + "</span>" +
+        "</div>" +
+        '<div class="autosync-group-body"><div class="' + (currentLayout === 'grid' ? 'sync-card-grid' : 'sync-card-list') + '">';
+    arr.forEach((j) => { html += currentLayout === 'grid' ? _buildCompactCard(j, !!j.adaptive_paused) : _buildJobCard(j, !!j.adaptive_paused); });
+    html += "</div></div></div>";
+  });
+  return { html, ids };
+}
+
+function toggleAutoGroupCollapse(idx) {
+  const key = _lastAutoKeys[idx];
+  if (key == null) return;
+  _collapsedGroups[key] = !_collapsedGroups[key];
+  _savePrefs();
+  const grp = document.querySelector(`.autosync-group[data-idx="${idx}"]`);
+  if (!grp) { renderJobs(currentJobs); return; }
+  const body = grp.querySelector('.autosync-group-body');
+  if (grp.classList.contains('collapsed')) {
+    grp.classList.remove('collapsed');
+    body.style.maxHeight = body.scrollHeight + 'px';
+    body.style.opacity = '1';
+    setTimeout(() => body.style.maxHeight = 'none', 300);
+  } else {
+    body.style.maxHeight = body.scrollHeight + 'px';
+    requestAnimationFrame(() => {
+      body.style.maxHeight = '0';
+      body.style.opacity = '0';
+    });
+    grp.classList.add('collapsed');
+  }
+}
+
+function _buildJobCard(job, grayed) {
+  const isRunning = _runningJobs.has(job.id);
+  const isOnHold = job.on_hold === 1;
+  const isAdaptivePaused = job.adaptive_paused && !isOnHold;
+  let statusColor, statusClass, statusBadgeClass, statusText, cardClasses = 'sync-card';
+
+  if (isRunning) {
+    statusColor = 'var(--accent, #7c3aed)';
+    statusBadgeClass = 'queue-status-running';
+    statusText = `<span class="sync-spinner"></span>${t('Läuft…','Running…')}`;
+    cardClasses += ' sync-card-running';
+  } else if (isOnHold) {
+    statusColor = 'var(--warning, #f59e0b)';
+    statusBadgeClass = 'queue-status-hold';
+    statusText = `⏸ ${t('Wartend','Hold')}`;
+  } else if (isAdaptivePaused) {
+    statusColor = 'var(--info, #3b82f6)';
+    statusBadgeClass = 'queue-status-adaptive';
+    statusText = t('Adaptiv pausiert','Adaptive paused');
+  } else if (job.enabled) {
+    statusColor = 'var(--success, #22c55e)';
+    statusBadgeClass = 'queue-status-completed';
+    statusText = t('Aktiviert','Enabled');
+  } else {
+    statusColor = 'var(--text-muted, #55556a)';
+    statusBadgeClass = 'queue-status-queued';
+    statusText = t('Deaktiviert','Disabled');
+    cardClasses += ' sync-card-disabled';
+  }
+
+  if (job.last_new_found && job.last_new_count > 0) {
+    const lastNewTs = new Date(job.last_new_found + 'Z').getTime();
+    if (Date.now() - lastNewTs < 86400000) cardClasses += ' sync-card-fresh';
+  }
+
+  if (job.last_error) cardClasses += ' sync-card-error-state';
+  if (grayed) cardClasses += ' sync-card-grayed';
+
+  const total = job.episodes_found || 0;
+  const local = job.local_episodes_found || 0;
+  const pct = total > 0 ? Math.round((local / total) * 100) : 0;
+
+  const coverUrl = job.cover_url ? esc(proxyImg(job.cover_url)) : '';
+  const coverHtml = coverUrl
+    ? `<img class="sync-card-cover" src="${coverUrl}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+       <div class="sync-card-cover-placeholder" style="display:none"><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'><path d='M4 12l1.5-5A2 2 0 0 1 7.4 5.5h9.2a2 2 0 0 1 1.9 1.5L20 12'/><rect x='2' y='12' width='20' height='8' rx='2'/><circle cx='12' cy='16' r='2'/></svg></div>`
+    : `<img class="sync-card-cover" style="display:none" src="" alt="">
+       <div class="sync-card-cover-placeholder"><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'><path d='M4 12l1.5-5A2 2 0 0 1 7.4 5.5h9.2a2 2 0 0 1 1.9 1.5L20 12'/><rect x='2' y='12' width='20' height='8' rx='2'/><circle cx='12' cy='16' r='2'/></svg></div>`;
+
+  let dlPath = t("Standard", "Default");
+  if (job.custom_path_id != null && job.custom_path_id !== "") {
+    const cp = customPathsCache.find((p) => String(p.id) === String(job.custom_path_id));
+    dlPath = cp ? cp.name : "Custom #" + job.custom_path_id;
+  }
+
+  let filterPill = "";
+  if (job.episode_filter && window.AutosyncFilter) {
+    const sum = window.AutosyncFilter.summarize(job.episode_filter);
+    if (sum) {
+      filterPill = `<span class="queue-meta-pill" title="${t("Episoden-Filter aktiv", "Episode filter active")}">⛃ ${esc(sum)}</span>`;
+    }
+  }
+  const groupPill = (job.group_name && String(job.group_name).trim())
+    ? `<span class="queue-meta-pill queue-group-pill" title="${t("Gruppe", "Group")}">🗂 ${esc(job.group_name)}</span>`
+    : "";
+
+  const pillsHtml = `
+    <span class="queue-meta-pill">${esc(job.language_label || job.language)}</span>
+    <span class="queue-meta-pill">${esc(job.provider)}</span>
+    <span class="queue-meta-pill">${esc(dlPath)}</span>
+    ${filterPill}${groupPill}
+    ${job.added_by ? `<span class="queue-meta-pill queue-user">${esc(job.added_by)}</span>` : ""}
+  `;
+
+  const lastCheckText = job.last_check ? formatDate(job.last_check) : "—";
+  const nextCheckText = job.enabled ? computeNextCheck(job.last_check, job) : "—";
+  const newCount = job.last_new_count || 0;
+  
+  let lastResultText, lastResultClass;
+  if (!job.last_check) {
+    lastResultText = '—';
+    lastResultClass = 'sync-stat-neutral';
+  } else if (newCount > 0) {
+    lastResultText = `✓ ${newCount} ${t('neu','new')}`;
+    lastResultClass = 'sync-stat-new';
+  } else {
+    lastResultText = t('Aktuell','Up to date');
+    lastResultClass = 'sync-stat-neutral';
+  }
+
+  const statsHtml = `
+    <div class="sync-card-stats">
+      <div class="sync-stat-row"><span class="sync-stat-label">${t('Episoden','Episodes')}</span><span class="sync-stat-value">${local} / ${total}</span></div>
+      <div class="sync-stat-row"><span class="sync-stat-label">${t('Letzter Run','Last run')}</span><span class="sync-stat-value ${lastResultClass}">${lastResultText}</span></div>
+      <div class="sync-stat-row"><span class="sync-stat-label">${t('Geprüft','Checked')}</span><span class="sync-stat-value">${lastCheckText}</span></div>
+      <div class="sync-stat-row"><span class="sync-stat-label">${t('Nächster Check','Next check')}</span><span class="sync-stat-value">${nextCheckText}</span></div>
+    </div>`;
+
+  const errorHtml = job.last_error ? `
+    <div class="sync-card-error" title="${esc(job.last_error)}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <span>${esc(job.last_error)}</span>
+    </div>` : '';
+
+  const editSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>`;
+  // Magnifier: "look at it" rather than "run it". Deliberately not another
+  // arrow — a dry run must not read as a second kind of sync.
+  const dryRunSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
+  const syncSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`;
+  const delSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
+
+  const actionsHtml = `<div class="sync-card-actions">
+    ${autosyncCanManage ? `<button class="btn btn-ghost sync-card-btn" onclick="openEditModal(${job.id})">${editSvg} ${t('Edit','Edit')}</button>` : ''}
+    <button class="btn btn-ghost sync-card-btn sync-card-btn-sync" onclick="syncNow(${job.id})" ${isRunning || grayed ? 'disabled' : ''}>${syncSvg} Sync</button>
+    <button class="btn btn-ghost sync-card-btn" onclick="dryRunJob(${job.id})" ${isRunning ? 'disabled' : ''} title="${t('Zeigt, was dieser Job jetzt tun würde — ohne etwas zu tun','Shows what this job would do right now — without doing any of it')}">${dryRunSvg} ${t('Testlauf','Dry run')}</button>
+    ${autosyncCanManage ? `<button class="btn btn-ghost sync-card-btn sync-card-btn-del" onclick="removeJob(${job.id})">${delSvg} ${t('Entf.','Del')}</button>` : ''}
+  </div>`;
+
+  const cbHtml = autosyncCanManage
+    ? `<label class="sync-card-cb-wrap"><input type="checkbox" class="chb-main sync-card-checkbox" ${selectedJobIds.has(job.id)?'checked':''} onchange="toggleJobSelection(${job.id},this.checked)"></label>`
+    : '';
+
+  return `<div class="${cardClasses}" style="--card-status-color:${statusColor}" data-id="${job.id}">
+    ${cbHtml}
+    <div class="sync-card-cover-wrap">${coverHtml}</div>
+    <div class="sync-card-content">
+      <div class="sync-card-header">
+        <span class="sync-card-title" title="${esc(job.series_url || '')}">${esc(job.title)}</span>
+        <span class="queue-status ${statusBadgeClass}"><span class="sync-card-status-dot"></span>${statusText}</span>
+      </div>
+      <div class="sync-card-pills">${pillsHtml}</div>
+      ${statsHtml}
+      ${errorHtml}
+      <div class="sync-progress-bar"><div class="sync-progress-fill" style="width:${pct}%"></div></div>
+      ${actionsHtml}
+    </div>
+  </div>`;
+}
+
+// ===== Group view preferences (persisted) =====
+function _loadPrefs() {
+  try {
+    const v = localStorage.getItem("autosync_view"); if (v) currentView = v;
+    const a = localStorage.getItem("autosync_autogroup"); if (a) currentAutoGroup = a;
+    const c = localStorage.getItem("autosync_collapsed"); if (c) _collapsedGroups = JSON.parse(c) || {};
+    const s = localStorage.getItem("autosync_sort"); if (s) currentSort = s;
+    const l = localStorage.getItem("autosync_layout"); if (l) currentLayout = l;
+    const p = localStorage.getItem("autosync_perpage"); if (p) perPage = parseInt(p) || 25;
+  } catch (_) {}
+}
+function _savePrefs() {
+  try {
+    localStorage.setItem("autosync_view", currentView);
+    localStorage.setItem("autosync_autogroup", currentAutoGroup);
+    localStorage.setItem("autosync_collapsed", JSON.stringify(_collapsedGroups));
+    localStorage.setItem("autosync_sort", currentSort);
+    localStorage.setItem("autosync_layout", currentLayout);
+    localStorage.setItem("autosync_perpage", perPage);
+  } catch (_) {}
+}
+function _applyPrefsToControls() {
+  const ag = document.getElementById("autoGroupSelect"); if (ag) ag.value = currentAutoGroup;
+  const ss = document.getElementById("syncSearch"); if (ss && currentSearch) ss.value = currentSearch;
+  const st = document.getElementById("sortSelect"); if (st) st.value = currentSort;
+  const btnList = document.getElementById('layoutListBtn'); if (btnList) btnList.classList.toggle('active', currentLayout === 'list');
+  const btnGrid = document.getElementById('layoutGridBtn'); if (btnGrid) btnGrid.classList.toggle('active', currentLayout === 'grid');
+}
+
+// ===== Rename group modal =====
+function promptRenameGroup() {
+  if (!currentView.startsWith("g:")) return;
+  _renameOldName = currentView.slice(2);
+  const o = document.getElementById("renameOldName");
+  const inp = document.getElementById("renameNewInput");
+  if (o) o.textContent = _renameOldName;
+  if (inp) inp.value = _renameOldName;
+  const ov = document.getElementById("renameOverlay");
+  if (ov) ov.style.display = "block";
+  if (inp) { inp.focus(); inp.select(); }
+}
+function closeRenameModal() {
+  const ov = document.getElementById("renameOverlay");
+  if (ov) ov.style.display = "none";
+}
+async function confirmRenameGroup() {
+  const inp = document.getElementById("renameNewInput");
+  const newName = inp ? inp.value.trim() : "";
+  if (!newName) { showToast(t("Bitte einen Namen eingeben", "Please enter a name")); return; }
+  if (newName === _renameOldName) { closeRenameModal(); return; }
+  try {
+    const r = await fetch("/api/autosync/group/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ old: _renameOldName, new: newName }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      showToast((d.updated || 0) + " " + t("Job(s) verschoben", "job(s) moved"));
+      currentView = "g:" + newName;
+      _savePrefs();
+      closeRenameModal();
+      loadAutosyncJobs();
+    } else {
+      showToast(d.error || t("Umbenennen fehlgeschlagen", "Rename failed"));
+    }
+  } catch (e) {
+    showToast(t("Umbenennen fehlgeschlagen: ", "Rename failed: ") + e.message);
+  }
+}
+
+function formatDate(isoStr) {
+  if (!isoStr) return "—";
+  const d = new Date(isoStr + "Z");
+  if (isNaN(d.getTime())) {
+    // Try without adding Z (already formatted)
+    const d2 = new Date(isoStr);
+    if (isNaN(d2.getTime())) return "—";
+    const pad = (n) => String(n).padStart(2, "0");
+    return (
+      pad(d2.getDate()) +
+      "." +
+      pad(d2.getMonth() + 1) +
+      "." +
+      d2.getFullYear() +
+      " " +
+      pad(d2.getHours()) +
+      ":" +
+      pad(d2.getMinutes())
+    );
+  }
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    pad(d.getDate()) +
+    "." +
+    pad(d.getMonth() + 1) +
+    "." +
+    d.getFullYear() +
+    " " +
+    pad(d.getHours()) +
+    ":" +
+    pad(d.getMinutes())
+  );
+}
+
+async function syncNow(id) {
+  try {
+    const res = await fetch("/api/autosync/" + id + "/sync", {
+      method: "POST",
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(t("Sync gestartet", "Sync started"));
+      _runningJobs.add(id);
+      startPollingIfNeeded();
+      setTimeout(loadAutosyncJobs, 500);
+    } else {
+      showToast(data.error || t("Sync konnte nicht gestartet werden", "Sync could not be started"));
+    }
+  } catch (e) {
+    showToast(t("Sync konnte nicht gestartet werden", "Sync could not be started"));
+  }
+}
+
+/**
+ * Ask what a job WOULD do, without doing any of it.
+ *
+ * Synchronous on the server side (the provider fetch is the slow part), so
+ * this can take a few seconds. The button says so rather than sitting there
+ * looking broken.
+ *
+ * The result is what makes the feature worth having: an Auto-Sync job that is
+ * about to queue 200 episodes because of a filter typo says so here, before
+ * it does it.
+ */
+async function dryRunJob(id) {
+  const btn = event && event.currentTarget ? event.currentTarget : null;
+  const restore = btn ? btn.innerHTML : null;
+  if (btn) { btn.disabled = true; btn.textContent = t("Prüfe…", "Checking…"); }
+  try {
+    const res = await fetch("/api/autosync/" + id + "/dry-run", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || t("Testlauf fehlgeschlagen", "Dry run failed"));
+      return;
+    }
+    showDryRunResult(data);
+  } catch (e) {
+    showToast(t("Testlauf fehlgeschlagen", "Dry run failed"));
+  } finally {
+    if (btn) { btn.disabled = false; if (restore !== null) btn.innerHTML = restore; }
+  }
+}
+
+function showDryRunResult(data) {
+  const esc = window.mfEscape;
+  let body = "";
+
+  if (data.blocked) {
+    const why = data.blocked === "already_running"
+      ? t("Der Job läuft gerade.", "The job is running right now.")
+      : t("Ein Layout-Backoff ist aktiv — die Quellseite hat sich geändert.",
+          "A layout backoff is active — the source site changed.");
+    body = `<p class="settings-hint">${esc(why)}</p>`;
+  } else if (data.error) {
+    body = `<p class="settings-hint">${esc(data.error)}</p>`;
+  } else {
+    const online = data.episodes_online != null ? data.episodes_online : "?";
+    const local = data.episodes_local != null ? data.episodes_local : "?";
+    body = `<p class="settings-hint">${esc(t("Online gefunden", "Found online"))}: <strong>${esc(online)}</strong> · `
+         + `${esc(t("lokal vorhanden", "already local"))}: <strong>${esc(local)}</strong></p>`;
+
+    if (!data.would_queue) {
+      body += `<p class="sync-dry-none">${esc(t("Es würde nichts heruntergeladen — alles aktuell.",
+                                                "Nothing would be downloaded — everything is up to date."))}</p>`;
+    } else {
+      body += `<p class="sync-dry-count">${esc(t("Es würden", "Would queue"))} <strong>${esc(data.would_queue)}</strong> `
+            + `${esc(t("Episode(n) eingereiht.", "episode(s)."))}</p>`;
+      body += (data.languages || []).map(function (row) {
+        const sample = (row.sample || []).map(function (u) {
+          // typeof, not a truthiness check: parseSeasonEpisode lives in
+          // queue.js, and a bare reference to a name that is not defined is a
+          // ReferenceError, not undefined.
+          const label = typeof parseSeasonEpisode === "function"
+            ? (parseSeasonEpisode(u) || u) : u;
+          return `<li>${esc(label)}</li>`;
+        }).join("");
+        const more = row.count > (row.sample || []).length
+          ? `<li class="sync-dry-more">…${esc(row.count - row.sample.length)} ${esc(t("weitere", "more"))}</li>`
+          : "";
+        return `<div class="sync-dry-group">`
+             + `<div class="sync-dry-group-head"><strong>${esc(row.language)}</strong>`
+             + `<span class="queue-meta-pill">${esc(row.kind)}</span>`
+             + `<span class="queue-meta-pill">${esc(row.count)}</span></div>`
+             + `<ul class="sync-dry-list">${sample}${more}</ul></div>`;
+      }).join("");
+    }
+
+    if ((data.skipped || []).length) {
+      body += `<div class="sync-dry-group"><div class="sync-dry-group-head"><strong>`
+            + `${esc(t("Übersprungen", "Skipped"))}</strong></div><ul class="sync-dry-list">`
+            + data.skipped.map(function (s) {
+                return `<li>${esc(s.language)} · ${esc(s.kind)} · ${esc(s.count)} — `
+                     + `${esc(t("bereits in der Warteschlange", "already queued"))}</li>`;
+              }).join("")
+            + `</ul></div>`;
+    }
+  }
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "ops-modal-backdrop";
+  backdrop.innerHTML =
+    `<div class="ops-modal" role="dialog" aria-modal="true">
+       <div class="ops-modal-head">
+         <h3>${esc(t("Testlauf", "Dry run"))}: ${esc(data.title || "")}</h3>
+         <button type="button" class="ops-modal-x" aria-label="${esc(t("Schließen", "Close"))}">&times;</button>
+       </div>
+       <div class="ops-modal-body">${body}
+         <p class="settings-hint">${esc(t("Nichts davon wurde ausgeführt oder gespeichert — auch der Zeitplan des Jobs ist unverändert.",
+                                          "None of this was executed or saved — the job's schedule is unchanged too."))}</p>
+       </div>
+       <div class="ops-modal-foot">
+         <button type="button" class="btn btn-primary" data-act="close">${esc(t("Schließen", "Close"))}</button>
+       </div>
+     </div>`;
+  document.body.appendChild(backdrop);
+  if (window.MFScrollLock) { window.MFScrollLock.lock(); }
+
+  function close() {
+    backdrop.remove();
+    if (window.MFScrollLock) { window.MFScrollLock.unlock(); }
+    document.removeEventListener("keydown", onKey);
+  }
+  function onKey(ev) { if (ev.key === "Escape") close(); }
+  document.addEventListener("keydown", onKey);
+  backdrop.addEventListener("click", function (ev) {
+    if (ev.target === backdrop || ev.target.closest(".ops-modal-x") ||
+        ev.target.closest('[data-act="close"]')) { close(); }
+  });
+}
+
+async function syncAll() {
+  const btn = document.getElementById("syncAllBtn");
+  if (btn) { btn.disabled = true; btn.textContent = t("Synchronisiere…", "Syncing…"); }
+  try {
+    const res = await fetch("/api/autosync/sync-all", { method: "POST" });
+    const data = await res.json();
+    if (data.ok) {
+      const msg = data.started > 0
+        ? `${data.started} ${t('Job(s) gestartet', 'job(s) started')}${data.skipped > 0 ? `, ${data.skipped} ${t('bereits aktiv', 'already active')}` : ""}`
+        : t("Keine Jobs zum Starten (alle bereits aktiv oder deaktiviert)", "No jobs to start (all already active or disabled)");
+      showToast(msg);
+      setTimeout(loadAutosyncJobs, 2000);
+    } else {
+      showToast(data.error || t("Fehler beim Starten", "Error starting"));
+    }
+  } catch (e) {
+    showToast(t("Fehler beim Starten aller Syncs", "Error starting all syncs"));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = t("Alle synchronisieren", "Sync all"); }
+  }
+}
+
+async function removeJob(id) {
+  // Pass an explicit title/okLabel — without them showConfirm() falls back
+  // to its library-delete defaults ("Delete title?" / "Delete"), which is
+  // confusing here since this isn't deleting a library title.
+  if (!await showConfirm(
+    t("Diesen Sync-Job entfernen?", "Remove this sync job?"),
+    t("Entfernen", "Remove"),
+    t("Sync-Job entfernen?", "Remove sync job?")
+  )) return;
+  try {
+    const res = await fetch("/api/autosync/" + id, { method: "DELETE" });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(t("Sync-Job entfernt", "Sync job removed"));
+      loadAutosyncJobs();
+    } else {
+      showToast(data.error || t("Entfernen fehlgeschlagen", "Remove failed"));
+    }
+  } catch (e) {
+    showToast(t("Sync-Job konnte nicht entfernt werden", "Sync job could not be removed"));
+  }
+}
+
+// Edit modal
+let currentJobs = [];
+let selectedJobIds = new Set();
+let _editPicker = null;
+
+function _updateBatchToolbar() {
+  const toolbar   = document.getElementById("batchToolbar");
+  const label     = document.getElementById("batchSelectionLabel");
+  const selectAll = document.getElementById("selectAllCheckbox");
+  if (!toolbar) return;
+  const count = selectedJobIds.size;
+  toolbar.style.display = count > 0 ? "flex" : "none";
+  if (label) label.textContent = count + " " + t("ausgewählt", "selected");
+  // sync selectAll state
+  if (selectAll) {
+    const total = _visibleJobIds.size;
+    selectAll.checked       = count > 0 && count === total;
+    selectAll.indeterminate = count > 0 && count < total;
+  }
+}
+
+function toggleJobSelection(id, checked) {
+  if (checked) selectedJobIds.add(id);
+  else         selectedJobIds.delete(id);
+  _updateBatchToolbar();
+}
+
+function toggleSelectAll(checked) {
+  selectedJobIds.clear();
+  if (checked) _visibleJobIds.forEach(id => selectedJobIds.add(id));
+  // re-render checkboxes without full reload
+  document.querySelectorAll(".sync-card-checkbox").forEach(cb => {
+    cb.checked = checked;
+  });
+  _updateBatchToolbar();
+}
+
+function setLayout(mode) {
+  currentLayout = mode;
+  _savePrefs();
+  document.getElementById('layoutListBtn').classList.toggle('active', mode === 'list');
+  document.getElementById('layoutGridBtn').classList.toggle('active', mode === 'grid');
+  currentPage = 1;
+  renderJobs(currentJobs);
+}
+
+function _buildCompactCard(job, grayed) {
+  const isRunning = _runningJobs.has(job.id);
+  const isOnHold = job.on_hold === 1;
+  const isAdaptivePaused = job.adaptive_paused && !isOnHold;
+  let statusColor, statusBadgeClass, statusText, cardClasses = 'sync-card sync-card-compact';
+  
+  if (isRunning) {
+    statusColor = 'var(--accent, #7c3aed)';
+    statusBadgeClass = 'queue-status-running';
+    statusText = `<span class="sync-spinner"></span>${t('Läuft…','Running…')}`;
+    cardClasses += ' sync-card-running';
+  } else if (isOnHold) {
+    statusColor = 'var(--warning, #f59e0b)';
+    statusBadgeClass = 'queue-status-hold';
+    statusText = `⏸ ${t('Wartend','Hold')}`;
+  } else if (isAdaptivePaused) {
+    statusColor = 'var(--info, #3b82f6)';
+    statusBadgeClass = 'queue-status-adaptive';
+    statusText = t('Adaptiv pausiert','Adaptive paused');
+  } else if (job.enabled) {
+    statusColor = 'var(--success, #22c55e)';
+    statusBadgeClass = 'queue-status-completed';
+    statusText = t('Aktiviert','Enabled');
+  } else {
+    statusColor = 'var(--text-muted, #55556a)';
+    statusBadgeClass = 'queue-status-queued';
+    statusText = t('Deaktiviert','Disabled');
+    cardClasses += ' sync-card-disabled';
+  }
+
+  if (job.last_new_found && job.last_new_count > 0) {
+    const lastNewTs = new Date(job.last_new_found + 'Z').getTime();
+    if (Date.now() - lastNewTs < 86400000) cardClasses += ' sync-card-fresh';
+  }
+
+  if (job.last_error) cardClasses += ' sync-card-error-state';
+  if (grayed) cardClasses += ' sync-card-grayed';
+  
+  const total = job.episodes_found || 0;
+  const local = job.local_episodes_found || 0;
+  const pct = total > 0 ? Math.round((local / total) * 100) : 0;
+  
+  const coverUrl = job.cover_url ? esc(proxyImg(job.cover_url)) : '';
+  const coverHtml = coverUrl
+    ? `<img class="sync-card-cover" src="${coverUrl}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="sync-card-cover-placeholder" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d='M4 12l1.5-5A2 2 0 0 1 7.4 5.5h9.2a2 2 0 0 1 1.9 1.5L20 12'/><rect x='2' y='12' width='20' height='8' rx='2'/><circle cx='12' cy='16' r='2'/></svg></div>`
+    : `<img class="sync-card-cover" style="display:none" src="" alt=""><div class="sync-card-cover-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d='M4 12l1.5-5A2 2 0 0 1 7.4 5.5h9.2a2 2 0 0 1 1.9 1.5L20 12'/><rect x='2' y='12' width='20' height='8' rx='2'/><circle cx='12' cy='16' r='2'/></svg></div>`;
+
+  const cbHtml = autosyncCanManage
+    ? `<label class="sync-card-cb-wrap"><input type="checkbox" class="chb-main sync-card-checkbox" ${selectedJobIds.has(job.id)?'checked':''} onchange="toggleJobSelection(${job.id},this.checked)"></label>`
+    : '';
+
+  const editSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>`;
+  // Magnifier: "look at it" rather than "run it". Deliberately not another
+  // arrow — a dry run must not read as a second kind of sync.
+  const dryRunSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
+  const syncSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`;
+  const delSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
+
+  return `<div class="${cardClasses}" style="--card-status-color:${statusColor}" data-id="${job.id}">
+    ${cbHtml}
+    <div class="sync-card-cover-wrap">${coverHtml}</div>
+    <div class="sync-card-content">
+      <div class="sync-card-header">
+        <span class="sync-card-title" title="${esc(job.series_url || '')}">${esc(job.title)}</span>
+        <span class="queue-status ${statusBadgeClass}"><span class="sync-card-status-dot"></span>${statusText}</span>
+      </div>
+      <div class="sync-card-pills">
+        <span class="queue-meta-pill">${esc(job.language)}</span>
+        <span class="queue-meta-pill">${esc(job.provider)}</span>
+      </div>
+      <div class="sync-stat-row"><span class="sync-stat-label">${t('Episoden','Episodes')}</span><span class="sync-stat-value">${local} / ${total}</span></div>
+      <div class="sync-progress-bar"><div class="sync-progress-fill" style="width:${pct}%"></div></div>
+      <div class="sync-card-actions">
+        ${autosyncCanManage ? `<button class="btn btn-ghost sync-card-btn" onclick="openEditModal(${job.id})" title="${t('Bearbeiten','Edit')}">${editSvg}</button>` : ''}
+        <button class="btn btn-ghost sync-card-btn sync-card-btn-sync" onclick="syncNow(${job.id})" ${isRunning || grayed ? 'disabled' : ''} title="Sync">${syncSvg}</button>
+        <button class="btn btn-ghost sync-card-btn" onclick="dryRunJob(${job.id})" ${isRunning ? 'disabled' : ''} title="${t('Testlauf','Dry run')}">${dryRunSvg}</button>
+        ${autosyncCanManage ? `<button class="btn btn-ghost sync-card-btn sync-card-btn-del" onclick="removeJob(${job.id})" title="${t('Entfernen','Remove')}">${delSvg}</button>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
+function _paginate(items) {
+  if (perPage <= 0 || perPage >= items.length) return { page: items, totalPages: 1 };
+  const totalPages = Math.ceil(items.length / perPage);
+  if (currentPage > totalPages) currentPage = totalPages;
+  if (currentPage < 1) currentPage = 1;
+  const start = (currentPage - 1) * perPage;
+  return { page: items.slice(start, start + perPage), totalPages };
+}
+
+function _renderPagination(totalItems, totalPages) {
+  const el = document.getElementById('autosyncPagination');
+  if (!el) return;
+  if (totalPages <= 1 && perPage >= totalItems) { el.innerHTML = ''; return; }
+  
+  const prevDisabled = currentPage <= 1 ? 'disabled' : '';
+  const nextDisabled = currentPage >= totalPages ? 'disabled' : '';
+  
+  el.innerHTML = `
+    <div class="pagination-controls">
+      <div class="pagination-perpage">
+        <label>${t('Pro Seite','Per page')}</label>
+        <select id="perPageSelect" class="sync-select pagination-select" onchange="onPerPageChange()">
+          <option value="10" ${perPage===10?'selected':''}>10</option>
+          <option value="15" ${perPage===15?'selected':''}>15</option>
+          <option value="20" ${perPage===20?'selected':''}>20</option>
+          <option value="25" ${perPage===25?'selected':''}>25</option>
+          <option value="50" ${perPage===50?'selected':''}>50</option>
+          <option value="0" ${perPage<=0?'selected':''}>${t('Alle','All')}</option>
+        </select>
+      </div>
+      <div class="pagination-nav">
+        <button class="btn btn-ghost pagination-btn" onclick="goToPage(1)" ${prevDisabled} title="${t('Erste Seite','First page')}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
+        </button>
+        <button class="btn btn-ghost pagination-btn" onclick="prevPage()" ${prevDisabled} title="${t('Vorherige','Previous')}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <span class="pagination-info">${t('Seite','Page')} ${currentPage} ${t('von','of')} ${totalPages}</span>
+        <button class="btn btn-ghost pagination-btn" onclick="nextPage()" ${nextDisabled} title="${t('Nächste','Next')}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <button class="btn btn-ghost pagination-btn" onclick="goToPage(${totalPages})" ${nextDisabled} title="${t('Letzte Seite','Last page')}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+        </button>
+      </div>
+    </div>`;
+}
+
+function onPerPageChange() {
+  const sel = document.getElementById('perPageSelect');
+  perPage = parseInt(sel.value) || 0;
+  currentPage = 1;
+  _savePrefs();
+  renderJobs(currentJobs);
+}
+
+function goToPage(n) { currentPage = n; renderJobs(currentJobs); }
+function prevPage() { if (currentPage > 1) { currentPage--; renderJobs(currentJobs); } }
+function nextPage() { currentPage++; renderJobs(currentJobs); }
+
+function clearSelection() {
+  selectedJobIds.clear();
+  document.querySelectorAll(".sync-card-checkbox").forEach(cb => { cb.checked = false; });
+  _updateBatchToolbar();
+}
+
+// Bridge between the one document-level mf-multiselect listener and the
+// per-open closure inside openEditModal(). Reassigned on every open; the
+// listener below is registered exactly once.
+let _editExtraSync = null;
+let _editExtraGet = () => [];
+
+function _editExtraFromDom() {
+  const root = document.getElementById("editExtraLanguages");
+  if (!root || !window.mfMultiSelect) return [];
+  return window.mfMultiSelect.values(root);
+}
+
+document.addEventListener("mf-multiselect-change", (e) => {
+  if (e.target && e.target.id === "editExtraLanguages" && _editExtraSync) _editExtraSync();
+});
+
+async function openEditModal(id) {
+  try {
+    const res = await fetch("/api/autosync");
+    const data = await res.json();
+    currentJobs = data.jobs || [];
+    const job = currentJobs.find((j) => j.id === id);
+    if (!job) {
+      showToast(t("Job nicht gefunden", "Job not found"));
+      return;
+    }
+
+    document.getElementById("editJobId").value = id;
+    document.getElementById("editJobTitle").textContent =
+      job.title || t("Unbekannt", "Unknown");
+
+    // Rebuild language dropdown based on lang separation setting
+    const langSelect = document.getElementById("editLanguage");
+    langSelect.innerHTML = "";
+    if (langSepEnabled) {
+      const opt = document.createElement("option");
+      opt.value = "All Languages";
+      opt.textContent = t("Alle Sprachen", "All Languages");
+      langSelect.appendChild(opt);
+    }
+    ["German Dub", "English Sub", "German Sub", "English Dub", "English Dub (German Sub)"].forEach((l) => {
+      const opt = document.createElement("option");
+      opt.value = l;
+      opt.textContent = l;
+      langSelect.appendChild(opt);
+    });
+    // Fallback groups (settings → Downloads): selectable in place of a single
+    // language, resolved per episode by the worker. They require language
+    // separation — but a job that already uses one keeps showing it either way,
+    // so the dropdown never misrepresents what the job is set to.
+    const _jobUsesGroup = String(job.language || "").indexOf("group:") === 0;
+    if (languageGroupsCache.length && (langSepEnabled || _jobUsesGroup)) {
+      const optgroup = document.createElement("optgroup");
+      optgroup.label = t("Sprachgruppen", "Language groups");
+      languageGroupsCache.forEach((g) => {
+        const opt = document.createElement("option");
+        opt.value = "group:" + g.id;
+        opt.textContent = g.name;
+        opt.title = (g.languages || []).join(" → ");
+        optgroup.appendChild(opt);
+      });
+      langSelect.appendChild(optgroup);
+    }
+    langSelect.value = job.language || "German Dub";
+
+    // Extra audio tracks: mirrored from the language dropdown above, minus the
+    // primary itself and minus the two values that already mean "one file per
+    // language" (a group, "All Languages"). Rebuilt whenever the primary
+    // changes, because the primary can never be its own extra track.
+    let editExtraPicked = [];
+    try {
+      const raw = job.extra_languages;
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (Array.isArray(parsed)) editExtraPicked = parsed.filter((x) => x);
+    } catch (e) { editExtraPicked = []; }
+
+    const extraRow = document.getElementById("editExtraLanguagesRow");
+    const extraRoot = document.getElementById("editExtraLanguages");
+
+    function rebuildEditExtras() {
+      if (!extraRow || !extraRoot) return;
+      const primary = langSelect.value;
+      const usable = primary.indexOf("group:") !== 0 && primary !== "All Languages";
+      const options = usable
+        ? Array.from(langSelect.options)
+            .map((o) => o.value)
+            .filter((v) => v && v !== primary && v !== "All Languages" && v.indexOf("group:") !== 0)
+        : [];
+      editExtraPicked = editExtraPicked.filter((v) => options.indexOf(v) !== -1);
+      const box = extraRoot.querySelector(".mf-multiselect-dropdown");
+      box.innerHTML = "";
+      options.forEach((l) => {
+        const label = document.createElement("label");
+        label.className = "mf-multiselect-item";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.className = "chb-main";
+        cb.value = l;
+        cb.checked = editExtraPicked.indexOf(l) !== -1;
+        const span = document.createElement("span");
+        span.textContent = l;
+        // Burned-in subtitles cannot ride along as an audio track, so these
+        // add a second video stream and grow the file. Flagged in the list
+        // rather than only afterwards. See languages.burned_subtitle_labels().
+        if ((window.MF_BURNED_SUB_LANGS || []).includes(l)) {
+          const mark = document.createElement("em");
+          mark.className = "mf-multiselect-note";
+          mark.textContent = t(" (Videospur)", " (video track)");
+          span.appendChild(mark);
+          label.title = t(
+            "Untertitel sind ins Bild gebrannt: ergibt eine zusätzliche Videospur, keine Tonspur.",
+            "Subtitles are burned into the picture: this adds a second video stream, not an audio track.",
+          );
+        }
+        label.appendChild(cb);
+        label.appendChild(span);
+        box.appendChild(label);
+      });
+      extraRow.hidden = !options.length;
+      if (window.mfMultiSelect) window.mfMultiSelect.refresh(extraRoot);
+    }
+
+    // onchange, not addEventListener: openEditModal() runs again for the next
+    // job, and repeated addEventListener calls would stack up handlers all
+    // writing into their own stale closure.
+    langSelect.onchange = rebuildEditExtras;
+    _editExtraSync = () => { editExtraPicked = _editExtraFromDom(); };
+    _editExtraGet = () => (extraRow && extraRow.hidden ? [] : editExtraPicked);
+    rebuildEditExtras();
+
+    document.getElementById("editProvider").value = job.provider || "VOE";
+    document.getElementById("editEnabled").value = job.enabled ? "1" : "0";
+
+    // Populate path dropdown
+    const pathSelect = document.getElementById("editPath");
+    while (pathSelect.options.length > 1) pathSelect.remove(1);
+    await loadCustomPathsForEdit();
+    customPathsCache.forEach(function (p) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name + " (" + p.path + ")";
+      pathSelect.appendChild(opt);
+    });
+    pathSelect.value = job.custom_path_id ? String(job.custom_path_id) : "";
+
+    const pathActionSelect = document.getElementById("editPathUnavailableAction");
+    if (pathActionSelect) {
+      pathActionSelect.value = job.path_unavailable_action || "skip";
+    }
+
+    const groupInput = document.getElementById("editGroup");
+    if (groupInput) groupInput.value = job.group_name || "";
+
+    // Season/episode filter picker
+    _editPicker = null;
+    const pickerHost = document.getElementById("editFilterPicker");
+    if (pickerHost && window.AutosyncFilter) {
+      let existingFilter = null;
+      if (job.episode_filter) {
+        try {
+          existingFilter =
+            typeof job.episode_filter === "string"
+              ? JSON.parse(job.episode_filter)
+              : job.episode_filter;
+        } catch (e) {
+          existingFilter = null;
+        }
+      }
+      if (existingFilter)
+        existingFilter.movie_custom_path_id = job.movie_custom_path_id;
+      else if (job.movie_custom_path_id != null)
+        existingFilter = { mode: "all", seasons: {}, include_movies: false, movie_custom_path_id: job.movie_custom_path_id };
+      _editPicker = window.AutosyncFilter.renderPicker(pickerHost, {
+        seriesUrl: job.series_url,
+        existingFilter: existingFilter,
+        customPaths: customPathsCache,
+      });
+    }
+
+    document.getElementById("editOverlay").style.display = "block";
+  } catch (e) {
+    showToast(t("Job konnte nicht geladen werden", "Job could not be loaded"));
+  }
+}
+
+function closeEditModal() {
+  document.getElementById("editOverlay").style.display = "none";
+  const ph = document.getElementById("editFilterPicker");
+  if (ph) ph.innerHTML = "";
+  _editPicker = null;
+}
+
+async function saveEdit() {
+  const id = document.getElementById("editJobId").value;
+  const pathVal = document.getElementById("editPath").value;
+  const pathActionEl = document.getElementById("editPathUnavailableAction");
+  if (_editPicker && !_editPicker.validate()) {
+    showToast(t("Ungültiger Episodenbereich (z. B. „1-12“).", "Invalid episode range (e.g. \"1-12\")."));
+    return;
+  }
+  const body = {
+    language: document.getElementById("editLanguage").value,
+    provider: document.getElementById("editProvider").value,
+    enabled: parseInt(document.getElementById("editEnabled").value),
+    custom_path_id: pathVal ? parseInt(pathVal) : null,
+    path_unavailable_action: pathActionEl ? pathActionEl.value : "skip",
+    group_name: (document.getElementById("editGroup") ? document.getElementById("editGroup").value.trim() : ""),
+    extra_languages: _editExtraGet(),
+  };
+  if (_editPicker) {
+    body.episode_filter = _editPicker.getFilter();
+    body.movie_custom_path_id = _editPicker.getMoviePathId();
+  }
+  try {
+    const res = await fetch("/api/autosync/" + id, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(t("Job aktualisiert", "Job updated"));
+      closeEditModal();
+      loadAutosyncJobs();
+    } else {
+      showToast(data.error || t("Aktualisierung fehlgeschlagen", "Update failed"));
+    }
+  } catch (e) {
+    showToast(t("Job konnte nicht aktualisiert werden", "Job could not be updated"));
+  }
+}
+
+function showToast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => {
+    t.style.display = "none";
+  }, 3000);
+}
+
+// Same contract as app.js's esc(): safe for attribute interpolation, which is
+// what half the callers below do (title="..."). The old textContent/innerHTML
+// trick escaped & and < but left quotes alone, so a title or an error message
+// containing a double quote could break out of the attribute it was rendered
+// into.
+function esc(s) {
+  return (s == null ? "" : String(s)).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c];
+  });
+}
+
+// Init
+_loadPrefs();
+_applyPrefsToControls();
+Promise.all([loadSyncSchedule()]).then(loadAutosyncJobs);
+window.mfPoll(loadAutosyncJobs, 30000);
+
+// ===== Export =====
+async function exportAutosync() {
+  try {
+    const r = await fetch("/api/autosync/export");
+    if (!r.ok) { showToast(t("Export fehlgeschlagen", "Export failed")); return; }
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "autosync_backup.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    showToast(t("Export erfolgreich", "Export successful"));
+  } catch(e) {
+    showToast(t("Export fehlgeschlagen: ", "Export failed: ") + e.message);
+  }
+}
+
+// ===== Import =====
+async function importAutosync(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = "";  // reset so same file can be re-selected
+  try {
+    const text = await file.text();
+    const r = await fetch("/api/autosync/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: text,
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) { showToast(d.error || t("Import fehlgeschlagen", "Import failed")); return; }
+    let msg = d.imported + " " + t("importiert", "imported");
+    if (d.skipped)  msg += ", " + d.skipped + " " + t("übersprungen", "skipped");
+    if (d.errors && d.errors.length) msg += ", " + d.errors.length + " " + t("Fehler", "errors");
+    showToast(msg);
+    loadAutosyncJobs();
+  } catch(e) {
+    showToast(t("Import fehlgeschlagen: ", "Import failed: ") + e.message);
+  }
+}
+
+// ===== Batch =====
+async function batchAction(action) {
+  const ids = [...selectedJobIds];
+  if (!ids.length) return;
+
+  let body = { ids, action };
+  if (action === "set_path") {
+    const sel = document.getElementById("batchPathSelect");
+    const val = sel ? sel.value : "";
+    body.custom_path_id = val ? parseInt(val) : null;
+  }
+  if (action === "set_group") {
+    const inp = document.getElementById("batchGroupInput");
+    const name = inp ? inp.value.trim() : "";
+    if (!name) { showToast(t("Bitte einen Gruppennamen eingeben", "Please enter a group name")); return; }
+    body.group_name = name;
+  }
+
+  if (action === "delete") {
+    const ok = await showConfirm(`${ids.length} ` + t('Sync-Job(s) wirklich löschen?', 'sync job(s) really delete?'));
+    if (!ok) return;
+  }
+
+  try {
+    const r = await fetch("/api/autosync/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      const label = {
+        enable:   t("aktiviert", "enabled"),
+        disable:  t("deaktiviert", "disabled"),
+        set_path: t("Pfad gesetzt", "path set"),
+        set_group: t("zur Gruppe hinzugefügt", "added to group"),
+        remove_group: t("aus Gruppe entfernt", "removed from group"),
+        delete:   t("gelöscht", "deleted"),
+      }[action] || t("aktualisiert", "updated");
+      showToast(d.updated + " Job(s) " + label);
+      const gi = document.getElementById("batchGroupInput");
+      if (gi) gi.value = "";
+      clearSelection();
+      loadAutosyncJobs();
+    } else {
+      showToast(d.error || t("Batch-Aktion fehlgeschlagen", "Batch action failed"));
+    }
+  } catch(e) {
+    showToast(t("Batch-Aktion fehlgeschlagen: ", "Batch action failed: ") + e.message);
+  }
+}

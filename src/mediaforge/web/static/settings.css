@@ -1,0 +1,709 @@
+/* ===================================================================
+   MediaForge — Settings page (page-specific)
+   Everything here is exclusive to the Settings page: the read-only
+   web console mirror (+ its ANSI color classes for converted log
+   output), the REST API endpoint reference table, the DNS
+   connectivity test panel, and the user-management add/list table.
+   The generic settings-row/card layout these panels sit inside lives
+   in settings_rows.css (shared with other settings-style pages).
+   Used by: templates/settings.html + static/settings.js
+   =================================================================== */
+
+/* Note: Settings Overview Grid & Cards moved to settings_rows.css so Integrations overview cards can reuse them. */
+.web-console-wrap {
+  margin: 0 22px 18px;
+  border: 1px solid #2b2b2b;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0c0c0c;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}.web-console-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #2b2b2b;
+  font-size: 0.78rem;
+  color: #cfcfcf;
+}.web-console-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #3ddc84;
+  box-shadow: 0 0 6px #3ddc84;
+  flex: 0 0 auto;
+}.web-console-title {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #e6e6e6;
+}.web-console-status {
+  color: #8a8a8a;
+  font-size: 0.72rem;
+}.web-console-autoscroll {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #cfcfcf;
+  cursor: pointer;
+  user-select: none;
+}.web-console-autoscroll input {
+  margin: 0;
+}.web-console-output {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 420px;
+  min-height: 160px;
+  overflow: auto;
+  background: #0c0c0c;
+  color: #e6e6e6;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 4;
+}.web-console-output::-webkit-scrollbar { width: 10px; height: 10px; }.web-console-output::-webkit-scrollbar-track { background: #0c0c0c; }.web-console-output::-webkit-scrollbar-thumb { background: #333; border-radius: 6px; }.web-console-line { display: block; min-height: 1.1em; }
+/* ANSI color-code -> CSS class mapping (ansi-<code>) used to render terminal
+   colors when converting captured log output for the web console mirror. */
+.ansi-30 { color: #555; }.ansi-31 { color: #ff5f56; }.ansi-32 { color: #3ddc84; }.ansi-33 { color: #f1c40f; }.ansi-34 { color: #4ea1ff; }.ansi-35 { color: #c678dd; }.ansi-36 { color: #56b6c2; }.ansi-37 { color: #e6e6e6; }.ansi-90 { color: #777; }.ansi-91 { color: #ff7b72; }.ansi-92 { color: #7ee787; }.ansi-93 { color: #ffd966; }.ansi-94 { color: #79c0ff; }.ansi-95 { color: #d2a8ff; }.ansi-96 { color: #56d4dd; }.ansi-97 { color: #ffffff; }.ansi-bold { font-weight: 700; }.ansi-bg-41 { background: #b3261e; color: #fff; }@media (max-width: 640px) {.web-console-wrap { margin: 0 12px 14px; }
+  .web-console-output { max-height: 300px; font-size: 0.74rem; padding: 10px; }
+  .web-console-toolbar { flex-wrap: wrap; }
+}.api-endpoints-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.81rem;
+}.api-endpoints-table td {
+  padding: 5px 12px 5px 0;
+  vertical-align: middle;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}.api-endpoints-table td:last-child {
+  white-space: normal;
+  color: var(--text-muted);
+  width: 100%;
+}.api-endpoints-table code {
+  font-size: 0.8rem;
+}.api-endpoints-table tr:not(:last-child) td {
+  border-bottom: 1px solid var(--border);
+}.api-param {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  opacity: 0.8;
+}.dns-test-panel {
+  margin: 0 22px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 0.84rem;
+}.dns-test-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}.dns-test-rerun {
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  color: var(--text-secondary);
+}.dns-test-rerun:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}.dns-test-rerun:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}.dns-test-block {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}.dns-test-block:last-child {
+  border-bottom: none;
+}.dns-test-block-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}.dns-test-status-row {
+  line-height: 1.5;
+}.dns-test-site-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 0;
+}.dns-test-site-name {
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 90px;
+  flex-shrink: 0;
+}.dns-test-site-result {
+  flex: 1;
+}.dns-test-ok {
+  color: var(--success, #4caf50);
+}.dns-test-warn {
+  color: var(--warning, #ff9800);
+}.dns-test-fail {
+  color: var(--error, #f44336);
+}.dns-test-idle {
+  color: var(--text-muted);
+}.dns-test-loading {
+  color: var(--text-muted);
+  font-style: italic;
+}.dns-test-err-btn {
+  margin-left: 8px;
+  font-size: 0.72rem;
+  padding: 1px 7px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.75;
+  vertical-align: middle;
+}.dns-test-err-btn:hover {
+  opacity: 1;
+}.dns-test-err-detail {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  font-family: monospace;
+  color: var(--text-muted);
+  word-break: break-all;
+  white-space: pre-wrap;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+}.add-user-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 0 22px 16px;
+}.add-user-row input,
+.add-user-row select {
+  flex: 1;
+  min-width: 120px;
+  height: 40px;
+}.add-user-row button {
+  height: 40px;
+  padding: 0 18px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition);
+}.add-user-row button:hover {
+  background: var(--accent-hover);
+}.user-table {
+  margin: 0;
+}.user-table th {
+  padding: 10px 22px;
+}.user-table td {
+  padding: 10px 22px;
+  font-size: 0.85rem;
+}@media (max-width: 640px) {.api-endpoints-table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .api-param {
+    display: none;
+  }
+}
+/* Re-declares .user-table th/td with tighter padding (10px 14px vs the
+   10px 22px set earlier) — same selector/specificity, so this later rule
+   wins by source order and is what actually renders. */
+.user-table th {
+  padding: 10px 14px;
+}.user-table td {
+  padding: 10px 14px;
+}
+
+/* ── "Default for sites" cell (custom paths table) ─────────────────────
+   Replaced the old .path-site-chip checkbox row: mirrors.SITE_LABELS is a
+   registry third-party modules extend, so the row of checkboxes grew with
+   every registered site. The .mf-multiselect from forms.css keeps the cell
+   one line tall regardless — behaviour lives in static/mf_multiselect.js. */
+.path-site-cell {
+  min-width: 240px;
+}
+
+.path-site-select {
+  max-width: 320px;
+}
+
+/* ── "Media types" cell (custom paths table) ───────────────────────────
+   Narrower than the site cell on purpose: the registry offers two
+   scannable kinds today and their labels are short, and the table already
+   has to scroll sideways on a phone (.user-table min-width below). Same
+   component, so the cell stays one line tall as more kinds are added. */
+.path-kind-cell {
+  min-width: 190px;
+}
+
+.path-kind-select {
+  max-width: 260px;
+}
+
+.path-kind-select .mf-multiselect-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.path-kind-select .mf-multiselect-item input:disabled {
+  cursor: not-allowed;
+}
+
+/* The same dropdown in the "Add Path" row, where it sits between two
+   flex:1 inputs. It must not stretch like they do, and on a narrow screen
+   it wraps onto its own line instead of squeezing the inputs. */
+#newPathKinds {
+  flex: 0 0 auto;
+}
+
+#newPathKinds .path-kind-select {
+  min-width: 180px;
+}
+
+#newPathKinds .mf-multiselect-trigger {
+  height: 40px;
+}
+
+@media (max-width: 640px) {
+  #newPathKinds {
+    flex: 1 1 100%;
+  }
+
+  #newPathKinds .path-kind-select {
+    max-width: none;
+  }
+}
+
+/* The dropdown is switched to position:fixed by mf_multiselect.js while it
+   is open, because .user-table-wrapper is overflow-x:auto and would
+   otherwise clip it to the table. */
+.path-site-select .mf-multiselect-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.path-site-select .mf-multiselect-item input:disabled {
+  cursor: not-allowed;
+}
+
+/* Still in use: the language-group editor row builds its "delete old file"
+   checkbox with this class (settings.js). It outlived the custom-paths chip
+   row it was named after — kept rather than renamed so that row does not
+   silently lose its styling. */
+.path-site-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary, #c8cad0);
+  cursor: pointer;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.path-site-chip input:disabled {
+  cursor: not-allowed;
+}
+
+@media (max-width: 640px) {.user-table {
+    min-width: 560px;
+  }
+
+  /* The custom-paths table carries two dropdowns on top of its three text
+     columns, so it needs more than the shared minimum before the cells
+     start crushing each other. .user-table-wrapper scrolls it sideways.
+     Down from 720px since the Auto-Sync-default radio column was dropped --
+     one column fewer is one column less to scroll past on a phone. */
+  #customPathsTable {
+    min-width: 640px;
+  }
+
+  .user-table th,
+  .user-table td {
+    padding: 8px 10px;
+    white-space: nowrap;
+    font-size: 0.8rem;
+  }
+}
+/* ─── Language fallback groups (Downloads tab) ─────────────────────────
+   The order of the list IS the setting, so the editor shows the position
+   number and the move controls right on each entry rather than relying on
+   drag & drop, which the rest of the settings page doesn't use either. */
+/* Body of the preset confirm modal. showConfirm() renders HTML, so the
+   checkbox reuses the page's own .settings-checkbox-row — only its section
+   padding has to go, which is what the doubled class is for (the two rules
+   would otherwise be equally specific and depend on stylesheet order). */
+.settings-checkbox-row.preset-modal-choice {
+  padding: 14px 0 4px;
+}
+
+.preset-modal-tpl {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.preset-modal-tpl > span {
+  flex: 0 0 auto;
+  min-width: 58px;
+}
+
+.preset-modal-tpl code {
+  font-family: monospace;
+  /* Templates are long and have no spaces to break at. */
+  word-break: break-all;
+  color: var(--text-secondary);
+}
+
+.preset-modal-hint {
+  margin-top: 10px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* Preset block in Settings -> Downloads ("Set Jellyfin Defaults" / "Set
+   Defaults"). Carries the section's own horizontal padding, because
+   .settings-notice brings only its inner padding. On a phone the two buttons
+   go full width rather than shrinking below a comfortable tap target. */
+.settings-preset-block {
+  padding: 4px 22px 14px;
+}
+
+.settings-preset-block .settings-notice {
+  margin-bottom: 14px;
+}
+
+.settings-preset-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-preset-hint {
+  margin-top: 10px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .settings-preset-block {
+    padding: 4px 14px 12px;
+  }
+
+  .settings-preset-actions button {
+    flex: 1 1 100%;
+  }
+}
+
+.lang-group-notice {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning, #d9a441);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm, 6px);
+  background: rgba(217, 164, 65, 0.08);
+  color: var(--text-secondary, #c8cad0);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.lang-group-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0px 10px 0px 10px;
+}
+
+.lang-chain-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border, #2b2b2b);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-elevated, #17171a);
+  font-size: 0.8rem;
+  color: var(--text-primary, #e6e6e6);
+}
+
+.lang-chain-pos {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--accent, #4a7dff);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.lang-chain-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #c8cad0);
+  cursor: pointer;
+  padding: 0 3px;
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.lang-chain-btn:hover:not(:disabled) {
+  color: var(--accent, #4a7dff);
+}
+
+.lang-chain-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.lang-chain-btn.lang-chain-del:hover {
+  color: var(--danger, #e5484d);
+}
+
+.lang-chain-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lang-chain-add select {
+  width: auto;
+  min-width: 150px;
+}
+
+.lang-group-order {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  font-size: 0.78rem;
+  color: var(--text-secondary, #c8cad0);
+}
+
+.lang-group-arrow {
+  opacity: 0.5;
+}
+
+.lang-group-flag {
+  font-size: 0.78rem;
+  color: var(--text-secondary, #c8cad0);
+  white-space: nowrap;
+}
+
+.lang-group-flag-on {
+  color: var(--text-primary, #e6e6e6);
+}
+
+/* ─── Full & Selective Backup tab ─────────────────────────────────────── */
+.backup-cat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 6px 18px;
+  margin-top: 8px;
+}
+.backup-cat {
+  margin: 0;
+}
+
+/* Aligns the Preview button with the bottom of the adjacent input fields. */
+.backup-preview-btn-wrap {
+  display: flex;
+  align-items: flex-end;
+}
+
+/* Styled file picker (label wraps a hidden <input type=file>) — matches the
+   MediaForge ghost-button look used by the Auto-Sync import control. */
+.backup-file-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  width: 100%;
+  height: 40px;
+  box-sizing: border-box;
+}
+
+/* Keep file picker, password field and Preview button on one aligned line. */
+.backup-import-row .backup-preview-btn-wrap button {
+  height: 40px;
+}
+.backup-file-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+.backup-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Mobile: stack fields full-width and let the Preview button span the row. */
+@media (max-width: 640px) {
+  .backup-cat-grid {
+    grid-template-columns: 1fr;
+  }
+  .backup-preview-btn-wrap {
+    width: 100%;
+  }
+  .backup-preview-btn-wrap button {
+    width: 100%;
+  }
+  .backup-file-btn {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+/* ── Comics block (Library tab) ───────────────────────────────────────
+   Layout only. The rows, buttons, hints and the warning box are the
+   page's existing components (settings_rows.css, buttons.css and
+   integrations.css, all three already loaded by settings.html); what is
+   needed here is the two-column cache row not collapsing into an
+   unreadable squeeze on a phone. */
+.comic-cache-row {
+  flex-wrap: wrap;
+}
+
+/* The size line changes on every refresh -- tabular figures keep it from
+   jittering while the numbers change width. */
+.comic-cache-row .settings-row-desc {
+  font-variant-numeric: tabular-nums;
+}
+
+.comic-danger-box {
+  margin-top: 8px;
+  margin-bottom: 6px;
+}
+
+@media (max-width: 640px) {
+  /* Sharing a line with a two-line label leaves the button about as wide
+     as its own caption; give it the whole row instead. */
+  .comic-cache-row .settings-row-right {
+    width: 100%;
+  }
+
+  .comic-cache-row .settings-row-right .btn {
+    width: 100%;
+  }
+}
+
+/* ── /profile: the account's own page ───────────────────────────────────
+   Reuses the settings-section/settings-row furniture on purpose -- it is
+   the same kind of page, just scoped to one account instead of the
+   instance. */
+
+/* .settings-row's inputs are `flex: 1`, so their width is whatever the label
+   leaves over -- three password fields under three differently long labels
+   came out three different widths. A fixed label column lines them up.
+   Scoped to this page: the settings pages elsewhere rely on that stretch. */
+#panel-account .settings-row > .settings-label,
+#panel-mediaplayer .settings-row > .settings-label {
+  flex: 0 0 190px;
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+}
+
+/* The value column of a read-only row (username, role) should sit with the
+   inputs below it, not hard against the right edge. */
+#panel-account .settings-row > .profile-value,
+#panel-account .settings-row > .profile-role { margin-right: auto; }
+
+@media (max-width: 720px) {
+  /* One column: a 190px label next to an input on a phone leaves the input
+     unusably narrow. */
+  #panel-account .settings-row,
+  #panel-mediaplayer .settings-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  #panel-account .settings-row > .settings-label,
+  #panel-mediaplayer .settings-row > .settings-label { flex: none; }
+}
+.profile-value {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.profile-role {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.profile-role-admin {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* A restriction, not a rank -- amber rather than accent, so it does not read
+   as a badge of honour next to Administrator. */
+.profile-role-kids {
+  border-color: rgba(251, 191, 36, 0.5);
+  color: var(--warning, #fbbf24);
+}
+
+/* ── Display mode (General -> System) ──────────────────────────────────
+   Read-only status row: dot + title + one explanatory line. Wraps on narrow
+   screens so the text never pushes the card sideways on a phone. */
+.mf-display-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated, var(--bg-secondary));
+  max-width: 100%;
+}
+
+.mf-display-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.mf-display-mode.is-native .mf-display-dot { background: var(--success, #3fb950); }
+.mf-display-mode.is-virtual .mf-display-dot { background: var(--warning, #fbbf24); }
+.mf-display-mode.is-unavailable .mf-display-dot { background: var(--danger, #ff6b81); }
+
+.mf-display-title { font-weight: 600; font-size: 0.92rem; }
+.mf-display-desc { font-size: 0.82rem; color: var(--text-secondary); word-break: break-word; }

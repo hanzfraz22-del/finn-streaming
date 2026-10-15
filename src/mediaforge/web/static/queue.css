@@ -1,0 +1,1769 @@
+/* ===================================================================
+   MediaForge — Queue UI
+   Download queue items (renderQueue in queue.js), the queue empty
+   state, queue toolbar/action buttons, and the Upscaling queue's own
+   item cards. All rendered into the global Queue/Upscaling modals
+   defined in base.html.
+   =================================================================== */
+
+/* ===================================================================
+   QUEUE ITEMS (renderQueue in queue.js)
+   =================================================================== */
+.queue-item {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 13px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.queue-item-active {
+  border-color: rgba(124, 58, 237, 0.35);
+}
+
+.queue-item-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.queue-item-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+  flex: 1;
+  min-width: 0;
+}
+
+.queue-item-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.queue-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+/* Queue status badges */
+.queue-status {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 99px;
+  white-space: nowrap;
+}
+
+.queue-status-running {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.queue-status-queued {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+
+.queue-status-paused {
+  background: rgba(34, 197, 94, 0.10);
+  color: #22c55e;
+}
+
+/* Not emitted by queue.js — reused by autosync.js for a manually held sync job */
+.queue-status-hold {
+  background: rgba(245, 158, 11, 0.13);
+  color: var(--warning, #f59e0b);
+}
+
+.queue-status-completed {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success);
+}
+
+/* Not emitted by queue.js — reused by autosync.js for a job auto-paused by
+   Adaptive Auto-Sync after no new episodes for a while */
+.queue-status-adaptive {
+  background: rgba(194, 65, 12, 0.18);
+  color: #c2410b;
+}
+
+.queue-status-partial {
+  background: rgba(234, 88, 12, 0.12);
+  color: #ea580c;
+}
+
+.queue-status-failed {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--error);
+}
+
+.queue-status-cancelled {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+
+.queue-status-cancelling {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warning);
+}
+
+.queue-status-captcha {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warning);
+}
+
+/* Meta pills */
+.queue-meta-pill {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  padding: 3px 8px;
+  border-radius: 99px;
+  white-space: nowrap;
+}
+
+.queue-user {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.queue-path {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--success);
+}
+
+/* Queue progress */
+.queue-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+@keyframes queue-progress-stripes {
+  0% {
+    background-position: 1rem 0;
+  }
+
+  100% {
+    background-position: 0 0;
+  }
+}
+
+.queue-progress-bar {
+  background: var(--bg-hover);
+  border-radius: 99px;
+  height: 6px;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Episode-level bar (download / ffmpeg phase) — slightly slimmer */
+.queue-progress-bar--episode {
+  height: 4px;
+  margin-top: 2px;
+}
+
+.queue-progress-fill {
+  height: 100%;
+  background-color: var(--accent);
+  /* Diagonal stripe pattern, animated via background-position below
+     (queue-progress-stripes) for a moving "in progress" effect */
+  background-image: linear-gradient(45deg,
+      rgba(255, 255, 255, 0.15) 25%,
+      transparent 25%,
+      transparent 50%,
+      rgba(255, 255, 255, 0.15) 50%,
+      rgba(255, 255, 255, 0.15) 75%,
+      transparent 75%,
+      transparent);
+  background-size: 1rem 1rem;
+  animation: queue-progress-stripes 1s linear infinite;
+  border-radius: 99px;
+  transition: width 0.4s ease;
+}
+
+.queue-item-active .queue-progress-fill {
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+/* Download phase: blue */
+.queue-progress-fill--download {
+  background-color: var(--info);
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
+}
+
+/* FFmpeg phase: orange */
+.queue-progress-fill--ffmpeg {
+  background-color: var(--warning);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+}
+
+/* Move phase: emerald green */
+.queue-progress-fill--move {
+  background-color: var(--success);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+}
+
+/* Upscaling phase: purple → pink gradient */
+.queue-progress-fill--upscaling {
+  background: linear-gradient(90deg, #8b5cf6, #ec4899);
+  box-shadow: 0 0 10px rgba(236, 72, 153, 0.45);
+}
+
+/* Encoding queue phase: blue → cyan gradient */
+.queue-progress-fill--encoding {
+  background: linear-gradient(90deg, #2563eb, #06b6d4);
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.45);
+}
+
+.queue-progress-footer {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.queue-progress-pct {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.queue-progress-phase {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+}
+
+.queue-progress-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  min-height: 22px;
+}
+
+.queue-progress-pill {
+  display: inline-block;
+  font-size: 0.70rem;
+  padding: 2px 7px;
+}
+
+.queue-progress-pill--eta {
+  color: var(--text-secondary);
+}
+
+
+/* Queue errors */
+.queue-errors {
+  font-size: 0.78rem;
+  color: var(--error);
+  cursor: pointer;
+  padding: 4px 0;
+  user-select: none;
+}
+
+.queue-errors-toggle {
+  margin-left: 4px;
+  display: inline-block;
+  transition: transform var(--transition);
+}
+
+.queue-errors.expanded .queue-errors-toggle {
+  transform: rotate(90deg);
+}
+
+.queue-error-details {
+  display: none;
+  margin-top: 4px;
+}
+
+.queue-error-details.expanded {
+  display: block;
+}
+
+.queue-error-detail {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  padding: 3px 0;
+  border-top: 1px solid var(--border);
+  word-break: break-all;
+}
+
+
+/* Second .queue-item-header definition — overrides the gap set above (later
+   rule wins via cascade order) to give queue items a clearer visual split
+   between content and action buttons */
+.queue-item-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 0;
+  /* cancels out a margin-bottom inherited from elsewhere in the cascade */
+}
+
+.queue-item-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+
+/* Move buttons: arrow icons, square touch target */
+.queue-move {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 0.8rem;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.queue-move:hover:not(:disabled) {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-color: rgba(124, 58, 237, 0.4);
+}
+
+.queue-move:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Remove button: X, subtle red on hover */
+.queue-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+
+.queue-remove:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--error);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+/* Cancel button: pill-shaped, warm red tint */
+.queue-cancel {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-family: inherit;
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--error);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+  white-space: nowrap;
+}
+
+.queue-cancel:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+/* "Cancelling..." — the abort is already running, a second click is pointless. */
+.queue-cancel:disabled,
+.qhub-hero-btn--cancel:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Captcha solve button */
+.queue-captcha-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-family: inherit;
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--warning);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  margin-right: 4px;
+  transition: background var(--transition);
+}
+
+.queue-captcha-btn:hover {
+  background: rgba(245, 158, 11, 0.2);
+}
+
+/* Restart button: green-accent pill */
+.queue-restart {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-family: inherit;
+  background: rgba(34, 197, 94, 0.08);
+  color: var(--success, #22c55e);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+  white-space: nowrap;
+}
+
+.queue-restart:hover {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+/* Auto-Sync source badge in queue items */
+.queue-sync-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 4px;
+  vertical-align: middle;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+/* Queue modal list — ensure it scrolls independently */
+.queue-modal .queue-list {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  /* critical for flex children to scroll */
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Empty queue message */
+.queue-empty {
+  text-align: center;
+  padding: 36px 20px;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+/* ── Settings: API-Key input row ── */
+.api-key-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.api-key-btn-group {
+  display: contents;
+  /* buttons appear directly in the flex row on desktop */
+}
+
+@media (max-width: 640px) {
+  .api-key-input-row {
+    flex-wrap: wrap;
+  }
+
+  .api-key-input-row input {
+    flex: 1 1 100%;
+    /* full width, own line */
+    min-width: 0;
+  }
+
+  .api-key-btn-group {
+    display: flex;
+    /* buttons sit side-by-side on their own line */
+    gap: 6px;
+    width: 100%;
+  }
+
+  .api-key-btn-group button {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.75rem;
+    padding: 0 6px;
+    height: 36px;
+  }
+
+  
+
+  
+}
+
+
+
+/* ── Seerr: Reject button ── */
+.btn-reject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--error, #ef4444);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 8px 18px;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+
+  /* ── Auto-Sync Badge ────────────────────────────────────────────── */
+  .sync-badge {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    background: var(--info);
+    color: #fff;
+    font-size: 0.6rem;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 99px;
+    line-height: 1.6;
+    letter-spacing: .03em;
+    pointer-events: none;
+    box-shadow: 0 1px 6px rgba(59, 130, 246, .4);
+  }
+
+  
+
+  
+  /* Layout lives here in CSS, not as inline styles set from JS, so a card
+     that's re-enriched (TMDB own badge reset, then a Crunchyroll/Fernsehserien
+     fallback pill added later) can never end up with stale inline styles on
+     an otherwise-empty container. */
+  .browse-tmdb-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin: 4px 0 0px;
+  }
+
+  .tmdb-badge {
+    display: block;
+    font-size: 0.62rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 99px;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+    box-sizing: border-box;
+    line-height: 1.5;
+  }
+
+  /* border + text colour overridden inline by JS brand colour */
+  .tmdb-badge-provider {}
+
+  .tmdb-badge-fsk {}
+
+  /* ── Modal: poster column ───────────────────────────────────────── */
+  .modal-poster-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
+  }
+
+  /* ── FSK pill (same base as .lang-avail-pill) ─────────────── */
+  .tmdb-fsk-badge {
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 99px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+    text-align: center;
+    width: 100%;
+    box-sizing: border-box;
+    letter-spacing: .02em;
+  }
+
+  /* Official FSK (German age-rating) colors */
+  .tmdb-fsk-0 {
+    background: rgba(255, 255, 255, .08);
+    border-color: rgba(255, 255, 255, .25);
+    color: #e0e0e0;
+  }
+
+  .tmdb-fsk-6 {
+    background: rgba(234, 179, 8, .13);
+    border-color: rgba(234, 179, 8, .4);
+    color: #fbbf24;
+  }
+
+  /* yellow */
+  .tmdb-fsk-12 {
+    background: rgba(34, 197, 94, .12);
+    border-color: rgba(34, 197, 94, .38);
+    color: #4ade80;
+  }
+
+  /* green */
+  .tmdb-fsk-16 {
+    background: rgba(59, 130, 246, .13);
+    border-color: rgba(59, 130, 246, .4);
+    color: #60a5fa;
+  }
+
+  /* blue */
+  .tmdb-fsk-18 {
+    background: rgba(239, 68, 68, .13);
+    border-color: rgba(239, 68, 68, .4);
+    color: #f87171;
+  }
+
+  /* red */
+  .tmdb-fsk-xx {
+    background: rgba(148, 163, 184, .1);
+    border-color: rgba(148, 163, 184, .3);
+    color: #94a3b8;
+  }
+
+  /* unknown */
+
+  [data-theme="light"] .tmdb-fsk-0 {
+    background: rgba(0, 0, 0, .05);
+    border-color: rgba(0, 0, 0, .2);
+    color: #374151;
+  }
+
+  [data-theme="light"] .tmdb-fsk-6 {
+    background: rgba(202, 138, 4, .1);
+    border-color: rgba(202, 138, 4, .35);
+    color: #b45309;
+  }
+
+  [data-theme="light"] .tmdb-fsk-12 {
+    background: rgba(22, 163, 74, .09);
+    border-color: rgba(22, 163, 74, .3);
+    color: #15803d;
+  }
+
+  [data-theme="light"] .tmdb-fsk-16 {
+    background: rgba(37, 99, 235, .09);
+    border-color: rgba(37, 99, 235, .3);
+    color: #1d4ed8;
+  }
+
+  [data-theme="light"] .tmdb-fsk-18 {
+    background: rgba(220, 38, 38, .09);
+    border-color: rgba(220, 38, 38, .3);
+    color: #dc2626;
+  }
+
+  /* ── Modal: streaming providers ──────────────────────────────────── */
+  /* The box scrolls once the provider list outgrows it (max-height and
+     overflow are set inline by _tmdbModalPills in app.js, which owns this
+     container). The scrollbar is hidden on purpose -- the same idiom the
+     home panel bar and the feed filters use -- so the pill block stays a
+     quiet strip of metadata rather than growing a rail of its own. */
+  .tmdb-providers {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin: 4px 0 10px;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .tmdb-providers::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Same base as .lang-avail-pill */
+  .tmdb-provider-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 3px 10px 3px 8px;
+    border-radius: 99px;
+    border: 1px solid rgba(148, 163, 184, .3);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    /* Wraps rather than clipping: a nowrap pill also raises the row's
+       min-content width, which is what pushed the modal past its max-width. */
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    line-height: 1.4;
+    transition: filter .15s, border-color .15s;
+    /* brand colour overridden inline */
+  }
+
+  .tmdb-provider-pill:hover {
+    filter: brightness(1.1);
+  }
+
+  .tmdb-provider-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    /* background set inline */
+  }
+
+  /* ── Responsive ─────────────────────────────────────────────────── */
+  @media (max-width: 600px) {
+    .tmdb-provider-pill {
+      font-size: 0.7rem;
+      padding: 2px 8px 2px 6px;
+    }
+
+    .tmdb-fsk-badge {
+      font-size: 0.68rem;
+      padding: 2px 8px;
+    }
+
+    .tmdb-badge {
+      font-size: 0.58rem;
+      padding: 1px 6px;
+    }
+  }
+
+  /* =================================================================
+   AUTOSYNC PAGE — RESPONSIVE  ≤ 640 px
+   ================================================================= */
+  @media (max-width: 640px) {
+
+
+
+
+
+
+
+
+
+
+    #syncAllBtn{
+      width:100% !important;
+    }
+
+
+
+    /* Batch toolbar */
+    #batchToolbar {
+      flex-wrap: wrap;
+      padding: 10px 12px;
+    }
+
+    #batchToolbar button {
+      flex: 1;
+      min-width: 80px;
+      font-size: 0.78rem;
+    }
+
+    #batchToolbar select {
+      flex: 1;
+      min-width: 100px;
+    }
+
+  }
+
+  
+  
+
+  
+
+  
+  
+
+  
+
+  /* The #directLinkBtn rules that used to sit here — twice, verbatim — are
+     gone. They are home-page styling that had no business in queue.css, and
+     being ID rules (1,0,0) they quietly beat the pill styling in index.css:
+     that is why the button kept its old 46px rounded-rect shape inside the
+     50px search pill. index.css owns that button now. */
+
+
+/* Recommendations grid & cards */
+
+
+.recommendations-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 16px;
+  padding: 10px 0;
+}
+
+
+.rec-card {
+  cursor: pointer;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+.rec-card:hover {
+  transform: translateY(-5px);
+}
+
+.rec-poster {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.2s ease;
+}
+
+.rec-card:hover .rec-poster {
+  border-color: var(--accent);
+}
+
+.rec-title {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  /* -webkit-box/-line-clamp trick: truncates text to 2 lines with an
+     ellipsis; -webkit- prefixed but supported by all major browsers */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+  /* ============================================================
+   Upscale Queue Items
+   ============================================================ */
+  .uq-item {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    transition: border-color var(--transition);
+  }
+
+  .uq-item:hover {
+    border-color: var(--border-hover);
+  }
+
+  .uq-item-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+
+  .uq-item-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .uq-title {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .uq-filename {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 6px;
+  }
+
+  .uq-status-pill {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .uq-status-pill.status-running {
+    background: rgba(139, 92, 246, 0.15);
+    color: #a78bfa;
+  }
+
+  .uq-status-pill.status-queued {
+    background: var(--bg-hover);
+    color: var(--text-muted);
+  }
+
+  .uq-status-pill.status-completed {
+    background: rgba(34, 197, 94, 0.15);
+    color: var(--success);
+  }
+
+  .uq-status-pill.status-failed {
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--error);
+  }
+
+  .uq-status-pill.status-cancelled {
+    background: var(--bg-hover);
+    color: var(--text-muted);
+  }
+
+  .uq-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .uq-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    cursor: pointer;
+    transition: background var(--transition), border-color var(--transition);
+  }
+
+  .uq-action-btn svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .uq-btn-cancel {
+    color: var(--text-muted);
+  }
+
+  .uq-btn-cancel:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--error);
+    border-color: rgba(239, 68, 68, 0.25);
+  }
+
+  .uq-btn-delete {
+    color: var(--text-muted);
+  }
+
+  .uq-btn-delete:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--border);
+  }
+
+  .uq-bars {
+    margin: 6px 0 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .uq-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .uq-bar-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    width: 38px;
+    flex-shrink: 0;
+  }
+
+  .uq-bar {
+    flex: 1;
+  }
+
+  .uq-bar-pct {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    width: 32px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  .uq-error {
+    font-size: 0.75rem;
+    color: var(--error);
+    margin-top: 5px;
+    word-break: break-word;
+  }
+
+/* ── VeeV Availability Check Overlay ──────────────────────────────── */
+.veev-check-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  /* High z-index so this sits above the Queue/Upscaling modals and any other overlay */
+  z-index: 9999;
+  backdrop-filter: blur(4px);
+}
+
+.veev-check-overlay.active {
+  display: flex;
+}
+
+.veev-check-box {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  padding: 40px 48px;
+  text-align: center;
+  max-width: 420px;
+  width: 90%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  animation: modal-in 0.22s ease;
+}
+
+.veev-check-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+
+/* Spinner ring */
+.veev-check-spinner-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 4px 0;
+}
+
+.veev-check-spinner {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.08);
+  border-top-color: var(--accent, #6c8ef7);
+  animation: veev-spin 0.85s linear infinite;
+}
+
+@keyframes veev-spin {
+  to { transform: rotate(360deg); }
+}
+
+.veev-check-text {
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  line-height: 1.55;
+  margin: 0;
+  max-width: 300px;
+}
+
+.veev-check-error {
+  font-size: 0.88rem;
+  color: var(--error, #e05a5a);
+  background: rgba(224, 90, 90, 0.1);
+}
+
+
+/* ===================================================================
+   QUEUE HUB (.qhub)
+   -------------------------------------------------------------------
+   One window for all three queues (markup: #queueOverlay in base.html).
+
+     bar     Everything | Downloads | Encoding | Upscaling  + two actions
+     hero    the ONE job running right now, with its station rail
+     list    "Needs you" / "Up next" / "Finished today"
+
+   The coloured edge on a row names the STATION, not the status:
+     violet  var(--accent)   download
+     yellow  var(--warning)  encoding
+     blue    var(--info)     upscaling
+     green   var(--success)  finished
+     red     var(--error)    needs you (captcha, failure)
+
+   The older .queue-progress-fill--download/--ffmpeg/... colours are NOT
+   touched: the home page run strip and third-party modules still use them.
+   =================================================================== */
+
+.queue-modal.qhub {
+  max-width: 840px;
+}
+
+.qhub-header {
+  padding: 16px 20px 12px;
+}
+
+/* ---- Bar: which queue + the actions that apply to all of them ---- */
+.qhub-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 0 20px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Tighter than the app-wide default so the four segments and the two
+   actions share one row instead of wrapping. */
+.qhub-seg .mf-segmented-btn {
+  padding: 7px 13px;
+}
+
+.qhub-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.qhub-off-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+
+.qhub-off-badge--warn {
+  color: var(--text-muted);
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.qhub-off-badge--error {
+  color: var(--error);
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+/* ---- Hero: the one job running right now ---- */
+.qhub-hero {
+  padding: 16px 20px 0;
+  flex-shrink: 0;
+}
+
+.qhub-hero-card {
+  display: flex;
+  gap: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--bg-input);
+  padding: 14px 16px;
+}
+
+.qhub-hero-card--attn {
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.qhub-hero-poster {
+  width: 62px;
+  height: 88px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background-color: var(--bg-hover);
+  background-image: linear-gradient(150deg, rgba(124, 58, 237, 0.35), rgba(239, 68, 68, 0.22));
+  background-size: cover;
+  background-position: center;
+}
+
+.qhub-hero-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.qhub-hero-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.qhub-hero-titles {
+  min-width: 0;
+  flex: 1;
+}
+
+.qhub-hero-title {
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qhub-hero-ep {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin-left: 4px;
+}
+
+.qhub-hero-chip {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 2px 9px;
+  margin-left: 4px;
+  vertical-align: 1px;
+}
+
+.qhub-hero-meta {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qhub-hero-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.qhub-hero-pct {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.qhub-hero-btn {
+  white-space: nowrap;
+}
+
+.qhub-hero-btn--cancel {
+  color: var(--error);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: transparent;
+}
+
+.qhub-hero-btn--cancel:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.qhub-hero-btn--attn {
+  color: #14140c;
+  background: var(--warning);
+  font-weight: 600;
+}
+
+/* NOTE display:block — the bar and its fill are built from a plain HTML
+   string; height on an inline element does nothing and the fill would be
+   invisible. Same trap as the home page run strip. */
+.qhub-hero-bar {
+  display: block;
+  height: 7px;
+  margin-top: 12px;
+  border-radius: 99px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.qhub-hero-fill {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  /* background-COLOR, not the shorthand: the shorthand would wipe the stripe
+     image below, and the per-queue colour overrides further down would do the
+     same. Every one of them sets background-color only. */
+  background-color: var(--accent);
+  /* The moving diagonal stripes — same pattern and same keyframes the old
+     queue modal used (queue-progress-stripes, further up this file). They say
+     "still working" even while the width sits still, which is most of the
+     time on a long episode. */
+  background-image: linear-gradient(45deg,
+      rgba(255, 255, 255, 0.16) 25%,
+      transparent 25%,
+      transparent 50%,
+      rgba(255, 255, 255, 0.16) 50%,
+      rgba(255, 255, 255, 0.16) 75%,
+      transparent 75%,
+      transparent);
+  background-size: 1rem 1rem;
+  animation: queue-progress-stripes 1s linear infinite;
+  transition: width 0.4s ease;
+}
+
+.qhub-hero-card--encoding .qhub-hero-fill { background-color: var(--warning); }
+.qhub-hero-card--upscaling .qhub-hero-fill { background-color: var(--info); }
+.qhub-hero-card--attn .qhub-hero-fill { background-color: var(--error); }
+
+/* Paused: the stripes stop instead of pretending something is happening.
+   Set from renderQueueHub() whenever the download queue is on hold. */
+.qhub-hero-card.is-paused .qhub-hero-fill { animation-play-state: paused; }
+
+/* Second track: the episode / file being worked on right now. Thinner and a
+   shade quieter than the overall bar, so the hierarchy reads at a glance —
+   the thick one is the whole entry, the thin one is what is happening now. */
+.qhub-hero-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 7px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.qhub-hero-sublabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qhub-hero-subpct {
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.qhub-hero-bar--ep {
+  height: 4px;
+  margin-top: 3px;
+}
+
+.qhub-hero-fill--ep {
+  opacity: 0.7;
+}
+
+/* Extra air: the episode bar directly above is the same 4px height as the
+   rail's segments, so without a gap the two read as one striped block. */
+.qhub-stations {
+  margin-top: 16px;
+}
+
+/* mf_components.css paints the active step in --warning, which reads as a
+   warning here. In the hub the rail is neutral progress: the station you are
+   at is the accent, everything behind it is a dimmed accent. */
+.qhub-stations .mf-progress-step.is-done .mf-progress-bar { background: var(--accent); opacity: 0.45; }
+.qhub-stations .mf-progress-step.is-active .mf-progress-bar { background: var(--accent); opacity: 1; }
+.qhub-stations .mf-progress-step.is-active .mf-progress-label { color: var(--accent); }
+.qhub-stations .mf-progress-step.is-done .mf-progress-label { color: var(--text-secondary); }
+
+.qhub-hero-card--encoding .qhub-stations .mf-progress-step.is-active .mf-progress-bar { background: var(--warning); }
+.qhub-hero-card--encoding .qhub-stations .mf-progress-step.is-active .mf-progress-label { color: var(--warning); }
+.qhub-hero-card--upscaling .qhub-stations .mf-progress-step.is-active .mf-progress-bar { background: var(--info); }
+.qhub-hero-card--upscaling .qhub-stations .mf-progress-step.is-active .mf-progress-label { color: var(--info); }
+
+/* ---- Group headings ---- */
+.qhub-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  margin: 14px 0 2px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.qhub-group:first-child {
+  margin-top: 2px;
+}
+
+.qhub-group-count {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  border-radius: 10px;
+  padding: 0 6px;
+}
+
+/* ---- List ---- */
+.queue-list.qhub-list {
+  gap: 0;
+  padding: 4px 20px 18px;
+}
+
+/* Overrides the .queue-item card look: rows here are a quiet list, not a
+   stack of cards. */
+.queue-item.qhub-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 9px 4px 9px 14px;
+  transition: background var(--transition);
+}
+
+.queue-item.qhub-row:last-child {
+  border-bottom: none;
+}
+
+.queue-item.qhub-row:hover {
+  background: var(--bg-hover);
+}
+
+.queue-item.qhub-row::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 5px;
+  bottom: 5px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+/* NOTE the doubled class: the base rule above is `.queue-item.qhub-row::before`
+   (specificity 0,2,1), so a single `.qhub-row--x::before` (0,1,1) would lose
+   and every edge would stay grey. */
+.queue-item.qhub-row--download::before { background: var(--accent); }
+.queue-item.qhub-row--encoding::before { background: var(--warning); }
+.queue-item.qhub-row--upscaling::before { background: var(--info); }
+.queue-item.qhub-row--attn::before { background: var(--error); }
+.queue-item.qhub-row--failed::before { background: var(--error); }
+.queue-item.qhub-row--partial::before { background: var(--warning); }
+.queue-item.qhub-row--done::before { background: var(--success); }
+
+.qhub-row-idx {
+  width: 14px;
+  flex-shrink: 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.qhub-row-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qhub-row-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.qhub-row-ep {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.qhub-row-state {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+  min-width: 76px;
+  text-align: right;
+}
+
+.qhub-row--attn .qhub-row-state,
+.qhub-row--failed .qhub-row-state { color: var(--error); }
+.qhub-row--encoding .qhub-row-state { color: var(--warning); }
+.qhub-row--upscaling .qhub-row-state { color: var(--info); }
+
+.qhub-row-time {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  min-width: 76px;
+  text-align: right;
+}
+
+/* The buttons take the place of the status word on hover, so the row keeps
+   its rhythm instead of growing a permanent button column. */
+.qhub-row-actions {
+  display: none;
+  gap: 4px;
+}
+
+.queue-item.qhub-row:hover .qhub-row-actions,
+.queue-item.qhub-row:focus-within .qhub-row-actions {
+  display: flex;
+}
+
+.queue-item.qhub-row:hover .qhub-row-state,
+.queue-item.qhub-row:hover .qhub-row-time,
+.queue-item.qhub-row:focus-within .qhub-row-state,
+.queue-item.qhub-row:focus-within .qhub-row-time {
+  display: none;
+}
+
+/* Touch has no hover — show the buttons permanently. The status stays visible
+   next to them rather than being swapped out: without hover there is no way to
+   get it back, and the coloured edge cannot tell "cancelled" from "failed"
+   (both are red). Narrower type and no reserved width keep the row on one
+   line; the title truncates first because it is the flexible column. */
+@media (hover: none) {
+  .qhub-row-actions { display: flex; }
+  .qhub-row-right { gap: 8px; }
+  .qhub-row-state,
+  .qhub-row-time {
+    min-width: 0;
+    font-size: 0.6rem;
+  }
+  .qhub-row-time { font-size: 0.68rem; }
+}
+
+/* ---- Failed rows: click to reveal the error ---------------------------
+   The row itself is the click target, so the whole line reads as one control;
+   the chevron matches the library's .lib-arrow so expanding feels the same
+   everywhere. The panel is a SIBLING of the row, not a child: .qhub-row is a
+   horizontal flex container and a block child would be squeezed into a
+   column. */
+.queue-item.qhub-row--haserr {
+  cursor: pointer;
+}
+
+.queue-item.qhub-row--haserr:hover {
+  background: var(--bg-hover);
+}
+
+/* The chevron sits in the 14px index slot, so titles stay aligned down the
+   whole list whether or not a row failed. */
+.qhub-row-idx .qhub-err-arrow {
+  stroke: var(--error);
+  vertical-align: -1px;
+}
+
+.qhub-err-head {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--error);
+  padding: 4px 0 2px;
+}
+
+.qhub-err-arrow {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.18s;
+}
+
+.qhub-row.is-err-open .qhub-err-arrow { transform: rotate(90deg); }
+
+.qhub-err-panel {
+  display: none;
+  margin: 0 4px 8px 28px;
+  padding-left: 10px;
+  border-left: 2px solid var(--error);
+}
+
+.qhub-err-panel.is-open { display: block; }
+
+/* The explanation, above the raw text. Set apart from .qhub-err-line on
+   purpose: the raw lines are evidence and stay muted and small, this is the
+   part that is meant to be read first. */
+.qhub-err-cause {
+  margin: 6px 0 10px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: var(--bg-secondary, rgba(0, 0, 0, 0.2));
+  border-left: 3px solid var(--text-muted);
+}
+
+.qhub-err-cause-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+
+.qhub-err-count {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.qhub-err-cause-fix {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.qhub-err-sev-critical { border-left-color: var(--error); }
+.qhub-err-sev-warning { border-left-color: var(--warning, #f59e0b); }
+.qhub-err-sev-info { border-left-color: var(--accent); }
+
+.qhub-err-line {
+  display: flex;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.qhub-err-line + .qhub-err-line { border-top: 1px solid var(--border); }
+
+.qhub-err-ep {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ffmpeg messages carry long unbroken paths and flag strings — let them wrap
+   anywhere rather than widening the modal. */
+.qhub-err-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* ---- Mobile ---- */
+@media (max-width: 640px) {
+  .queue-modal.qhub {
+    max-width: 100%;
+    max-height: calc(100vh - 24px);
+  }
+
+  .qhub-header { padding: 12px 14px 10px; }
+
+  .qhub-bar {
+    padding: 0 8px 12px;
+    gap: 8px;
+  }
+
+  .qhub-bar .mf-segmented { width: 100%; }
+
+  .qhub-bar .mf-segmented-btn {
+    flex: 1;
+    padding: 7px 6px;
+    font-size: 0.74rem;
+  }
+
+  .qhub-bar-actions { width: 100%; }
+  .qhub-bar-actions .btn { flex: 1; }
+
+  /* The row is tight on a phone: the chevron alone carries the meaning, and
+     the red left edge already marks the row as failed. */
+  .qhub-err-panel { margin-left: 18px; }
+  .qhub-err-line { font-size: 0.74rem; }
+
+  .qhub-hero { padding: 12px 14px 0; }
+
+  .qhub-hero-card {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .qhub-hero-poster {
+    width: 46px;
+    height: 66px;
+  }
+
+  .qhub-hero-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .qhub-hero-side {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .mf-progress-label { font-size: 0.55rem; }
+
+  .queue-list.qhub-list { padding: 4px 14px 16px; }
+
+  .qhub-row-ep { display: none; }
+  .qhub-row-state,
+  .qhub-row-time { min-width: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qhub-hero-fill {
+    animation: none;
+    background-image: none;
+    transition: none;
+  }
+}

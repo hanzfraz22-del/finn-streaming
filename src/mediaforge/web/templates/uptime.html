@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}UpTime — MediaForge{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='uptime.css') }}">
+{% endblock %}
+
+{% block content %}
+{% include "_uptime_body.html" %}
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='uptime.js') }}"></script>
+{% endblock %}

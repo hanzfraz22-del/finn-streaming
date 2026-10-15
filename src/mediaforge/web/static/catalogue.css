@@ -1,0 +1,892 @@
+/* ── Catalogue ─────────────────────────────────────────────────────────────
+   The merged A-Z list of every source that publishes one, for bulk selection.
+
+   Own file per the project's per-page rule, and written against the shared
+   tokens in variables.css (--bg-card, --border, --accent, --text-secondary)
+   rather than inventing fallback hex values -- a page that hardcodes
+   #111/#333 looks right in exactly one theme and wrong in the others.
+
+   Layout conventions are taken from the other full pages (see uptime.css):
+   a .catalogue-page wrapper carrying the padding and max width, a
+   .page-header/.page-title/.page-subtitle head, and prefixed classes below. */
+
+.catalogue-page { padding: 26px 30px 56px; max-width: 1180px; margin: 0 auto; }
+
+.cat-header { margin-bottom: 20px; }
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+.cat-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.cat-search {
+  flex: 1 1 280px;
+  min-width: 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-size: 0.92rem;
+}
+.cat-search:focus { outline: none; border-color: var(--border-focus); }
+
+.cat-count {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.cat-tool-btn {
+  padding: 9px 15px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.84rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s;
+}
+.cat-tool-btn:hover { background: var(--accent-soft); border-color: var(--border-focus); }
+
+/* Source filter chips — the list itself is merged, these only narrow it. */
+.cat-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.cat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.83rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cat-chip.is-on { background: var(--accent-soft); border-color: var(--border-focus); }
+.cat-chip.is-off { opacity: .45; cursor: not-allowed; }
+.cat-chip-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+
+/* Second toolbar row: what narrows the list, as opposed to what acts on it. */
+.cat-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.cat-filters .cat-count { margin-left: auto; }
+
+/* A hairline between the source group and the status group. Cheaper than a
+   second label row and enough to say "these are two different questions". */
+.cat-chip-sep {
+  width: 1px;
+  align-self: stretch;
+  min-height: 22px;
+  background: var(--border);
+  flex: 0 0 auto;
+}
+
+/* Status chips are POSITIVE filters: unpressed means "no restriction", pressed
+   means "only these". They carry the badge colour of the rows they select, so
+   the link between the Queued chip and the blue Queued badge on a row needs no
+   explaining. Unpressed is a plain outline rather than a struck-through label
+   -- the earlier chips were inverted (on by default, click to hide) and read
+   as broken, because pressing "In library" showed everything you do NOT have. */
+.cat-chip--status { color: var(--text-secondary); }
+.cat-chip--library.is-on { background: var(--success-bg); color: var(--success); border-color: var(--success); }
+.cat-chip--queued.is-on  { background: var(--info-bg);    color: var(--info);    border-color: var(--info); }
+.cat-chip--sync.is-on    { background: var(--accent-soft); color: var(--text-link); border-color: var(--border-focus); }
+.cat-chip--only.is-on    { background: var(--accent-soft); color: var(--text-link); border-color: var(--border-focus); }
+
+/* The count is what turns "nothing happened" into "there are none of these".
+   Tabular figures so the chip does not jump about as the number changes while
+   you type in the filter box. */
+.cat-chip-count {
+  margin-left: 2px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  opacity: .85;
+}
+.cat-chip--status.is-on .cat-chip-count { background: rgba(0, 0, 0, 0.18); }
+[data-theme="light"] .cat-chip--status.is-on .cat-chip-count { background: rgba(255, 255, 255, 0.5); }
+
+/* Nothing in this category, so there is nothing to press. Saying that is the
+   whole point: a chip that silently does nothing is the bug being fixed. */
+.cat-chip--status.is-empty,
+.cat-chip--status:disabled {
+  opacity: .4;
+  cursor: default;
+}
+.cat-chip--status:disabled:hover { background: transparent; border-color: var(--border); }
+
+/* Reads as a control rather than a label, and stays the same width in both
+   directions so the toolbar does not shift when it is pressed. */
+.cat-sort-btn { min-width: 68px; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* ── Status strip ──────────────────────────────────────────────────────────
+   Freshness and background progress. Sits between the filters and the list
+   because that is what it is about; hidden entirely when there is nothing to
+   say, so the common case costs no vertical space at all. */
+.cat-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.cat-status[hidden] { display: none; }
+.cat-status.is-busy { border-color: var(--border-focus); }
+.cat-status.is-failed { border-color: var(--warning); color: var(--warning); }
+
+.cat-status-text { flex: 1 1 auto; min-width: 0; }
+
+.cat-status-spin {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: cat-spin .8s linear infinite;
+}
+.cat-status-spin[hidden] { display: none; }
+
+@keyframes cat-spin { to { transform: rotate(360deg); } }
+
+/* Only the id backfill gets a bar: it is the only one of these jobs that has
+   a real denominator. A refetch is one HTTP request -- a bar for it would be
+   a lie that fills at a made-up rate. */
+.cat-status-bar {
+  flex: 1 1 140px;
+  min-width: 100px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.cat-status-bar[hidden] { display: none; }
+.cat-status-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width .4s ease;
+}
+
+/* ── The list ────────────────────────────────────────────────────────────── */
+/* Virtualised: .cat-viewport scrolls, .cat-spacer carries the full height of
+   every row and only the visible slice exists in the DOM. Without it the
+   merged ~13k-row list freezes the browser on every keystroke. */
+/* Viewport and rail side by side. `position: relative` is what the drag
+   bubble positions itself against. */
+.cat-list-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.cat-viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 60vh;
+  min-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-card);
+}
+
+/* ── A-Z rail ──────────────────────────────────────────────────────────────
+   An index for a list that is thirteen thousand rows long, where the scrollbar
+   thumb is three pixels tall and a flick moves you past four letters.
+   `touch-action: none` is not optional: without it the browser claims the drag
+   as a page scroll and the rail works for exactly one tap. */
+.cat-rail {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  width: 22px;
+  padding: 6px 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  user-select: none;
+  touch-action: none;
+  cursor: pointer;
+}
+.cat-rail[hidden] { display: none; }
+
+.cat-rail-letter {
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-secondary);
+  pointer-events: none;      /* the rail itself resolves the position */
+}
+/* A letter no entry starts with is kept in place rather than dropped: the rail
+   only works as a mental map if A is always at the top and Z always at the
+   bottom, whatever the filter is doing. */
+.cat-rail-letter.is-empty { opacity: .3; }
+.cat-rail-letter.is-active {
+  color: var(--text-link);
+  transform: scale(1.35);
+}
+
+.cat-rail-bubble {
+  position: absolute;
+  right: 34px;
+  transform: translateY(-50%);
+  z-index: 6;
+  min-width: 40px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 1rem;
+  text-align: center;
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+}
+.cat-rail-bubble[hidden] { display: none; }
+
+.cat-spacer { position: relative; width: 100%; }
+.cat-rows { position: absolute; top: 0; left: 0; right: 0; }
+
+.cat-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 46px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+.cat-row:last-child { border-bottom: none; }
+/* --bg-hover, not a white wash: a white overlay is invisible on a light theme
+   and on every light theme pack, so hover feedback disappeared entirely
+   there -- which is exactly what the header of this file warns about. */
+.cat-row:hover { background: var(--bg-hover); }
+.cat-row.is-selected { background: var(--accent-soft); }
+
+/* Title and meta share one box so a phone can stack them by flipping a single
+   flex-direction, instead of the grid-area overlap the first version used.
+   The title takes the space, everything else keeps its natural width -- letting
+   the title stretch to the full row is what marooned the Details button on the
+   far right. */
+.cat-row-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.cat-row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.92rem;
+}
+
+.cat-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.cat-src {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.cat-src-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+
+/* ── Source pills on a merged row ──────────────────────────────────────────
+   A title both sites carry is ONE row (folded on an identical TMDB id, never
+   on the title -- see combineByTmdbId). Which site it downloads from is a real
+   choice, and this is where it is made: the pills are buttons, and the active
+   one is filled. A row with a single source keeps the plain .cat-src label,
+   because offering a choice of one is worse than offering none. */
+.cat-src--multi { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
+.cat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  line-height: 1.6;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.cat-pill:hover { border-color: var(--border-focus); color: var(--text-primary); }
+.cat-pill.is-active {
+  background: var(--accent-soft);
+  border-color: var(--border-focus);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+/* The inactive one is legible rather than faded away: it is the other option,
+   not disabled state. */
+.cat-pill:not(.is-active) { opacity: .75; }
+
+.cat-badges { display: flex; gap: 6px; flex: 0 0 auto; }
+.cat-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: .03em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.cat-badge--library { background: var(--success-bg); color: var(--success); }
+.cat-badge--queued  { background: var(--info-bg);    color: var(--info); }
+.cat-badge--sync    { background: var(--accent-soft); color: var(--text-link); }
+
+.cat-details-btn {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+.cat-details-btn:hover { color: var(--text-primary); border-color: var(--border-focus); }
+
+.cat-empty { padding: 30px 16px; text-align: center; color: var(--text-secondary); }
+
+/* ── Action bar ──────────────────────────────────────────────────────────── */
+.cat-actions {
+  margin-top: 14px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.cat-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+/* The option controls travel together so a phone can collapse them as a unit. */
+.cat-options { display: contents; }
+
+/* Desktop has the room; the toggle only exists for phones. */
+.cat-options-toggle { display: none; }
+.cat-options-short { display: none; }
+
+.cat-field { display: flex; flex-direction: column; gap: 6px; min-width: 170px; }
+.cat-field label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: .02em;
+}
+.cat-field select {
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-size: 0.88rem;
+}
+.cat-field select:focus { outline: none; border-color: var(--border-focus); }
+
+.cat-selcount { font-weight: 700; font-size: 1.02rem; margin-right: 4px; }
+.cat-selcount small { font-weight: 400; color: var(--text-secondary); }
+
+.cat-warn {
+  flex-basis: 100%;
+  order: 20;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 0.83rem;
+}
+
+/* ── Job progress ────────────────────────────────────────────────────────── */
+.cat-job {
+  margin-top: 14px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+.cat-job-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; }
+.cat-job-bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; margin-top: 10px; }
+.cat-job-fill { height: 100%; background: var(--accent); transition: width .3s ease; }
+.cat-job-stats {
+  display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px;
+  font-size: 0.83rem; color: var(--text-secondary);
+}
+
+/* ── Details modal ─────────────────────────────────────────────────────────
+   Built after the download modal (see modals.css): a picture behind the header
+   that the title sits ON, rather than a grey dialog with a thumbnail in it. */
+
+/* Without this the 13k-row list keeps scrolling under the open dialog. The
+   overlay's own overscroll-behavior stops the chain once it hits its end;
+   this stops the document behind it moving at all. */
+body.cat-modal-open { overflow: hidden; }
+.cat-modal-overlay { overscroll-behavior: contain; }
+
+/* ── The dialog ────────────────────────────────────────────────────────────
+   Almost nothing, on purpose. The card is a real `.modal` and the picture a
+   real `.modal-backdrop` (modals.css, loaded globally from base.html), so the
+   shell, the header layout, the poster, the scrim, the close button and every
+   `.has-backdrop` rule come from the download modal itself.
+
+   What used to be here instead was a private copy of all of that -- its own
+   backdrop element, its own scrim on the card, its own gradient stops, its own
+   poster sizing and a blurred-poster fallback the download modal does not
+   have. That copy is why this dialog kept looking like a different app: every
+   value in it was a decision the original had already made differently.
+
+   Only three things are genuinely this dialog's own and stay: it is taller
+   (an episode list, not a season picker), its body scrolls, and it has a
+   footer.
+
+   Anchored to the TOP, not vertically centred -- which is also what the
+   download modal's overlay does (`place-items: start center`). Centring a
+   dialog whose height changes means every change moves both edges: collapsing
+   a season took ~200px out of the middle, so the card jumped up by ~100px and
+   the whole thing appeared to flicker. Pinned at the top it grows and shrinks
+   downwards and nothing the user is looking at moves. */
+.cat-modal-overlay {
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.cat-modal-card {
+  max-width: 780px;
+  max-height: 88vh;
+  margin: 4vh auto;
+  display: flex;
+  flex-direction: column;
+  /* The backdrop is absolutely positioned against this and reaches the top
+     corners, so it has to be clipped by them. */
+  overflow: hidden;
+}
+
+/* .modal has 24px all round; the footer wants to sit flush against the bottom
+   edge, so the padding moves onto the parts. */
+.cat-modal-card { padding: 24px 24px 0; }
+
+.cat-modal-header { flex: 0 0 auto; }
+
+/* The one thing the download modal's header does not have to do: leave room
+   for a list underneath it. */
+.cat-modal-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0 -24px;
+  padding: 0 24px;
+}
+
+.cat-modal-scroll { overflow-y: auto; overscroll-behavior: contain; }
+
+/* ── Skeleton placeholders ─────────────────────────────────────────────────
+   Reuses appearance.css's `skeleton-shimmer` keyframes and the same gradient
+   the rest of the app shimmers with, so the loading state of this dialog is
+   the loading state of every other one. The JS only emits these elements when
+   body.skeleton-loader is on (it is an appearance setting), which is why the
+   rules here do not need to check for it themselves. */
+.cat-sk {
+  background: linear-gradient(90deg,
+    var(--bg-elevated) 25%, var(--bg-hover) 50%, var(--bg-elevated) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s infinite linear;
+  border-radius: 6px;
+  display: block;
+}
+
+.cat-sk-line { height: 13px; margin-bottom: 9px; }
+.cat-sk-line:last-child { margin-bottom: 0; }
+.cat-sk-chip { width: 74px; height: 22px; border-radius: 999px; }
+.cat-sk-head { width: 168px; height: 15px; margin: 14px 0 10px; }
+.cat-sk-num { width: 32px; height: 12px; flex: 0 0 32px; }
+
+/* Shimmer is the one thing on this page that never stops moving. */
+@media (prefers-reduced-motion: reduce) {
+  .cat-sk { animation: none; background: var(--bg-hover); }
+}
+
+.cat-modal-footer {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  flex: 0 0 auto;
+  /* Out to the card's edges and back in, so the rule above it spans the whole
+     dialog rather than floating between two 24px gutters. */
+  margin: 0 -24px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+/* Pushes the two buttons to opposite ends and carries the running total in
+   between -- the action bar that normally shows it is behind the modal. */
+.cat-modal-selinfo {
+  flex: 1 1 auto;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+
+/* Marked: the button stops being the call to action and becomes a state you
+   can undo, so it drops the filled style and says so with a check. */
+.cat-modal-toggle--on {
+  background: var(--success-bg);
+  color: var(--success);
+  border: 1px solid var(--success);
+}
+.cat-modal-toggle--on:hover { filter: brightness(1.08); }
+
+/* The metadata block is .modal-meta / .genres / .desc from modals.css now --
+   the same elements, in the same header, as the download modal. The private
+   .cat-modal-body/-info/-genres copies of them are gone. */
+.cat-eplist { margin-top: 16px; max-height: 38vh; overflow-y: auto; }
+
+/* No summary line and no "you have none of this": the download modal says
+   nothing about missing episodes either, and the absence of a check already
+   says it. The two green checks below are the download modal's own
+   .ep-downloaded / .season-downloaded from cards.css, reused rather than
+   reinvented so the two views cannot drift apart. */
+/* A real button now: each season loads its own episodes when opened, because
+   asking every season at once meant a live scrape per season fired in
+   parallel at a site behind DDoS-Guard. Same trade the download modal's
+   accordion makes. */
+.cat-season-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  font-weight: 700; font-size: 0.85rem; margin: 14px 0 6px;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  padding: 6px 4px;
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  /* 44px on touch: a season header is the one thing in this dialog people
+     press repeatedly. */
+  min-height: 34px;
+}
+.cat-season-head:hover { background: var(--bg-hover); }
+.cat-season-head::after {
+  content: "\25B8";
+  color: var(--text-muted);
+  transition: transform .15s ease;
+}
+.cat-season-head[aria-expanded="true"]::after { transform: rotate(90deg); }
+@media (pointer: coarse) {
+  .cat-season-head { min-height: 44px; }
+}
+.cat-ep {
+  display: flex; gap: 10px; padding: 6px 0; font-size: 0.85rem;
+  color: var(--text-secondary); border-bottom: 1px solid var(--border);
+  align-items: center;
+}
+.cat-ep-num { flex: 0 0 54px; color: var(--text-muted); }
+
+/* ── Beta marker ─────────────────────────────────────────────────────────
+   The page works, but it is young and it acts on a lot of data at once --
+   saying so is cheaper than a surprised user. */
+.cat-beta {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 10px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-focus);
+  background: var(--accent-soft);
+  color: var(--text-link);
+  font-size: 0.6em;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  cursor: default;
+}
+
+.cat-beta-pill { margin-left: 8px; }
+
+/* ── Mobile ──────────────────────────────────────────────────────────────
+   A phone is where marking fifty series actually happens, so this is a
+   rebuild of the row rather than a shrink of it: the desktop row puts five
+   things on one line, which at 380px leaves the title about eleven
+   characters. Two lines instead — title on top, source and badges under it —
+   and everything you tap gets a real target. */
+@media (max-width: 860px) {
+  .catalogue-page { padding: 16px 12px 24px; }
+
+  .cat-header { margin-bottom: 14px; }
+  .page-title { font-size: 1.5rem; }
+
+  .cat-toolbar { gap: 8px; }
+  .cat-search { flex-basis: 100%; font-size: 16px; /* stops iOS zooming on focus */ }
+  .cat-chips { flex: 1 1 100%; }
+  .cat-chip { flex: 1 1 auto; justify-content: center; padding: 9px 12px; }
+  /* A 1px vertical line between two stacked rows of chips says nothing. */
+  .cat-chip-sep { display: none; }
+  .cat-filters { gap: 8px; margin-bottom: 10px; }
+  .cat-filters .cat-count { margin-left: 0; width: 100%; }
+  .cat-count { width: 100%; }
+  .cat-tool-btn { flex: 1 1 auto; padding: 10px 12px; }
+  .cat-sort-btn { flex: 0 0 auto; }
+
+  .cat-viewport { height: 52vh; border-radius: 12px; }
+
+  /* The strip wraps rather than squeezing the message into three words. */
+  .cat-status { padding: 8px 10px; font-size: 0.76rem; }
+  .cat-status-text { flex: 1 1 100%; }
+
+  /* Wider rail and bigger letters: this is the one control on the page that is
+     driven by a fingertip rather than a cursor. */
+  .cat-list-wrap { gap: 4px; }
+  .cat-rail { width: 26px; }
+  .cat-rail-letter { font-size: 0.66rem; }
+  .cat-rail-bubble { right: 38px; min-width: 48px; font-size: 1.15rem; padding: 8px 12px; }
+
+  /* Plain flex, stacked: title on top, source and badges under it. The first
+     version stacked them by putting three elements in one grid area and
+     pushing two of them down with padding-top: 30px — which broke the moment a
+     title wrapped to its second line and the meta row landed on top of it. */
+  .cat-row {
+    height: auto;
+    min-height: 64px;
+    align-items: center;
+    padding: 9px 12px;
+    gap: 10px;
+  }
+  .cat-row > .chb-main { flex: 0 0 auto; width: 22px; height: 22px; }
+  .cat-row-main {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+  }
+  .cat-row-title {
+    width: 100%;
+    white-space: normal;
+    /* Two lines max — a 90-character anime title must not make one row as
+       tall as the viewport. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    line-height: 1.25;
+  }
+  .cat-row-meta { width: 100%; flex-wrap: wrap; gap: 6px; }
+  /* A pill is pressed with a fingertip here, so it gets a real target. */
+  .cat-pill { min-height: 30px; padding: 4px 10px; }
+  .cat-badges { margin-left: auto; }
+  /* 44px is the smallest target Apple and Google both still call reliable. */
+  .cat-details-btn { flex: 0 0 auto; padding: 11px 14px; min-height: 44px; }
+
+  /* ── The action bar, rebuilt ────────────────────────────────────────────
+     It used to be a permanent card holding a count, three option controls and
+     two full-width buttons — roughly a third of a phone screen, on the one
+     page where the list IS the content, and it was there even with nothing
+     selected and therefore nothing it could do.
+
+     Two changes. It is GONE until something is marked, and marked it is one
+     line: the count, the primary action, and a toggle. Language, hoster, the
+     missing-episodes switch, Auto-Sync and the warning all live behind that
+     toggle, whose label states the current option values so collapsing them
+     hides nothing. */
+  .cat-actions {
+    margin-top: 10px;
+    padding: 8px 10px;
+    /* The bar you came to press stops scrolling away. */
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    box-shadow: var(--shadow-lg);
+    /* Clears the home indicator on a notched phone. */
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+  /* Nothing marked, nothing to do, no bar. This is the whole point. */
+  .cat-actions.is-empty { display: none; }
+
+  .cat-actions-row {
+    gap: 8px;
+    align-items: center;
+    flex-wrap: nowrap;
+  }
+
+  .cat-options {
+    display: none;
+    order: 10;
+    flex: 1 1 100%;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .cat-options.is-open { display: flex; }
+  .cat-field { flex: 1 1 100%; min-width: 0; }
+  .cat-field select { font-size: 16px; }
+
+  /* Collapsed the toggle is a 44px square that says "…"; the option summary
+     it carries is only readable once there is a line to put it on, so it is
+     revealed with the sheet rather than squeezed into the bar. */
+  .cat-options-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    order: 5;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 10px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    text-align: left;
+    cursor: pointer;
+  }
+  .cat-options-toggle:active { background: var(--accent-soft); }
+  .cat-options-toggle #catOptionsSummary { display: none; }
+  .cat-options-short { display: inline; font-weight: 600; }
+  .cat-options-caret { transition: transform .15s ease; }
+  .cat-options-toggle[aria-expanded="true"] .cat-options-caret { transform: rotate(180deg); }
+
+  /* Open: the toggle grows into a full-width line that shows what is set. */
+  .cat-actions.is-open .cat-actions-row { flex-wrap: wrap; }
+  .cat-actions.is-open .cat-options-toggle {
+    flex: 1 1 100%;
+    order: 10;
+    justify-content: space-between;
+    margin-top: 8px;
+  }
+  .cat-actions.is-open .cat-options-toggle #catOptionsSummary { display: inline; }
+  .cat-actions.is-open .cat-options-short { display: none; }
+  .cat-actions.is-open .cat-options { order: 11; }
+
+  .cat-selcount {
+    flex: 0 0 auto;
+    font-size: 0.95rem;
+    white-space: nowrap;
+  }
+  .cat-actions-row .settings-checkbox-row { flex: 1 1 100%; }
+
+  /* Collapsed: "Add to queue" takes the room that is left, Auto-Sync and the
+     warning are behind the toggle. Auto-Sync is the rarer of the two and the
+     one that keeps downloading forever, so it is the one that earns a tap. */
+  .cat-actions-row .btn {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 44px;
+    padding: 11px 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #catSyncBtn { display: none; }
+  .cat-warn { display: none; }
+  .cat-actions.is-open #catSyncBtn {
+    display: block;
+    order: 12;
+    flex: 1 1 100%;
+    min-height: 44px;
+    margin-top: 8px;
+  }
+  .cat-actions.is-open .cat-warn { display: block; order: 13; }
+
+  .cat-job { margin-top: 12px; padding: 14px; }
+
+  /* A picture plus a cover plus the title is most of a phone screen before
+     anything useful starts -- so the cover shrinks, exactly as modals.css
+     shrinks the download modal's fallback band at the same breakpoint. */
+  .cat-eplist { max-height: 46vh; }
+
+  /* Stacked top to bottom: the running total, then the mark button (what
+     people came for), then Close. Explicit orders rather than column-reverse,
+     which puts them in the opposite sequence to the one you would guess. */
+  .cat-modal-footer { flex-direction: column; align-items: stretch; gap: 8px; }
+  .cat-modal-footer .btn,
+  .cat-modal-footer .cat-tool-btn { width: 100%; min-height: 44px; }
+  .cat-modal-selinfo { order: 1; text-align: center; }
+  .cat-modal-footer #catModalToggle { order: 2; }
+  .cat-modal-footer .cat-tool-btn { order: 3; }
+
+  /* modals.css already shrinks the picture's fallback band at this width and
+     already stacks the download modal's header; the variable and the header
+     rules are shared, so there is nothing left to repeat here. */
+}
+
+/* Very narrow phones: one control per line is the honest answer below this. */
+@media (max-width: 420px) {
+  .cat-actions-row .btn,
+  .cat-actions-row .cat-tool-btn { flex-basis: 100%; }
+  /* Only the WORD goes; the coloured dot stays, because it is the whole
+     reason a merged list is readable at all and it costs seven pixels.
+     On a pill the label has to stay -- a bare dot is not something you can
+     tell is pressable, and it is a choice, not decoration. */
+  .cat-src:not(.cat-src--multi) .cat-src-label { display: none; }
+  .cat-pill { padding: 3px 7px; font-size: 0.66rem; }
+  .cat-rail { width: 24px; }
+  .cat-rail-letter { font-size: 0.6rem; }
+}
+
+/* Coarse pointers get a rail they can actually hit, regardless of width. */
+@media (pointer: coarse) {
+  .cat-rail { width: 28px; }
+}
+
+/* The active letter scales up; honour a user who asked for less of that. */
+@media (prefers-reduced-motion: reduce) {
+  .cat-rail-letter.is-active { transform: none; text-decoration: underline; }
+  .cat-job-fill, .cat-status-fill { transition: none; }
+  .cat-status-spin { animation: none; border-top-color: var(--accent); }
+}
