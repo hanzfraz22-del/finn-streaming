@@ -6,17 +6,30 @@ import concurrent.futures
 import json
 from flask import Flask, request, jsonify, render_template
 
-# Fallback für lokales Ausführen
-if os.path.exists(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))):
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+# Stelle sicher, dass das src/ Verzeichnis immer im Suchpfad ist
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+POSSIBLE_SRCS = [
+    os.path.abspath(os.path.join(BASE_DIR, '..', 'src')),
+    os.path.abspath(os.path.join(os.getcwd(), 'src')),
+    os.path.abspath(os.path.join(BASE_DIR, 'src')),
+]
+for p in POSSIBLE_SRCS:
+    if os.path.exists(p) and p not in sys.path:
+        sys.path.insert(0, p)
 
 try:
     from mediaforge.providers import resolve_provider
     from mediaforge.search import megakino_search, query_s_to
     from mediaforge.search import query as aniworld_search
-except ImportError:
-    print("Fehler: MediaForge-Module nicht gefunden. Bitte 'pip install mediaforge' ausführen.")
-    sys.exit(1)
+except ImportError as e:
+    print(f"[*] Hinweis: Direkter Import wird versucht ({e})...")
+    try:
+        import mediaforge
+        from mediaforge.providers import resolve_provider
+        from mediaforge.search import megakino_search, query_s_to
+        from mediaforge.search import query as aniworld_search
+    except Exception as e2:
+        print(f"[!] Warnung: Scraper-Module nicht geladen: {e2}")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, template_folder=BASE_DIR)
