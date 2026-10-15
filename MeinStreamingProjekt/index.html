@@ -3526,6 +3526,53 @@
             letter-spacing: 0.3px;
         }
 
+        /* --- 8. TASTATURKUERZEL MODAL STYLES --- */
+        .shortcuts-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        @media (max-width: 600px) {
+            .shortcuts-grid { grid-template-columns: 1fr; }
+        }
+        .shortcut-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 9px 12px;
+            gap: 12px;
+            transition: background 0.2s ease, border-color 0.2s ease;
+        }
+        .shortcut-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+        .shortcut-desc {
+            font-size: 0.84rem;
+            color: #ddd;
+            flex: 1;
+        }
+        .shortcut-keys {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+        .shortcut-keys kbd {
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            box-shadow: 0 2px 0 rgba(0, 0, 0, 0.45);
+            border-radius: 5px;
+            padding: 2px 8px;
+            font-family: inherit;
+            font-size: 0.76rem;
+            font-weight: 700;
+            color: #fff;
+            white-space: nowrap;
+        }
+
         /* ==========================================================================
            HANDY, IPAD & TABLET OPTIMIERUNG (TOUCH, RESPONSIVE, SAFE AREAS)
            ========================================================================== */
@@ -3666,7 +3713,7 @@
         /* --- SMARTPHONE & KLEINES TABLET (BIS 768px) --- */
         @media (max-width: 768px) {
             /* Veredelte Bottom Sheet Modals fuer alle Dialoge auf dem Smartphone */
-            #party-modal, #vote-modal, #stats-modal, #roulette-modal, #ios-pwa-modal {
+            #party-modal, #vote-modal, #stats-modal, #roulette-modal, #ios-pwa-modal, #shortcuts-modal {
                 align-items: flex-end !important;
                 padding: 0 !important;
             }
@@ -3674,7 +3721,8 @@
             #vote-modal .modal-content,
             #stats-modal .modal-content,
             #roulette-modal .modal-content,
-            #ios-pwa-modal .modal-content {
+            #ios-pwa-modal .modal-content,
+            #shortcuts-modal .modal-content {
                 width: 100vw !important;
                 max-width: 100vw !important;
                 border-radius: 24px 24px 0 0 !important;
@@ -3690,7 +3738,8 @@
             #party-modal .modal-content:before,
             #vote-modal .modal-content:before,
             #stats-modal .modal-content:before,
-            #roulette-modal .modal-content:before {
+            #roulette-modal .modal-content:before,
+            #shortcuts-modal .modal-content:before {
                 content: "";
                 display: block;
                 width: 44px;
@@ -4395,7 +4444,9 @@
 
             <div style="text-align: left; margin-bottom: 25px; background: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
                 <label style="display: block; font-size: 0.85rem; color: #bbb; margin-bottom: 6px; font-weight: 600;">4. OPTIONAL: PIN & FILTER</label>
-                <input type="password" id="onboarding-pin" class="form-input" placeholder="4-stelliger PIN (optional)" maxlength="4" pattern="\d*" style="margin-bottom: 12px; font-size: 0.95rem; padding: 10px 14px;">
+                <form action="#" onsubmit="event.preventDefault();" style="margin: 0; padding: 0;">
+                    <input type="password" id="onboarding-pin" name="onboarding-pin" class="form-input" placeholder="4-stelliger PIN (optional)" maxlength="4" pattern="\d*" autocomplete="new-password" style="margin-bottom: 12px; font-size: 0.95rem; padding: 10px 14px;">
+                </form>
                 <label class="checkbox-container" style="justify-content: flex-start; margin-bottom: 0; font-size: 0.95rem;">
                     <input type="checkbox" id="onboarding-kids"> Kids-Profil (filtert Horror & Action)
                 </label>
@@ -4420,7 +4471,9 @@
             <input type="text" id="edit-avatar-url" class="form-input" placeholder="Oder eigene Bild-URL einfügen (http://...)" style="font-size: 0.9rem; padding: 10px;" oninput="setCustomAvatar(this.value)">
             
             <input type="text" id="edit-name" class="form-input" placeholder="Profilname">
-            <input type="password" id="edit-pin" class="form-input" placeholder="4-stelliger PIN-Code (Leer = Kein PIN)" maxlength="4" pattern="\d*">
+            <form action="#" onsubmit="event.preventDefault();" style="margin: 0; padding: 0;">
+                <input type="password" id="edit-pin" name="edit-pin" class="form-input" placeholder="4-stelliger PIN-Code (Leer = Kein PIN)" maxlength="4" pattern="\d*" autocomplete="new-password">
+            </form>
             
             <label class="checkbox-container">
                 <input type="checkbox" id="edit-kids"> Kids-Profil (Blockiert Horror & Action)
@@ -4439,7 +4492,9 @@
         <div class="modal-content" style="max-width: 400px;">
             <h2 style="margin-bottom: 10px;">PIN eingeben</h2>
             <h3 id="pin-profile-name" style="color: #aaa; margin-bottom: 30px;"></h3>
-            <input type="password" id="pin-input" class="form-input" maxlength="4" style="font-size: 2rem; text-align: center; letter-spacing: 15px; margin-bottom: 30px;" oninput="checkPin(event)">
+            <form action="#" onsubmit="event.preventDefault();" style="margin: 0; padding: 0;">
+                <input type="password" id="pin-input" name="pin-input" class="form-input" maxlength="4" autocomplete="current-password" style="font-size: 2rem; text-align: center; letter-spacing: 15px; margin-bottom: 30px;" oninput="checkPin(event)">
+            </form>
             <button class="btn btn-secondary" style="width: 100%;" onclick="closePinModal()">Zurück</button>
         </div>
     </div>
@@ -5260,6 +5315,63 @@
             </button>
         </div>
     </div>
+
+    <!-- TASTATURKUERZEL MODAL -->
+    <div id="shortcuts-modal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeShortcutsModal()">
+        <div class="modal-content" style="max-width: 580px; text-align: left; position: relative;">
+            <button class="close-details" onclick="closeShortcutsModal()" style="position: absolute; top: 16px; right: 18px; font-size: 1.8rem; background: transparent; border: none; color: #fff; cursor: pointer;">&times;</button>
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="var(--primary)"><path d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/></svg>
+                <h2 style="font-size: 1.45rem; font-weight: 800; color: #fff; margin: 0;">Tastaturkuerzel</h2>
+            </div>
+            <p style="color: #aaa; font-size: 0.88rem; margin-bottom: 20px;">
+                Steuere den Player und die Navigation blitzschnell mit deiner Tastatur:
+            </p>
+
+            <div class="shortcuts-grid">
+                <div class="shortcut-item">
+                    <span class="shortcut-desc">Wiedergabe pausieren / fortsetzen</span>
+                    <span class="shortcut-keys"><kbd>LEERTASTE</kbd></span>
+                </div>
+                <div class="shortcut-item">
+                    <span class="shortcut-desc">Vollbildmodus ein- / ausschalten</span>
+                    <span class="shortcut-keys"><kbd>F</kbd></span>
+                </div>
+                <div class="shortcut-item">
+                    <span class="shortcut-desc">Ton stummschalten / aktivieren</span>
+                    <span class="shortcut-keys"><kbd>M</kbd></span>
+                </div>
+                <div class="shortcut-item">
+                    <span class="shortcut-desc">Audio 200% Dialog-Booster</span>
+                    <span class="shortcut-keys"><kbd>B</kbd></span>
+                </div>
+                <div class="shortcut-item">
+                    <span class="shortcut-desc">10 Sekunden vor- / zurueckspulen</span>
+                    <span class="shortcut-keys"><kbd>&larr;</kbd> <kbd>&rarr;</kbd></span>
+                </div>
+                <div class="shortcut-item">
+                    <span class="shortcut-desc">Lautstaerke lauter / leiser</span>
+                    <span class="shortcut-keys"><kbd>&uarr;</kbd> <kbd>&darr;</kbd></span>
+                </div>
+                <div class="shortcut-item">
+                    <span class="shortcut-desc">Sofortsuche direkt oeffnen</span>
+                    <span class="shortcut-keys"><kbd>S</kbd> / <kbd>/</kbd></span>
+                </div>
+                <div class="shortcut-item">
+                    <span class="shortcut-desc">Player oder Dialog schliessen</span>
+                    <span class="shortcut-keys"><kbd>ESC</kbd></span>
+                </div>
+                <div class="shortcut-item">
+                    <span class="shortcut-desc">Diese Tastaturkuerzel-Hilfe</span>
+                    <span class="shortcut-keys"><kbd>?</kbd></span>
+                </div>
+            </div>
+
+            <button class="btn btn-secondary" style="width: 100%; margin-top: 20px;" onclick="closeShortcutsModal()">
+                Verstanden
+            </button>
+        </div>
+    </div>
     
     <div id="trailer-modal" onclick="closeTrailer(event)">
         <button class="close-details" onclick="closeTrailer(event)" style="top:30px; right:30px; position:absolute;">&times;</button>
@@ -5473,6 +5585,7 @@
             <div id="player-toast" class="player-toast"></div>
             <div class="player-overlay-controls" id="player-overlay-controls">
                 <button class="player-btn" id="speed-btn" onclick="togglePlaybackSpeed()" title="Geschwindigkeit">1.0x</button>
+                <button class="player-btn" id="boost-btn" onclick="toggleAudioBoost()" title="Audio-Verstärker (200%)">Audio 200%</button>
                 <button class="player-btn" id="pip-btn" onclick="togglePiP()" title="Bild-in-Bild">Bild-in-Bild</button>
                 <button class="player-btn" id="server-btn" onclick="toggleServerSource()" title="Server wechseln">Server: HD</button>
                 <button class="player-btn" id="sleep-btn" onclick="toggleSleepTimerMenu()" title="Schlaf-Timer">Schlaf: Aus</button>
@@ -5495,6 +5608,7 @@
                     <span class="party-pulse-dot"></span>
                     <span id="party-badge-text">FINN-742</span>
                 </div>
+                <button class="player-btn" id="shortcuts-btn" onclick="toggleShortcutsModal()" title="Tastaturkürzel (?)">?</button>
                 <button class="player-btn" id="next-ep-btn" onclick="playNextEpisode()" style="display:none; color: var(--primary);">Nächste Folge &gt;</button>
             </div>
         </div>
@@ -7202,6 +7316,7 @@
         }
 
         async function openDetails(movie) {
+            triggerHaptic(10);
             pauseHeroTrailer();
             currentMovieData = movie;
             const title = movie.title || movie.name;
@@ -8641,6 +8756,7 @@
         }
 
         function quickPlayMovie(movie) {
+            triggerHaptic(15);
             if (!movie) return;
             currentMovieData = movie;
             const detailsModal = document.getElementById('details-modal');
@@ -8656,6 +8772,7 @@
         let sleepTimerMode = null;
 
         function toggleSleepTimerMenu() {
+            triggerHaptic(8);
             const popup = document.getElementById('sleep-menu-popup');
             if (!popup) return;
             popup.style.display = (popup.style.display === 'flex') ? 'none' : 'flex';
@@ -9075,19 +9192,48 @@
             if (modal) modal.style.display = 'none';
         }
 
+        function triggerHaptic(duration = 15) {
+            if (typeof navigator !== 'undefined' && navigator.vibrate) {
+                try { navigator.vibrate(duration); } catch (_) {}
+            }
+        }
+
+        function openShortcutsModal() {
+            triggerHaptic(10);
+            const modal = document.getElementById('shortcuts-modal');
+            if (modal) modal.style.display = 'flex';
+        }
+
+        function closeShortcutsModal() {
+            triggerHaptic(8);
+            const modal = document.getElementById('shortcuts-modal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        function toggleShortcutsModal() {
+            const modal = document.getElementById('shortcuts-modal');
+            if (modal) {
+                const isOpen = modal.style.display === 'flex';
+                triggerHaptic(10);
+                modal.style.display = isOpen ? 'none' : 'flex';
+            }
+        }
+
         let audioCtx = null;
         let gainNode = null;
+        let audioSourceNode = null;
         let isAudioBoosted = false;
 
         function toggleAudioBoost() {
+            triggerHaptic(12);
             const video = document.querySelector('#main-player video') || document.querySelector('video');
             if (!video) return;
             try {
                 if (!audioCtx) {
                     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                    const source = audioCtx.createMediaElementSource(video);
+                    audioSourceNode = audioCtx.createMediaElementSource(video);
                     gainNode = audioCtx.createGain();
-                    source.connect(gainNode);
+                    audioSourceNode.connect(gainNode);
                     gainNode.connect(audioCtx.destination);
                 }
                 if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -9102,6 +9248,7 @@
                 showPlayerToast(isAudioBoosted ? 'Audio Boost: 200%' : 'Audio: Normal');
             } catch (e) {
                 console.warn('Audio boost error:', e);
+                showPlayerToast('Audio Boost nicht verfuegbar');
             }
         }
 
@@ -9568,7 +9715,18 @@
                 e.preventDefault();
                 vjsPlayer.muted(!vjsPlayer.muted());
                 showPlayerToast(vjsPlayer.muted() ? 'Stumm' : 'Ton an');
+            } else if (e.code === 'KeyB') {
+                e.preventDefault();
+                toggleAudioBoost();
+            } else if (e.key === '?' || e.key === 'h' || e.key === 'H') {
+                e.preventDefault();
+                toggleShortcutsModal();
             } else if (e.code === 'Escape') {
+                const shortcutsModal = document.getElementById('shortcuts-modal');
+                if (shortcutsModal && shortcutsModal.style.display === 'flex') {
+                    closeShortcutsModal();
+                    return;
+                }
                 const xray = document.getElementById('player-xray-overlay');
                 if (xray && (xray.classList.contains('active') || xray.style.display === 'flex')) {
                     dismissXRayPauseScreen();
@@ -10220,11 +10378,24 @@
             const mount = document.getElementById('player-video-mount');
             if (mount) mount.innerHTML = '';
 
+            if (audioCtx) {
+                try { audioCtx.close(); } catch(e) {}
+                audioCtx = null;
+                gainNode = null;
+                audioSourceNode = null;
+            }
+            isAudioBoosted = false;
+            const boostBtn = document.getElementById('boost-btn');
+            if (boostBtn) {
+                boostBtn.style.color = '#fff';
+                boostBtn.innerText = 'Audio 200%';
+            }
+
             resumeHeroTrailer();
             initApp();
         }
 
-        // Global Shortcut: 'S' oder '/' für Sofortsuche, 'Escape' für Zurück/Schließen
+        // Global Shortcut: 'S' oder '/' für Sofortsuche, '?' oder 'H' für Tastaturkürzel, 'Escape' für Zurück/Schließen
         document.addEventListener('keydown', (e) => {
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') {
                 if (e.key === 'Escape') {
@@ -10233,12 +10404,22 @@
                 }
                 return;
             }
+            const shortcutsModal = document.getElementById('shortcuts-modal');
             const detailsModal = document.getElementById('details-modal');
             if (e.key === 'Escape') {
+                if (shortcutsModal && shortcutsModal.style.display === 'flex') {
+                    closeShortcutsModal();
+                    return;
+                }
                 if (detailsModal && detailsModal.style.display === 'flex') {
                     detailsModal.style.display = 'none';
                     return;
                 }
+            }
+            if ((e.key === '?' || e.key === 'h' || e.key === 'H') && (!detailsModal || detailsModal.style.display === 'none')) {
+                e.preventDefault();
+                toggleShortcutsModal();
+                return;
             }
             if ((e.key === 's' || e.key === 'S' || e.key === '/') && !vjsPlayer && (!detailsModal || detailsModal.style.display === 'none')) {
                 e.preventDefault();
