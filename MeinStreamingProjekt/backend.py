@@ -33,6 +33,11 @@ def slugify(text):
 def index():
     return render_template('index.html')
 
+@app.route('/health')
+@app.route('/api/ping')
+def health_ping():
+    return jsonify({'status': 'ok', 'server': 'Finn Streaming', 'alive': True}), 200
+
 @app.route('/manifest.json')
 def manifest():
     manifest_data = {
