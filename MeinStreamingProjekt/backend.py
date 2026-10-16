@@ -76,6 +76,13 @@ def slugify(text):
 def index():
     return render_template('index.html')
 
+@app.after_request
+def add_cache_control_headers(response):
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
 @app.route('/health')
 @app.route('/api/ping')
 def health_ping():
@@ -307,11 +314,11 @@ def smart_play():
     # FALLBACK: Wenn kein direkter Hoster-Stream gefunden wurde, sofort Backup Server ausliefern
     if tmdb_id:
         if media_type == 'tv':
-            fallback_embed = f"https://vidlink.pro/tv/{tmdb_id}/{season}/{episode}"
-            alt_embed = f"https://vidsrc.to/embed/tv/{tmdb_id}/{season}/{episode}"
+            fallback_embed = f"https://multiembed.mov/?video_id={tmdb_id}&tmdb=1&s={season}&e={episode}"
+            alt_embed = f"https://vidsrc.me/embed/tv?tmdb={tmdb_id}&season={season}&episode={episode}"
         else:
-            fallback_embed = f"https://vidlink.pro/movie/{tmdb_id}"
-            alt_embed = f"https://vidsrc.to/embed/movie/{tmdb_id}"
+            fallback_embed = f"https://multiembed.mov/?video_id={tmdb_id}&tmdb=1"
+            alt_embed = f"https://vidsrc.me/embed/movie?tmdb={tmdb_id}"
         
         return jsonify({
             "mode": "embed",

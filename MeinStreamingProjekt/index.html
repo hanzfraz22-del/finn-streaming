@@ -2158,6 +2158,92 @@
             transform: scale(0.96);
         }
 
+        /* Floating Backup Stream HUD */
+        .backup-stream-hud {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 22000;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(18, 18, 24, 0.94);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 40px;
+            padding: 8px 18px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8), 0 0 25px rgba(229, 9, 20, 0.2);
+            animation: fadeIn 0.3s ease;
+        }
+        .backup-hud-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #fff;
+            font-size: 0.85rem;
+            font-weight: 700;
+            padding-right: 8px;
+            border-right: 1px solid rgba(255, 255, 255, 0.15);
+        }
+        .backup-hud-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #2ecc71;
+            box-shadow: 0 0 10px #2ecc71;
+            display: inline-block;
+        }
+        .backup-hud-btn {
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.82rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .backup-hud-btn:hover {
+            background: rgba(255, 255, 255, 0.25);
+            transform: translateY(-1px);
+        }
+        .backup-hud-btn.retry-btn {
+            background: var(--primary);
+            border-color: var(--primary);
+            box-shadow: 0 0 15px rgba(229, 9, 20, 0.4);
+        }
+        .backup-hud-btn.retry-btn:hover {
+            background: #ff1a26;
+        }
+        .backup-hud-close {
+            background: transparent;
+            border: none;
+            color: #888;
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 0 4px;
+            line-height: 1;
+            transition: color 0.2s ease;
+        }
+        .backup-hud-close:hover {
+            color: #fff;
+        }
+        @media (max-width: 600px) {
+            .backup-stream-hud {
+                bottom: 20px;
+                padding: 6px 10px;
+                gap: 6px;
+                max-width: 95vw;
+            }
+            .backup-hud-btn {
+                padding: 5px 9px;
+                font-size: 0.75rem;
+            }
+        }
+
         /* Player Touch Zones (Double Tap -10s / +10s) */
         .player-tap-overlay {
             position: absolute;
@@ -5773,6 +5859,21 @@
                 <button class="player-btn" id="player-episodes-btn" onclick="togglePlayerEpisodesDrawer()" title="Episodenauswahl" style="display:none;">Episoden</button>
                 <button class="player-btn" id="shortcuts-btn" onclick="toggleShortcutsModal()" title="Tastaturkürzel (?)">?</button>
                 <button class="player-btn" id="next-ep-btn" onclick="playNextEpisode()" style="display:none; color: var(--primary);">Nächste Folge &gt;</button>
+            </div>
+
+            <!-- Floating Backup Server Switcher & Direct Stream Retry HUD -->
+            <div id="backup-stream-hud" class="backup-stream-hud" style="display:none;">
+                <div class="backup-hud-badge">
+                    <span class="backup-hud-dot"></span>
+                    <span id="backup-hud-name">MultiEmbed</span>
+                </div>
+                <button class="backup-hud-btn" onclick="toggleServerSource()" title="Nächsten Backup-Server ausprobieren">
+                    Server wechseln
+                </button>
+                <button class="backup-hud-btn retry-btn" onclick="retryDirectStreamFromHud()" title="HD Direkt-Stream erneut suchen">
+                    Direkt-Stream suchen
+                </button>
+                <button class="backup-hud-close" onclick="dismissBackupHud()" title="Leiste ausblenden">&times;</button>
             </div>
 
             <!-- Netflix-Style Skip Intro Floating Button -->
@@ -10370,6 +10471,7 @@
                 }
 
                 // Modus 2: Direkter Video.js Stream
+                dismissBackupHud();
                 const tapOverlay = document.getElementById('player-tap-overlay');
                 if (tapOverlay && window.innerWidth <= 768) {
                     tapOverlay.style.display = 'flex';
@@ -10615,37 +10717,54 @@
         let currentPlaybackServer = 'direct';
         const BACKUP_SERVERS = [
             {
-                id: 'vidlink',
-                name: 'VidLink (HD)',
-                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidlink.pro/tv/${id}/${s}/${e}` : `https://vidlink.pro/movie/${id}`)
-            },
-            {
-                id: 'vidsrc',
-                name: 'VidSrc (HD)',
-                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidsrc.to/embed/tv/${id}/${s}/${e}` : `https://vidsrc.to/embed/movie/${id}`)
-            },
-            {
-                id: 'vidsrccc',
-                name: 'VidSrc CC',
-                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidsrc.cc/v2/embed/tv/${id}/${s}/${e}` : `https://vidsrc.cc/v2/embed/movie/${id}`)
-            },
-            {
                 id: 'multiembed',
-                name: 'MultiEmbed',
+                name: 'MultiEmbed (Auto)',
                 getUrl: (id, type, s, e) => (type === 'tv' ? `https://multiembed.mov/?video_id=${id}&tmdb=1&s=${s}&e=${e}` : `https://multiembed.mov/?video_id=${id}&tmdb=1`)
             },
             {
-                id: 'embedsu',
-                name: 'EmbedSU (HD)',
-                getUrl: (id, type, s, e) => (type === 'tv' ? `https://embed.su/embed/tv/${id}/${s}/${e}` : `https://embed.su/embed/movie/${id}`)
+                id: 'vidsrcme',
+                name: 'VidSrc (Server 1)',
+                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidsrc.me/embed/tv?tmdb=${id}&season=${s}&episode=${e}` : `https://vidsrc.me/embed/movie?tmdb=${id}`)
             },
             {
-                id: 'autoembed',
-                name: 'AutoEmbed',
-                getUrl: (id, type, s, e) => (type === 'tv' ? `https://player.autoembed.cc/embed/tv/${id}/${s}/${e}` : `https://player.autoembed.cc/embed/movie/${id}`)
+                id: 'vidsrcto',
+                name: 'VidSrc (Server 2)',
+                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidsrc.to/embed/tv/${id}/${s}/${e}` : `https://vidsrc.to/embed/movie/${id}`)
+            },
+            {
+                id: 'vidsrcpm',
+                name: 'VidSrc (Server 3)',
+                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidsrc.pm/embed/tv?tmdb=${id}&season=${s}&episode=${e}` : `https://vidsrc.pm/embed/movie?tmdb=${id}`)
+            },
+            {
+                id: '2embed',
+                name: '2Embed',
+                getUrl: (id, type, s, e) => (type === 'tv' ? `https://www.2embed.cc/embedtv/${id}&s=${s}&e=${e}` : `https://www.2embed.cc/embed/${id}`)
+            },
+            {
+                id: 'vidlink',
+                name: 'VidLink (HD)',
+                getUrl: (id, type, s, e) => (type === 'tv' ? `https://vidlink.pro/tv/${id}/${s}/${e}` : `https://vidlink.pro/movie/${id}`)
             }
         ];
         let currentBackupServerIndex = 0;
+
+        function dismissBackupHud() {
+            const hud = document.getElementById('backup-stream-hud');
+            if (hud) hud.style.display = 'none';
+        }
+
+        function retryDirectStreamFromHud() {
+            dismissBackupHud();
+            const sBtn = document.getElementById('server-btn');
+            if (sBtn) {
+                sBtn.innerText = 'Server: HD';
+                sBtn.style.borderColor = '';
+                sBtn.style.color = '';
+            }
+            currentPlaybackServer = 'direct';
+            startStream(currentSeason, currentEpisode);
+        }
 
         function forceImmediateBackupStream() {
             if (!currentMovieData) return;
@@ -10671,7 +10790,12 @@
                     currentBackupServerIndex = 0;
                     currentPlaybackServer = 'direct';
                     const sBtn = document.getElementById('server-btn');
-                    if (sBtn) sBtn.innerText = 'Server: HD';
+                    if (sBtn) {
+                        sBtn.innerText = 'Server: HD';
+                        sBtn.style.borderColor = '';
+                        sBtn.style.color = '';
+                    }
+                    dismissBackupHud();
                     startStream(currentSeason, currentEpisode);
                 }
             }
@@ -10695,7 +10819,18 @@
             if (tapOverlay) tapOverlay.style.display = 'none';
 
             const sBtn = document.getElementById('server-btn');
-            if (sBtn) sBtn.innerText = `Server: ${activeServer.name}`;
+            if (sBtn) {
+                sBtn.innerText = `Server: ${activeServer.name}`;
+                sBtn.style.borderColor = 'var(--primary)';
+                sBtn.style.color = '#fff';
+            }
+
+            const hud = document.getElementById('backup-stream-hud');
+            const hudName = document.getElementById('backup-hud-name');
+            if (hud) {
+                hud.style.display = 'flex';
+                if (hudName) hudName.innerText = activeServer.name;
+            }
 
             if (vjsPlayer) {
                 try { vjsPlayer.dispose(); } catch(e) {}
@@ -10709,7 +10844,7 @@
                     <iframe id="embed-player-frame" src="${embedUrl}" style="width:100%; height:100%; border:none; position:absolute; top:0; left:0; right:0; bottom:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" allowfullscreen="true" referrerpolicy="no-referrer-when-downgrade"></iframe>
                 `;
             }
-            showPlayerToast(`Backup-Server aktiv: ${activeServer.name} (Oben klicken zum Umschalten)`);
+            showPlayerToast(`Backup-Server aktiv: ${activeServer.name} (Klicke unten oder oben zum Umschalten)`);
         }
 
         function playCurrentMovieTrailer() {
@@ -10742,6 +10877,7 @@
 
         function closePlayer() {
             dismissXRayPauseScreen();
+            dismissBackupHud();
             setSleepTimer(0);
             if (activeStreamAbortController) {
                 try { activeStreamAbortController.abort(); } catch(e) {}
