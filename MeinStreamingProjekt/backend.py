@@ -81,6 +81,49 @@ def index():
 def health_ping():
     return jsonify({'status': 'ok', 'server': 'Finn Streaming', 'alive': True}), 200
 
+@app.route('/api/diag')
+def api_diag():
+    results = {}
+    import time
+    
+    # Test 1: Megakino
+    t0 = time.time()
+    try:
+        from mediaforge.search import megakino_search
+        m = megakino_search("Inception")
+        results["megakino"] = {"status": "ok", "count": len(m) if m else 0, "time": f"{time.time()-t0:.2f}s"}
+    except Exception as e:
+        results["megakino"] = {"status": "error", "error": str(e), "time": f"{time.time()-t0:.2f}s"}
+
+    # Test 2: SerienStream suggest
+    t0 = time.time()
+    try:
+        from mediaforge.search import query_s_to
+        s = query_s_to("Breaking Bad")
+        results["s_to_search"] = {"status": "ok", "count": len(s) if s else 0, "time": f"{time.time()-t0:.2f}s"}
+    except Exception as e:
+        results["s_to_search"] = {"status": "error", "error": str(e), "time": f"{time.time()-t0:.2f}s"}
+
+    # Test 3: AniWorld search
+    t0 = time.time()
+    try:
+        from mediaforge.search import query as aniworld_search
+        a = aniworld_search("Naruto")
+        results["aniworld_search"] = {"status": "ok", "count": len(a) if a else 0, "time": f"{time.time()-t0:.2f}s"}
+    except Exception as e:
+        results["aniworld_search"] = {"status": "error", "error": str(e), "time": f"{time.time()-t0:.2f}s"}
+
+    # Test 4: FilmPalast
+    t0 = time.time()
+    try:
+        from curl_cffi import requests as curl_requests
+        r = curl_requests.get("https://filmpalast.to/stream/inception", impersonate="chrome120", timeout=5)
+        results["filmpalast"] = {"status": "ok", "code": r.status_code, "time": f"{time.time()-t0:.2f}s"}
+    except Exception as e:
+        results["filmpalast"] = {"status": "error", "error": str(e), "time": f"{time.time()-t0:.2f}s"}
+
+    return jsonify(results)
+
 @app.route('/manifest.json')
 def manifest():
     manifest_data = {
