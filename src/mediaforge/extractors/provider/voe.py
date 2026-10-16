@@ -253,8 +253,9 @@ def get_direct_link_from_voe(embeded_voe_link, headers=None, max_retries=3, time
             return source
             
         except (niquests.RequestException, Exception) as err:
-            if any(k in str(err) for k in ("Wartungsmodus", "Keine VOE-Videoquelle", "nicht verfügbar")):
-                raise
+            err_str = str(err).lower()
+            if any(k in err_str for k in ("404", "410", "not found", "wartungsmodus", "keine voe-videoquelle", "nicht verfügbar")):
+                raise ValueError(f"VOE: Video nicht verfügbar: {err}") from err
             if attempt == max_retries - 1:
                 raise ValueError(f"VOE-Seite konnte nach {max_retries} Versuchen nicht geladen werden: {err}") from err
             logger.warning(f"Attempt {attempt + 1} failed: {str(err)[:100]}...")

@@ -4,7 +4,7 @@ import re
 import queue
 import concurrent.futures
 import json
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_from_directory
 
 # Stelle sicher, dass das src/ Verzeichnis immer im Suchpfad ist
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -30,6 +30,26 @@ except ImportError as e:
         from mediaforge.search import query as aniworld_search
     except Exception as e2:
         print(f"[!] Warnung: Scraper-Module nicht geladen: {e2}")
+
+def ensure_database():
+    try:
+        from mediaforge.web.db import (
+            init_db, init_app_settings_db, init_tmdb_cache_db, 
+            init_provider_cache_db, init_browse_cache_db, 
+            init_media_ignored_db, init_custom_paths_db
+        )
+        init_db()
+        init_app_settings_db()
+        init_provider_cache_db()
+        init_tmdb_cache_db()
+        init_browse_cache_db()
+        init_media_ignored_db()
+        init_custom_paths_db()
+        print("[+] MediaForge Datenbank & Tabellen erfolgreich initialisiert.")
+    except Exception as e:
+        print(f"[*] DB Init Info: {e}")
+
+ensure_database()
 
 import threading
 def _warmup_scraper_gate():
@@ -74,6 +94,10 @@ def manifest():
     }
     return jsonify(manifest_data)
 
+@app.route('/sw.js')
+def service_worker():
+    return send_from_directory(BASE_DIR, 'sw.js', mimetype='application/javascript')
+
 import concurrent.futures
 
 def try_url(url, title):
@@ -82,24 +106,33 @@ def try_url(url, title):
         provider = resolve_provider(url)
         if not provider or not provider.episode_cls: return None
         
-        # Teste verfügbare Provider (bevorzugt VOE, dann Vidoza, Streamtape etc.)
-        providers_to_test = ["VOE", "Vidoza", "Streamtape", "Doodstream"]
-        languages_to_test = ["German", "Deutsch", "Ger-Dub", "English", "Englisch"]
+        probe_ep = provider.episode_cls(url=url)
+        
+        # Teste zunaechst VOE mit Deutsch (schnellster Pfad)
+        for lang in ["German", "Deutsch", "English"]:
+            try:
+                probe_ep.selected_language = lang
+                probe_ep.selected_provider = "VOE"
+                stream = probe_ep.stream_url
+                if stream:
+                    return {
+                        "original_url": url,
+                        "stream_url": stream,
+                        "serie": title,
+                        "provider": "VOE",
+                        "language": lang,
+                        "mode": "direct"
+                    }
+            except Exception:
+                pass
 
-        try:
-            probe_ep = provider.episode_cls(url=url)
-            if hasattr(probe_ep, 'available_providers') and probe_ep.available_providers:
-                providers_to_test = [p for p in probe_ep.available_providers if p == "VOE"] + [p for p in probe_ep.available_providers if p != "VOE"]
-            if hasattr(probe_ep, 'languages') and probe_ep.languages:
-                languages_to_test = [l for l in languages_to_test if l in probe_ep.languages] or probe_ep.languages
-        except:
-            pass
-
-        for lang in languages_to_test:
-            for p_name in providers_to_test:
+        # Fallback auf alternative Hoster wie Vidoza oder Streamtape
+        for p_name in ["Vidoza", "Streamtape", "Doodstream"]:
+            for lang in ["German", "Deutsch", "English"]:
                 try:
-                    ep = provider.episode_cls(url=url, selected_language=lang, selected_provider=p_name)
-                    stream = ep.stream_url
+                    probe_ep.selected_language = lang
+                    probe_ep.selected_provider = p_name
+                    stream = probe_ep.stream_url
                     if stream:
                         return {
                             "original_url": url,
@@ -109,9 +142,10 @@ def try_url(url, title):
                             "language": lang,
                             "mode": "direct"
                         }
-                except:
-                    continue
-    except: pass
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[*] try_url fehler fuer {url}: {e}")
     return None
 
 import queue
@@ -147,7 +181,9 @@ def smart_play():
     urls_to_try = []
     for slug in slugs:
         if media_type == 'tv':
+            urls_to_try.append(f"https://s.to/serie/{slug}/staffel-{season}/episode-{episode}")
             urls_to_try.append(f"https://s.to/serie/stream/{slug}/staffel-{season}/episode-{episode}")
+            urls_to_try.append(f"https://aniworld.to/anime/stream/{slug}/staffel-{season}/episode-{episode}")
         else:
             urls_to_try.append(f"https://filmpalast.to/stream/{slug}")
             urls_to_try.append(f"https://filmpalast.to/stream/{slug}-1")
@@ -161,7 +197,7 @@ def smart_play():
                 if res: q.put(res)
             except: pass
             
-        for u in urls_to_try[:4]: 
+        for u in urls_to_try[:6]: 
             executor.submit(check_url_and_push, u)
             
         def api_search_worker(func, q_str, prefix, suffix):
@@ -185,8 +221,8 @@ def smart_play():
                 executor.submit(api_search_worker, megakino_search, q_term, "", "")
             
         try:
-            # Bis zu 5.2 Sekunden auf echten VOE / Vidoza Stream warten
-            result = q.get(timeout=5.2)
+            # Bis zu 10.5 Sekunden auf echten VOE / Vidoza Stream warten
+            result = q.get(timeout=10.5)
             if result:
                 result["mode"] = "direct"
                 return jsonify(result)
