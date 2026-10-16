@@ -189,16 +189,28 @@ def get_direct_link_from_voe(embeded_voe_link, headers=None, max_retries=3, time
                 logger.warning(f"Retry attempt {attempt + 1}/{max_retries}, waiting {wait_time}s...")
                 time.sleep(wait_time)
             
-            # First request to VOE
-            resp = GLOBAL_SESSION.get(embeded_voe_link, headers=enhanced_headers, timeout=timeout)
-            resp.raise_for_status()
-            html = resp.text
+            # First request to VOE (prefer curl_cffi for Cloudflare TLS impersonation)
+            html = ""
+            status_code = 200
+            try:
+                from curl_cffi import requests as curl_requests
+                c_resp = curl_requests.get(
+                    embeded_voe_link, impersonate="chrome120", timeout=timeout,
+                    allow_redirects=True, headers=enhanced_headers
+                )
+                html = c_resp.text
+                status_code = c_resp.status_code
+            except Exception:
+                resp = GLOBAL_SESSION.get(embeded_voe_link, headers=enhanced_headers, timeout=timeout)
+                resp.raise_for_status()
+                html = resp.text
+                status_code = resp.status_code
 
-            if is_source_unavailable(html, resp.status_code):
+            if is_source_unavailable(html, status_code):
                 raise ValueError("VOE: Video nicht verfügbar oder wurde entfernt.")
 
             # Captcha on VOE page → solve and retry this request
-            if is_captcha_page(html, resp.status_code):
+            if is_captcha_page(html, status_code):
                 solve_captcha(embeded_voe_link)
                 resp = GLOBAL_SESSION.get(
                     embeded_voe_link, headers=enhanced_headers, timeout=timeout
@@ -216,6 +228,7 @@ def get_direct_link_from_voe(embeded_voe_link, headers=None, max_retries=3, time
             redirect_match = REDIRECT_PATTERN.search(html)
             if redirect_match:
                 redirect_url = redirect_match.group(0)
+                redir_headers = {**enhanced_headers, "Referer": embeded_voe_link}
                 
                 # Second request with retry
                 for redirect_attempt in range(max_retries):
@@ -225,15 +238,25 @@ def get_direct_link_from_voe(embeded_voe_link, headers=None, max_retries=3, time
                             logger.warning(f"Redirect retry {redirect_attempt + 1}/{max_retries}, waiting {wait_time}s...")
                             time.sleep(wait_time)
                         
-                        resp = GLOBAL_SESSION.get(redirect_url, headers=enhanced_headers, timeout=timeout)
-                        resp.raise_for_status()
-                        html = resp.text
+                        try:
+                            from curl_cffi import requests as curl_requests
+                            c_resp = curl_requests.get(
+                                redirect_url, impersonate="chrome120", timeout=timeout,
+                                allow_redirects=True, headers=redir_headers
+                            )
+                            html = c_resp.text
+                            status_code = c_resp.status_code
+                        except Exception:
+                            resp = GLOBAL_SESSION.get(redirect_url, headers=redir_headers, timeout=timeout)
+                            resp.raise_for_status()
+                            html = resp.text
+                            status_code = resp.status_code
 
                         # Captcha on redirect target → solve and retry
-                        if is_captcha_page(html, resp.status_code):
+                        if is_captcha_page(html, status_code):
                             solve_captcha(redirect_url)
                             resp = GLOBAL_SESSION.get(
-                                redirect_url, headers=enhanced_headers, timeout=timeout
+                                redirect_url, headers=redir_headers, timeout=timeout
                             )
                             resp.raise_for_status()
                             html = resp.text

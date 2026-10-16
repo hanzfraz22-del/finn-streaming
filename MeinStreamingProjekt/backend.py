@@ -106,14 +106,11 @@ def try_url(url, title):
         provider = resolve_provider(url)
         if not provider or not provider.episode_cls: return None
         
-        probe_ep = provider.episode_cls(url=url)
-        
         # Teste zunaechst VOE mit Deutsch (schnellster Pfad)
         for lang in ["German", "Deutsch", "English"]:
             try:
-                probe_ep.selected_language = lang
-                probe_ep.selected_provider = "VOE"
-                stream = probe_ep.stream_url
+                ep = provider.episode_cls(url=url, selected_language=lang, selected_provider="VOE")
+                stream = ep.stream_url
                 if stream:
                     return {
                         "original_url": url,
@@ -130,9 +127,8 @@ def try_url(url, title):
         for p_name in ["Vidoza", "Streamtape", "Doodstream"]:
             for lang in ["German", "Deutsch", "English"]:
                 try:
-                    probe_ep.selected_language = lang
-                    probe_ep.selected_provider = p_name
-                    stream = probe_ep.stream_url
+                    ep = provider.episode_cls(url=url, selected_language=lang, selected_provider=p_name)
+                    stream = ep.stream_url
                     if stream:
                         return {
                             "original_url": url,

@@ -309,29 +309,43 @@ class SerienstreamEpisode:
             except ImportError:
                 from mediaforge.playwright.captcha import solve_sto_modal
 
-            # Try plain HTTP first — works when no modal is shown
-            resp = GLOBAL_SESSION.get(self.redirect_url)
-            # Compare against every s.to mirror, not the redirect's own host:
-            # the mirror failover may answer from another one (serienstream.to
-            # for a dead s.to, or the bare-IP mirror), and that is still the
-            # s.to page with its captcha modal, not the provider.
-            if site_for_url(resp.url) != "sto":
-                # Redirect left s.to — no modal, plain session worked
-                self.__provider_url = resp.url
-            else:
-                lang = self._normalize_language(self.selected_language)
-                if lang == (Audio.ENGLISH, Subtitles.GERMAN):
-                    language_label = "Deutsche Untertitel"
-                elif lang == (Audio.ENGLISH, Subtitles.NONE):
-                    language_label = "Englisch"
-                else:
-                    language_label = "Deutsch"
-
-                result = solve_sto_modal(
-                    self.url, self.selected_provider, language_label,
-                    redirect_url=self.redirect_url,
+            # Try plain HTTP with curl_cffi first — bypasses Cloudflare on s.to redirect
+            try:
+                from curl_cffi import requests as curl_requests
+                c_resp = curl_requests.get(
+                    self.redirect_url,
+                    impersonate="chrome120",
+                    timeout=10,
+                    allow_redirects=True
                 )
-                self.__provider_url = result if result else resp.url
+                if site_for_url(c_resp.url) != "sto":
+                    self.__provider_url = c_resp.url
+            except Exception:
+                pass
+
+            if self.__provider_url is None:
+                resp = GLOBAL_SESSION.get(self.redirect_url)
+                if site_for_url(resp.url) != "sto":
+                    self.__provider_url = resp.url
+                else:
+                    try:
+                        from ...playwright.captcha import solve_sto_modal
+                    except ImportError:
+                        from mediaforge.playwright.captcha import solve_sto_modal
+
+                    lang = self._normalize_language(self.selected_language)
+                    if lang == (Audio.ENGLISH, Subtitles.GERMAN):
+                        language_label = "Deutsche Untertitel"
+                    elif lang == (Audio.ENGLISH, Subtitles.NONE):
+                        language_label = "Englisch"
+                    else:
+                        language_label = "Deutsch"
+
+                    result = solve_sto_modal(
+                        self.url, self.selected_provider, language_label,
+                        redirect_url=self.redirect_url,
+                    )
+                    self.__provider_url = result if result else resp.url
         return self.__provider_url
 
     @property
