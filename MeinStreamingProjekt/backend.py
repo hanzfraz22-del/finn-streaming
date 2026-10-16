@@ -248,12 +248,28 @@ def smart_play():
         for u in urls_to_try[:6]: 
             executor.submit(check_url_and_push, u)
             
-        def api_search_worker(func, q_str, prefix, suffix):
+        def api_search_worker(func, q_str, prefix, suffix, expected_type=None):
             if not q_str: return
             try:
                 res = func(q_str)
                 if res:
-                    for r in res[:3]:
+                    q_low = q_str.lower().strip()
+                    def score(r):
+                        t_low = r.get('title', '').lower()
+                        pts = 0
+                        if expected_type == 'movie' and r.get('is_series', False):
+                            pts += 10
+                        elif expected_type == 'tv' and not r.get('is_series', True):
+                            pts += 10
+                        if t_low == q_low:
+                            pts += 0
+                        elif q_low in t_low:
+                            pts += 1
+                        else:
+                            pts += 5
+                        return pts
+                    sorted_res = sorted(res, key=score)
+                    for r in sorted_res[:4]:
                         if 'link' in r: executor.submit(check_url_and_push, f"{prefix}{r['link']}{suffix}")
                         elif 'url' in r: executor.submit(check_url_and_push, f"{r['url']}{suffix}")
             except: pass
@@ -262,13 +278,13 @@ def smart_play():
 
         if media_type == 'tv':
             for q_term in unique_queries:
-                executor.submit(api_search_worker, megakino_search, f"{q_term} Staffel {season}", "", f"?episode={episode}")
-                executor.submit(api_search_worker, megakino_search, q_term, "", f"?episode={episode}")
-                executor.submit(api_search_worker, query_s_to, q_term, "https://s.to", f"/staffel-{season}/episode-{episode}")
-                executor.submit(api_search_worker, aniworld_search, q_term, "https://aniworld.to", f"/staffel-{season}/episode-{episode}")
+                executor.submit(api_search_worker, megakino_search, f"{q_term} Staffel {season}", "", f"?episode={episode}", 'tv')
+                executor.submit(api_search_worker, megakino_search, q_term, "", f"?episode={episode}", 'tv')
+                executor.submit(api_search_worker, query_s_to, q_term, "https://s.to", f"/staffel-{season}/episode-{episode}", 'tv')
+                executor.submit(api_search_worker, aniworld_search, q_term, "https://aniworld.to", f"/staffel-{season}/episode-{episode}", 'tv')
         else:
             for q_term in unique_queries:
-                executor.submit(api_search_worker, megakino_search, q_term, "", "")
+                executor.submit(api_search_worker, megakino_search, q_term, "", "", 'movie')
             
         try:
             # Bis zu 10.5 Sekunden auf echten VOE / Vidoza Stream warten
