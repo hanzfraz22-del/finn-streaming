@@ -176,7 +176,8 @@ def hls_proxy():
     if range_header:
         headers['Range'] = range_header
 
-    is_m3u8 = '.m3u8' in target_url or 'urlset' in target_url
+    # M3U8 Playlists sind nur Text-Playlists (nie binaere .ts Segmente)
+    is_m3u8 = ('.m3u8' in target_url) and ('.ts' not in target_url)
 
     if is_m3u8:
         try:
