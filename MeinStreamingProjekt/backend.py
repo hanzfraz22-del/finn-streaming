@@ -4,7 +4,8 @@ import re
 import queue
 import concurrent.futures
 import json
-from flask import Flask, request, jsonify, render_template, send_from_directory
+import urllib.parse
+from flask import Flask, request, jsonify, render_template, send_from_directory, Response, stream_with_context
 
 # Stelle sicher, dass das src/ Verzeichnis immer im Suchpfad ist
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -158,6 +159,81 @@ def manifest():
 def service_worker():
     return send_from_directory(BASE_DIR, 'sw.js', mimetype='application/javascript')
 
+@app.route('/api/hls_proxy')
+def hls_proxy():
+    """HLS Reverse-Proxy: Schreibt M3U8 Playlists um und leitet Segmente live weiter,
+    damit der IP-gebundene VOE Token immer von Render abgerufen wird."""
+    target_url = request.args.get('url')
+    if not target_url:
+        return "Missing URL", 400
+
+    import requests
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://megankiddifference.com/'
+    }
+    range_header = request.headers.get('Range')
+    if range_header:
+        headers['Range'] = range_header
+
+    is_m3u8 = '.m3u8' in target_url or 'urlset' in target_url
+
+    if is_m3u8:
+        try:
+            r = requests.get(target_url, headers=headers, timeout=12)
+            if r.status_code != 200:
+                return f"Fehler von Upstream: {r.status_code}", r.status_code
+
+            content = r.text
+            lines = content.splitlines()
+            rewritten_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    rewritten_lines.append('')
+                elif stripped.startswith('#'):
+                    if 'URI="' in stripped:
+                        def replace_uri(m):
+                            u = m.group(1)
+                            full_u = urllib.parse.urljoin(target_url, u)
+                            return f'URI="/api/hls_proxy?url={urllib.parse.quote(full_u)}"'
+                        stripped = re.sub(r'URI="([^"]+)"', replace_uri, stripped)
+                    rewritten_lines.append(stripped)
+                else:
+                    resolved = urllib.parse.urljoin(target_url, stripped)
+                    rewritten_lines.append(f"/api/hls_proxy?url={urllib.parse.quote(resolved)}")
+
+            rewritten_content = "\n".join(rewritten_lines)
+            resp = app.make_response(rewritten_content)
+            resp.headers['Content-Type'] = 'application/vnd.apple.mpegurl'
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            return resp
+        except Exception as e:
+            return f"Fehler beim Laden der Playlist: {e}", 502
+    else:
+        try:
+            upstream = requests.get(target_url, headers=headers, stream=True, timeout=15)
+            def generate():
+                for chunk in upstream.iter_content(chunk_size=65536):
+                    if chunk:
+                        yield chunk
+
+            resp = Response(
+                stream_with_context(generate()),
+                status=upstream.status_code,
+                content_type=upstream.headers.get('content-type') or ('video/MP2T' if '.ts' in target_url else 'application/octet-stream')
+            )
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            if 'Content-Range' in upstream.headers:
+                resp.headers['Content-Range'] = upstream.headers['Content-Range']
+            if 'Content-Length' in upstream.headers:
+                resp.headers['Content-Length'] = upstream.headers['Content-Length']
+            resp.headers['Cache-Control'] = 'public, max-age=86400'
+            return resp
+        except Exception as e:
+            return f"Fehler beim Streamen des Segments: {e}", 502
+
 @app.route('/api/voe_clean/<video_id>')
 def voe_clean(video_id):
     """Proxy fuer sauberen, werbefreien VOE-Player ohne Popups und ohne Drittanbieter-Ad-Banner"""
@@ -189,7 +265,7 @@ def voe_clean(video_id):
         base_tag = '<base href="https://megankiddifference.com/">\n'
         html = html.replace('<head>', '<head>\n' + base_tag)
 
-        # 2. Skripte zur Blockierung von Popups und Werbebannern
+        # 2. Skripte zur Blockierung von Popups und Werbebannern + JWPlayer HLS-Proxy Weiterleitung
         blocker = '''
         <script>
             // Popup-Fenster und Weiterleitungen komplett unterbinden
@@ -201,6 +277,36 @@ def voe_clean(video_id):
                     window.f98a024e = { add: function(){}, config: function(){ return this; }, ignoreTo: function(){ return this; } };
                 }
             });
+            // JWPlayer Setup abfangen und Stream durch /api/hls_proxy leiten (verhindert 232011 / IP-Lock Fehler)
+            (function() {
+                function patchJw() {
+                    if (typeof window.jwplayer !== 'undefined') {
+                        var _origJw = window.jwplayer;
+                        window.jwplayer = function(id) {
+                            var inst = _origJw(id);
+                            var _origSetup = inst.setup;
+                            inst.setup = function(config) {
+                                if (config) {
+                                    if (config.source) {
+                                        config.source = '/api/hls_proxy?url=' + encodeURIComponent(config.source);
+                                    }
+                                    if (config.fallback && Array.isArray(config.fallback)) {
+                                        config.fallback.forEach(function(f) {
+                                            if (f.file) f.file = '/api/hls_proxy?url=' + encodeURIComponent(f.file);
+                                        });
+                                    }
+                                }
+                                return _origSetup.call(inst, config);
+                            };
+                            return inst;
+                        };
+                        for (var k in _origJw) { window.jwplayer[k] = _origJw[k]; }
+                    } else {
+                        setTimeout(patchJw, 25);
+                    }
+                }
+                patchJw();
+            })();
         </script>
         <style>
             /* Alle Ad-Overlays, Banner und Phruk-Widgets unsichtbar und inaktiv machen */
@@ -253,6 +359,7 @@ def try_url(url, title):
                 except Exception:
                     pass
                 if stream:
+                    proxied_stream = f"/api/hls_proxy?url={urllib.parse.quote(stream)}" if ('.m3u8' in stream or 'urlset' in stream) else stream
                     embed_voe = None
                     if p_url:
                         clean = p_url.split('?')[0].rstrip('/')
@@ -263,7 +370,8 @@ def try_url(url, title):
                             embed_voe = p_url
                     return {
                         "original_url": url,
-                        "stream_url": stream,
+                        "stream_url": proxied_stream,
+                        "raw_stream_url": stream,
                         "embed_url": embed_voe,
                         "serie": title,
                         "provider": "VOE",
@@ -285,9 +393,11 @@ def try_url(url, title):
                     except Exception:
                         pass
                     if stream:
+                        proxied_stream = f"/api/hls_proxy?url={urllib.parse.quote(stream)}" if ('.m3u8' in stream or 'urlset' in stream) else stream
                         return {
                             "original_url": url,
-                            "stream_url": stream,
+                            "stream_url": proxied_stream,
+                            "raw_stream_url": stream,
                             "embed_url": p_url,
                             "serie": title,
                             "provider": p_name,

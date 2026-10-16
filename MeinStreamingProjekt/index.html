@@ -10471,10 +10471,8 @@
                 // Modus 2: Deutscher Hoster gefunden (VOE, Vidoza, etc.)
                 dismissBackupHud();
 
-                // Auf Remote-Servern (Render) ist der VOE m3u8 CDN-Token an die US-Datacenter-IP gebunden (403 im Client-Browser).
-                // Daher binden wir auf Remote-Servern direkt den nativen, werbefreien VOE-Player ein!
-                const isRemoteServer = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
-                if (data.embed_url && (isRemoteServer || !data.stream_url)) {
+                // Wenn kein direkter Stream-Link vorhanden ist, aber ein Embed-Link:
+                if (!data.stream_url && data.embed_url) {
                     startDirectEmbedStream(data.embed_url, data.provider || 'VOE');
                     return;
                 }
@@ -10571,7 +10569,7 @@
                 // Quelle setzen
                 vjsPlayer.src({
                     src: data.stream_url,
-                    type: data.stream_url.includes('.m3u8') ? 'application/x-mpegURL' : 'video/mp4'
+                    type: (data.stream_url.includes('.m3u8') || data.stream_url.includes('hls_proxy')) ? 'application/x-mpegURL' : 'video/mp4'
                 });
 
                 vjsPlayer.on('loadedmetadata', function() {
