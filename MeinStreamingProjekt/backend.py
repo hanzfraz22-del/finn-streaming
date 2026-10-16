@@ -258,9 +258,15 @@ def smart_play():
                         t_low = r.get('title', '').lower()
                         pts = 0
                         if expected_type == 'movie' and r.get('is_series', False):
-                            pts += 10
-                        elif expected_type == 'tv' and not r.get('is_series', True):
-                            pts += 10
+                            pts += 20
+                        elif expected_type == 'tv':
+                            if not r.get('is_series', True):
+                                pts += 20
+                            s_marker = f"staffel {season}"
+                            if s_marker in t_low or f"s{season}" in t_low:
+                                pts -= 50
+                            elif "staffel" in t_low:
+                                pts += 40
                         if t_low == q_low:
                             pts += 0
                         elif q_low in t_low:
