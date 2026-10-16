@@ -122,6 +122,16 @@ def api_diag():
     except Exception as e:
         results["filmpalast"] = {"status": "error", "error": str(e), "time": f"{time.time()-t0:.2f}s"}
 
+    # Test 5: VOE Direct
+    t0 = time.time()
+    try:
+        from mediaforge.extractors.provider.voe import get_direct_link_from_voe
+        v = get_direct_link_from_voe("https://voe.sx/e/cne0ckflq2wb")
+        results["voe_direct"] = {"status": "ok", "url": v[:40] if v else None, "time": f"{time.time()-t0:.2f}s"}
+    except Exception as e:
+        import traceback
+        results["voe_direct"] = {"status": "error", "error": str(e), "trace": traceback.format_exc(), "time": f"{time.time()-t0:.2f}s"}
+
     return jsonify(results)
 
 @app.route('/manifest.json')
