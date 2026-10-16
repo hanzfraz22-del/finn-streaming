@@ -158,6 +158,82 @@ def manifest():
 def service_worker():
     return send_from_directory(BASE_DIR, 'sw.js', mimetype='application/javascript')
 
+@app.route('/api/voe_clean/<video_id>')
+def voe_clean(video_id):
+    """Proxy fuer sauberen, werbefreien VOE-Player ohne Popups und ohne Drittanbieter-Ad-Banner"""
+    try:
+        from curl_cffi import requests as curl_requests
+        target_url = f"https://megankiddifference.com/e/{video_id}"
+        resp = None
+        for candidate in [target_url, f"https://voe.sx/e/{video_id}"]:
+            try:
+                r = curl_requests.get(
+                    candidate,
+                    impersonate="chrome120",
+                    timeout=8,
+                    headers={"Referer": "https://voe.sx/"},
+                    allow_redirects=True
+                )
+                if r.status_code == 200 and len(r.text) > 2000:
+                    resp = r
+                    break
+            except Exception:
+                pass
+        
+        if not resp:
+            return "Video-Stream konnte nicht geladen werden.", 404
+
+        html = resp.text
+
+        # 1. Base Tag fuer alle internen Player-Assets und Fonts
+        base_tag = '<base href="https://megankiddifference.com/">\n'
+        html = html.replace('<head>', '<head>\n' + base_tag)
+
+        # 2. Skripte zur Blockierung von Popups und Werbebannern
+        blocker = '''
+        <script>
+            // Popup-Fenster und Weiterleitungen komplett unterbinden
+            window.open = function() { console.log("Blocked ad popup"); return null; };
+            window.alert = function() {};
+            window.confirm = function() { return true; };
+            window.addEventListener('DOMContentLoaded', function() {
+                if (typeof window.f98a024e !== 'undefined') {
+                    window.f98a024e = { add: function(){}, config: function(){ return this; }, ignoreTo: function(){ return this; } };
+                }
+            });
+        </script>
+        <style>
+            /* Alle Ad-Overlays, Banner und Phruk-Widgets unsichtbar und inaktiv machen */
+            iframe[src*="phruk"], iframe[src*="traffic"], iframe[src*="ad"],
+            div[class*="ad-"], div[id*="ad-"], div[class*="banner"], div[id*="banner"],
+            .modal-backdrop, .guestMode, div[style*="z-index: 9999"], div[style*="z-index:9999"],
+            div[style*="z-index: 1000"], div[style*="z-index:1000"] {
+                display: none !important;
+                visibility: hidden !important;
+                pointer-events: none !important;
+            }
+        </style>
+        '''
+        html = html.replace('</head>', blocker + '\n</head>')
+
+        # 3. Phruk.org, Twitter Ads & Evasive Ad-Skripte vollstaendig entfernen
+        html = re.sub(r'<script[^>]*src=["\'][^"\']*(?:phruk\.org|ads-twitter\.com|evasivewashoutsociety|traffic)[^"\']*["\'][^>]*></script>', '', html)
+
+        # 4. Popunder Registrierung entfernen
+        html = re.sub(r'f98a024e\.add\(.*?\);', '', html)
+        html = re.sub(r'var u7 = .*?return function.*?\}\)\(\);', 'var u7 = function() { return ""; };', html, flags=re.DOTALL)
+
+        # 5. Anti-Sandbox / Debugger entfernen
+        html = re.sub(r'c74a68dfbd15fcd6f23a6b26879bc82e\(\);', '', html)
+        html = re.sub(r'debugger;', '', html)
+
+        response = app.make_response(html)
+        response.headers['Content-Type'] = 'text/html; charset=utf-8'
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        return response
+    except Exception as e:
+        return f"Fehler beim Laden des Streams: {e}", 500
+
 import concurrent.futures
 
 def try_url(url, title):
@@ -177,12 +253,14 @@ def try_url(url, title):
                 except Exception:
                     pass
                 if stream:
-                    embed_voe = p_url
-                    if embed_voe:
-                        clean = embed_voe.split('?')[0].rstrip('/')
+                    embed_voe = None
+                    if p_url:
+                        clean = p_url.split('?')[0].rstrip('/')
                         vid_id = clean.split('/')[-1]
-                        if '/e/' not in clean and len(vid_id) >= 6:
-                            embed_voe = f"https://voe.sx/e/{vid_id}"
+                        if len(vid_id) >= 6:
+                            embed_voe = f"/api/voe_clean/{vid_id}"
+                        else:
+                            embed_voe = p_url
                     return {
                         "original_url": url,
                         "stream_url": stream,

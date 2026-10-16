@@ -10796,13 +10796,22 @@
                 vjsPlayer = null;
             }
 
+            if (embedUrl && (embedUrl.includes('voe.sx') || embedUrl.includes('megankiddifference'))) {
+                const clean = embedUrl.split('?')[0].replace(/\/+$/, '');
+                const parts = clean.split('/');
+                const vidId = parts[parts.length - 1];
+                if (vidId && vidId.length >= 6) {
+                    embedUrl = `/api/voe_clean/${vidId}`;
+                }
+            }
+
             const mount = document.getElementById('player-video-mount');
             if (mount) {
                 mount.innerHTML = `
-                    <iframe id="embed-player-frame" src="${embedUrl}" style="width:100%; height:100%; border:none; position:absolute; top:0; left:0; right:0; bottom:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" allowfullscreen="true" referrerpolicy="no-referrer"></iframe>
+                    <iframe id="embed-player-frame" src="${embedUrl}" sandbox="allow-scripts allow-same-origin allow-forms allow-presentation" style="width:100%; height:100%; border:none; position:absolute; top:0; left:0; right:0; bottom:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" allowfullscreen="true" referrerpolicy="no-referrer"></iframe>
                 `;
             }
-            showPlayerToast(`Deutscher Stream aktiv: ${providerName} (HD)`);
+            showPlayerToast(`Deutscher Stream aktiv: ${providerName} (HD • Werbefrei)`);
         }
 
         function retryDirectStreamFromHud() {
@@ -10900,7 +10909,7 @@
             if (mount) {
                 const embedUrl = activeServer.getUrl(tmdbId, type, season, episode);
                 mount.innerHTML = `
-                    <iframe id="embed-player-frame" src="${embedUrl}" style="width:100%; height:100%; border:none; position:absolute; top:0; left:0; right:0; bottom:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" allowfullscreen="true" referrerpolicy="no-referrer-when-downgrade"></iframe>
+                    <iframe id="embed-player-frame" src="${embedUrl}" sandbox="allow-scripts allow-same-origin allow-forms allow-presentation" style="width:100%; height:100%; border:none; position:absolute; top:0; left:0; right:0; bottom:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" allowfullscreen="true" referrerpolicy="no-referrer"></iframe>
                 `;
             }
             showPlayerToast(`Backup-Server aktiv: ${activeServer.name} (Klicke unten oder oben zum Umschalten)`);

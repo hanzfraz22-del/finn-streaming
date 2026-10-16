@@ -1,5 +1,5 @@
-// Finn Streaming - Service Worker PWA Engine v3
-const CACHE_NAME = 'finn-streaming-v3';
+// Finn Streaming - Service Worker PWA Engine v4
+const CACHE_NAME = 'finn-streaming-v4';
 
 self.addEventListener('install', (event) => {
     self.skipWaiting();
