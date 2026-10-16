@@ -170,11 +170,23 @@ def try_url(url, title):
         for lang in ["German", "Deutsch", "English"]:
             try:
                 ep = provider.episode_cls(url=url, selected_language=lang, selected_provider="VOE")
-                stream = ep.stream_url
+                p_url = getattr(ep, 'provider_url', None)
+                stream = None
+                try:
+                    stream = ep.stream_url
+                except Exception:
+                    pass
                 if stream:
+                    embed_voe = p_url
+                    if embed_voe:
+                        clean = embed_voe.split('?')[0].rstrip('/')
+                        vid_id = clean.split('/')[-1]
+                        if '/e/' not in clean and len(vid_id) >= 6:
+                            embed_voe = f"https://voe.sx/e/{vid_id}"
                     return {
                         "original_url": url,
                         "stream_url": stream,
+                        "embed_url": embed_voe,
                         "serie": title,
                         "provider": "VOE",
                         "language": lang,
@@ -188,11 +200,17 @@ def try_url(url, title):
             for lang in ["German", "Deutsch", "English"]:
                 try:
                     ep = provider.episode_cls(url=url, selected_language=lang, selected_provider=p_name)
-                    stream = ep.stream_url
+                    p_url = getattr(ep, 'provider_url', None)
+                    stream = None
+                    try:
+                        stream = ep.stream_url
+                    except Exception:
+                        pass
                     if stream:
                         return {
                             "original_url": url,
                             "stream_url": stream,
+                            "embed_url": p_url,
                             "serie": title,
                             "provider": p_name,
                             "language": lang,

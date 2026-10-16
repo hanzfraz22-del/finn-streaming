@@ -5896,6 +5896,7 @@
     <script>
         const API_KEY = '87e95ee6431e13789deaf42fcf14e585';
         let vjsPlayer;
+        let lastStreamData = null;
         let currentMovieData = null;
         let activeProfile = null;
         
@@ -10433,6 +10434,7 @@
                 clearTimeout(stepTimer4);
                 clearTimeout(maxWaitTimer);
                 const data = await response.json();
+                lastStreamData = data;
 
                 if (!response.ok) throw new Error(data.error || "Stream nicht gefunden.");
 
@@ -10448,18 +10450,14 @@
                 if (dot2) { dot2.className = 'server-dot success'; }
                 if (stat2) { stat2.className = 'server-item-status success'; stat2.innerText = 'Verbunden'; }
                 if (dot3) { dot3.className = 'server-dot success'; }
-                if (stat3) { stat3.className = 'server-item-status success'; stat3.innerText = (data.provider || 'Stream bereit'); }
+                if (stat3) { stat3.className = 'server-item-status success'; stat3.innerText = (data.provider || 'VOE'); }
                 if (pBar) pBar.style.width = '100%';
-                if (sMsg) sMsg.innerText = 'Stream erfolgreich gefunden! Starte Wiedergabe...';
+                if (sMsg) sMsg.innerText = `Stream gefunden: ${data.provider || 'VOE'}! Starte Wiedergabe...`;
 
                 await new Promise(r => setTimeout(r, 400));
 
                 loadingBox.style.display = 'none';
                 videoContainer.style.display = 'block';
-
-                const sBtn = document.getElementById('server-btn');
-                if (sBtn) sBtn.innerText = (data.mode === 'embed') ? 'Server: Backup' : 'Server: HD';
-                currentPlaybackServer = data.mode || 'direct';
 
                 // Modus 1: Backup Embed Server
                 if (data.mode === 'embed') {
@@ -10470,8 +10468,21 @@
                     return;
                 }
 
-                // Modus 2: Direkter Video.js Stream
+                // Modus 2: Deutscher Hoster gefunden (VOE, Vidoza, etc.)
                 dismissBackupHud();
+
+                // Auf Remote-Servern (Render) ist der VOE m3u8 CDN-Token an die US-Datacenter-IP gebunden (403 im Client-Browser).
+                // Daher binden wir auf Remote-Servern direkt den nativen, werbefreien VOE-Player ein!
+                const isRemoteServer = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+                if (data.embed_url && (isRemoteServer || !data.stream_url)) {
+                    startDirectEmbedStream(data.embed_url, data.provider || 'VOE');
+                    return;
+                }
+
+                const sBtn = document.getElementById('server-btn');
+                if (sBtn) sBtn.innerText = `Server: ${data.provider || 'HD'}`;
+                currentPlaybackServer = data.mode || 'direct';
+
                 const tapOverlay = document.getElementById('player-tap-overlay');
                 if (tapOverlay && window.innerWidth <= 768) {
                     tapOverlay.style.display = 'flex';
@@ -10504,11 +10515,14 @@
                     }
                 });
 
-                // Auto-Fallback auf Backup-Server wenn der Direkt-Stream fehlschlaegt
+                // Auto-Fallback auf VOE-Player bzw. Backup-Server wenn der Direkt-Stream fehlschlaegt
                 vjsPlayer.on('error', function() {
                     const err = vjsPlayer.error();
                     console.warn("Video.js Direct Stream fehlgeschlagen:", err);
-                    if (movie.id) {
+                    if (data.embed_url) {
+                        showPlayerToast(`Wechsle direkt auf ${data.provider || 'VOE'} Player...`);
+                        startDirectEmbedStream(data.embed_url, data.provider || 'VOE');
+                    } else if (movie.id) {
                         showPlayerToast("Wechsle automatisch auf Backup-Server...");
                         startBackupStream(movie.id, type, season, episode);
                     } else {
@@ -10754,16 +10768,57 @@
             if (hud) hud.style.display = 'none';
         }
 
-        function retryDirectStreamFromHud() {
-            dismissBackupHud();
+        function startDirectEmbedStream(embedUrl, providerName = 'VOE') {
+            currentPlaybackServer = 'provider_embed';
+            if (activeStreamAbortController) {
+                try { activeStreamAbortController.abort(); } catch(e) {}
+            }
+            const loadingBox = document.getElementById('loading-box');
+            const errorBox = document.getElementById('error-box');
+            const videoContainer = document.getElementById('video-container');
+            const tapOverlay = document.getElementById('player-tap-overlay');
+            if (loadingBox) loadingBox.style.display = 'none';
+            if (errorBox) errorBox.style.display = 'none';
+            if (videoContainer) videoContainer.style.display = 'block';
+            if (tapOverlay) tapOverlay.style.display = 'none';
+
             const sBtn = document.getElementById('server-btn');
             if (sBtn) {
-                sBtn.innerText = 'Server: HD';
-                sBtn.style.borderColor = '';
-                sBtn.style.color = '';
+                sBtn.innerText = `Server: ${providerName}`;
+                sBtn.style.borderColor = 'var(--primary)';
+                sBtn.style.color = '#fff';
             }
-            currentPlaybackServer = 'direct';
-            startStream(currentSeason, currentEpisode);
+
+            dismissBackupHud();
+
+            if (vjsPlayer) {
+                try { vjsPlayer.dispose(); } catch(e) {}
+                vjsPlayer = null;
+            }
+
+            const mount = document.getElementById('player-video-mount');
+            if (mount) {
+                mount.innerHTML = `
+                    <iframe id="embed-player-frame" src="${embedUrl}" style="width:100%; height:100%; border:none; position:absolute; top:0; left:0; right:0; bottom:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" allowfullscreen="true" referrerpolicy="no-referrer"></iframe>
+                `;
+            }
+            showPlayerToast(`Deutscher Stream aktiv: ${providerName} (HD)`);
+        }
+
+        function retryDirectStreamFromHud() {
+            dismissBackupHud();
+            if (lastStreamData && lastStreamData.embed_url) {
+                startDirectEmbedStream(lastStreamData.embed_url, lastStreamData.provider || 'VOE');
+            } else {
+                const sBtn = document.getElementById('server-btn');
+                if (sBtn) {
+                    sBtn.innerText = 'Server: HD';
+                    sBtn.style.borderColor = '';
+                    sBtn.style.color = '';
+                }
+                currentPlaybackServer = 'direct';
+                startStream(currentSeason, currentEpisode);
+            }
         }
 
         function forceImmediateBackupStream() {
@@ -10778,25 +10833,29 @@
         function toggleServerSource() {
             if (!currentMovieData || !currentMovieData.id) return;
             const type = currentMovieData.media_type || (currentMovieData.title ? 'movie' : 'tv');
-            if (currentPlaybackServer === 'direct') {
+            if (currentPlaybackServer === 'provider_embed' || currentPlaybackServer === 'direct') {
                 currentPlaybackServer = 'embed';
                 currentBackupServerIndex = 0;
                 startBackupStream(currentMovieData.id, type, currentSeason, currentEpisode, 0);
-            } else {
+            } else if (currentPlaybackServer === 'embed') {
                 currentBackupServerIndex++;
                 if (currentBackupServerIndex < BACKUP_SERVERS.length) {
                     startBackupStream(currentMovieData.id, type, currentSeason, currentEpisode, currentBackupServerIndex);
                 } else {
                     currentBackupServerIndex = 0;
-                    currentPlaybackServer = 'direct';
-                    const sBtn = document.getElementById('server-btn');
-                    if (sBtn) {
-                        sBtn.innerText = 'Server: HD';
-                        sBtn.style.borderColor = '';
-                        sBtn.style.color = '';
+                    if (lastStreamData && lastStreamData.embed_url) {
+                        startDirectEmbedStream(lastStreamData.embed_url, lastStreamData.provider || 'VOE');
+                    } else {
+                        currentPlaybackServer = 'direct';
+                        const sBtn = document.getElementById('server-btn');
+                        if (sBtn) {
+                            sBtn.innerText = 'Server: HD';
+                            sBtn.style.borderColor = '';
+                            sBtn.style.color = '';
+                        }
+                        dismissBackupHud();
+                        startStream(currentSeason, currentEpisode);
                     }
-                    dismissBackupHud();
-                    startStream(currentSeason, currentEpisode);
                 }
             }
         }
