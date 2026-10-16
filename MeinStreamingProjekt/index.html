@@ -10298,7 +10298,7 @@
             }, 9500);
 
             const maxWaitTimer = setTimeout(() => {
-                console.warn("Server-Suche Timeout nach 12s - schalte auf schnellen Backup-Server um");
+                console.warn("Server-Suche Timeout nach 16s - schalte auf schnellen Backup-Server um");
                 if (activeStreamAbortController) {
                     try { activeStreamAbortController.abort(); } catch(e) {}
                 }
@@ -10311,7 +10311,7 @@
                         startBackupStream(movie.id, type, season, episode, 0);
                     }, 250);
                 }
-            }, 12000);
+            }, 16000);
 
             try {
                 const searchParams = new URLSearchParams({

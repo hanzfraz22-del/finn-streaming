@@ -285,7 +285,6 @@ def smart_play():
         if media_type == 'tv':
             for q_term in unique_queries:
                 executor.submit(api_search_worker, megakino_search, f"{q_term} Staffel {season}", "", f"?episode={episode}", 'tv')
-                executor.submit(api_search_worker, megakino_search, q_term, "", f"?episode={episode}", 'tv')
                 executor.submit(api_search_worker, query_s_to, q_term, "https://s.to", f"/staffel-{season}/episode-{episode}", 'tv')
                 executor.submit(api_search_worker, aniworld_search, q_term, "https://aniworld.to", f"/staffel-{season}/episode-{episode}", 'tv')
         else:
@@ -293,8 +292,8 @@ def smart_play():
                 executor.submit(api_search_worker, megakino_search, q_term, "", "", 'movie')
             
         try:
-            # Bis zu 10.5 Sekunden auf echten VOE / Vidoza Stream warten
-            result = q.get(timeout=10.5)
+            # Bis zu 14.5 Sekunden auf echten VOE / Vidoza Stream warten
+            result = q.get(timeout=14.5)
             if result:
                 result["mode"] = "direct"
                 return jsonify(result)
