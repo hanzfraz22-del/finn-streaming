@@ -126,7 +126,7 @@ def api_diag():
     t0 = time.time()
     try:
         from mediaforge.extractors.provider.voe import get_direct_link_from_voe
-        v = get_direct_link_from_voe("https://voe.sx/e/cne0ckflq2wb")
+        v = get_direct_link_from_voe("https://voe.sx/e/tttij3lj1xlc")
         results["voe_direct"] = {"status": "ok", "url": v[:40] if v else None, "time": f"{time.time()-t0:.2f}s"}
     except Exception as e:
         import traceback
@@ -231,7 +231,6 @@ def smart_play():
     for slug in slugs:
         if media_type == 'tv':
             urls_to_try.append(f"https://s.to/serie/{slug}/staffel-{season}/episode-{episode}")
-            urls_to_try.append(f"https://s.to/serie/stream/{slug}/staffel-{season}/episode-{episode}")
             urls_to_try.append(f"https://aniworld.to/anime/stream/{slug}/staffel-{season}/episode-{episode}")
         else:
             urls_to_try.append(f"https://filmpalast.to/stream/{slug}")
@@ -254,15 +253,17 @@ def smart_play():
             try:
                 res = func(q_str)
                 if res:
-                    for r in res[:2]:
+                    for r in res[:3]:
                         if 'link' in r: executor.submit(check_url_and_push, f"{prefix}{r['link']}{suffix}")
-                        elif 'url' in r: executor.submit(check_url_and_push, r['url'])
+                        elif 'url' in r: executor.submit(check_url_and_push, f"{r['url']}{suffix}")
             except: pass
 
         unique_queries = list(set([t for t in raw_titles if t and len(t) > 2]))[:2]
 
         if media_type == 'tv':
             for q_term in unique_queries:
+                executor.submit(api_search_worker, megakino_search, f"{q_term} Staffel {season}", "", f"?episode={episode}")
+                executor.submit(api_search_worker, megakino_search, q_term, "", f"?episode={episode}")
                 executor.submit(api_search_worker, query_s_to, q_term, "https://s.to", f"/staffel-{season}/episode-{episode}")
                 executor.submit(api_search_worker, aniworld_search, q_term, "https://aniworld.to", f"/staffel-{season}/episode-{episode}")
         else:

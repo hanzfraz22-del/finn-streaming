@@ -166,125 +166,74 @@ def is_maintenance_page(html):
 # -----------------------------
 # Main VOE functions
 # -----------------------------
-def get_direct_link_from_voe(embeded_voe_link, headers=None, max_retries=3, timeout=30):
-    """Get direct VOE video URL with improved retry logic."""
-    if headers is None:
-        headers = PROVIDER_HEADERS_D.get("VOE", {"User-Agent": DEFAULT_USER_AGENT})
-    
-    # Enhanced headers for better compatibility
-    enhanced_headers = {
-        **headers,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    }
-    
-    for attempt in range(max_retries):
+def get_direct_link_from_voe(embeded_voe_link, headers=None, max_retries=2, timeout=12):
+    """Get direct VOE video URL with high-speed CDN resolution and curl_cffi TLS impersonation."""
+    # 1. Schneller Direktpfad: VOE liefert Streams ueber megankiddifference.com / voe.sx
+    clean_url = embeded_voe_link.split("?")[0].rstrip("/")
+    video_id = clean_url.split("/")[-1]
+
+    candidate_urls = []
+    if len(video_id) >= 6 and "megankiddifference.com" not in clean_url:
+        candidate_urls.append(f"https://megankiddifference.com/e/{video_id}")
+    candidate_urls.append(embeded_voe_link)
+
+    for target_url in candidate_urls:
         try:
-            # Add delay between retries
-            if attempt > 0:
-                wait_time = 2 ** attempt  # Exponential backoff: 2, 4, 8 seconds
-                logger.warning(f"Retry attempt {attempt + 1}/{max_retries}, waiting {wait_time}s...")
-                time.sleep(wait_time)
-            
-            # First request to VOE (prefer curl_cffi for Cloudflare TLS impersonation)
-            html = ""
-            status_code = 200
-            try:
-                from curl_cffi import requests as curl_requests
-                c_resp = curl_requests.get(
-                    embeded_voe_link, impersonate="chrome120", timeout=timeout,
-                    allow_redirects=True, headers=enhanced_headers
-                )
-                html = c_resp.text
-                status_code = c_resp.status_code
-            except Exception:
-                resp = GLOBAL_SESSION.get(embeded_voe_link, headers=enhanced_headers, timeout=timeout)
-                resp.raise_for_status()
-                html = resp.text
-                status_code = resp.status_code
+            from curl_cffi import requests as curl_requests
+            # Clean headers: keine kollidierenden HTTP/1.1 Header auf HTTP/2
+            req_headers = {"Referer": "https://voe.sx/"}
+            c_resp = curl_requests.get(
+                target_url,
+                impersonate="chrome120",
+                timeout=timeout,
+                allow_redirects=True,
+                headers=req_headers
+            )
+            html = c_resp.text
+            status_code = c_resp.status_code
 
             if is_source_unavailable(html, status_code):
-                raise ValueError("VOE: Video nicht verfügbar oder wurde entfernt.")
+                continue
 
-            # Captcha on VOE page → solve and retry this request
-            if is_captcha_page(html, status_code):
-                solve_captcha(embeded_voe_link)
-                resp = GLOBAL_SESSION.get(
-                    embeded_voe_link, headers=enhanced_headers, timeout=timeout
-                )
-                resp.raise_for_status()
-                html = resp.text
-
-            # Try extracting source directly from the VOE embed page first
             source = extract_voe_source_from_html(html)
             if source:
-                logger.debug(f"VOE source extracted on attempt {attempt + 1}")
                 return source
 
-            # Fallback: follow the redirect URL embedded in the page
+            # Pruefe auf Redirect im HTML (window.location.href = '...')
             redirect_match = REDIRECT_PATTERN.search(html)
             if redirect_match:
                 redirect_url = redirect_match.group(0)
-                redir_headers = {**enhanced_headers, "Referer": embeded_voe_link}
-                
-                # Second request with retry
-                for redirect_attempt in range(max_retries):
-                    try:
-                        if redirect_attempt > 0:
-                            wait_time = 2 ** redirect_attempt
-                            logger.warning(f"Redirect retry {redirect_attempt + 1}/{max_retries}, waiting {wait_time}s...")
-                            time.sleep(wait_time)
-                        
-                        try:
-                            from curl_cffi import requests as curl_requests
-                            c_resp = curl_requests.get(
-                                redirect_url, impersonate="chrome120", timeout=timeout,
-                                allow_redirects=True, headers=redir_headers
-                            )
-                            html = c_resp.text
-                            status_code = c_resp.status_code
-                        except Exception:
-                            resp = GLOBAL_SESSION.get(redirect_url, headers=redir_headers, timeout=timeout)
-                            resp.raise_for_status()
-                            html = resp.text
-                            status_code = resp.status_code
+                if redirect_url != target_url:
+                    c_resp2 = curl_requests.get(
+                        redirect_url,
+                        impersonate="chrome120",
+                        timeout=timeout,
+                        allow_redirects=True,
+                        headers={"Referer": target_url}
+                    )
+                    source2 = extract_voe_source_from_html(c_resp2.text)
+                    if source2:
+                        return source2
+        except Exception as e:
+            logger.debug(f"VOE direct resolution error on {target_url}: {e}")
 
-                        # Captcha on redirect target → solve and retry
-                        if is_captcha_page(html, status_code):
-                            solve_captcha(redirect_url)
-                            resp = GLOBAL_SESSION.get(
-                                redirect_url, headers=redir_headers, timeout=timeout
-                            )
-                            resp.raise_for_status()
-                            html = resp.text
-                        break
-                    except (niquests.RequestException, Exception) as err:
-                        if redirect_attempt == max_retries - 1:
-                            raise ValueError(f"Weiterleitung konnte nach {max_retries} Versuchen nicht geladen werden: {err}") from err
-                        continue
-            
-            source = extract_voe_source_from_html(html)
-            if not source:
-                if is_maintenance_page(html):
-                    raise ValueError("Dieser VOE-Server ist derzeit im Wartungsmodus. Bitte versuche es später erneut.")
-                raise ValueError("Keine VOE-Videoquelle auf der Seite gefunden.")
-            
-            logger.debug(f"VOE source extracted on attempt {attempt + 1}")
+    # 2. Fallback auf Standard-Session
+    try:
+        resp = GLOBAL_SESSION.get(embeded_voe_link, timeout=timeout)
+        html = resp.text
+        source = extract_voe_source_from_html(html)
+        if source:
             return source
-            
-        except (niquests.RequestException, Exception) as err:
-            err_str = str(err).lower()
-            if any(k in err_str for k in ("404", "410", "not found", "wartungsmodus", "keine voe-videoquelle", "nicht verfügbar")):
-                raise ValueError(f"VOE: Video nicht verfügbar: {err}") from err
-            if attempt == max_retries - 1:
-                raise ValueError(f"VOE-Seite konnte nach {max_retries} Versuchen nicht geladen werden: {err}") from err
-            logger.warning(f"Attempt {attempt + 1} failed: {str(err)[:100]}...")
-            continue
-    
-    raise ValueError("Unexpected error in get_direct_link_from_voe")
+        redirect_match = REDIRECT_PATTERN.search(html)
+        if redirect_match:
+            r2 = GLOBAL_SESSION.get(redirect_match.group(0), timeout=timeout)
+            source = extract_voe_source_from_html(r2.text)
+            if source:
+                return source
+    except Exception:
+        pass
+
+    raise ValueError("VOE: Keine funktionierende Videoquelle gefunden.")
 
 
 def get_subtitles_from_voe(embeded_voe_link, headers=None, timeout=30):

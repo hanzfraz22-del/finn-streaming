@@ -316,7 +316,8 @@ class SerienstreamEpisode:
                     self.redirect_url,
                     impersonate="chrome120",
                     timeout=10,
-                    allow_redirects=True
+                    allow_redirects=True,
+                    headers={"Referer": self.url}
                 )
                 if site_for_url(c_resp.url) != "sto":
                     self.__provider_url = c_resp.url
